@@ -50,6 +50,32 @@ services:
     cap_add:
       - NET_ADMIN
 
+  gateway:
+    build: .
+    container_name: gateway
+    command: python -m src.gateway_main
+    environment:
+      - NODE_ID=gateway
+      - HTTP_PORT=8000
+      - EDGE_NODES=edge-node-1:8000,edge-node-2:8000,edge-node-3:8000
+      - GATEWAY_POLL_INTERVAL=10
+      - DATA_DIR=/data
+    ports:
+      - "8000:8000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - gateway-data:/data
+    networks:
+      mesh:
+        ipv4_address: 172.28.0.10
+    depends_on:
+      - edge-node-1
+      - edge-node-2
+      - edge-node-3
+
+volumes:
+  gateway-data:
+
 networks:
   mesh:
     driver: bridge

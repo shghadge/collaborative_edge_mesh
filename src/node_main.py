@@ -1,6 +1,7 @@
 """
 Edge node entry point. Starts the HTTP intake and UDP gossip services.
 """
+
 import asyncio
 import logging
 import signal
@@ -12,7 +13,9 @@ from src.crdt import NodeState
 from src.hash_chain import HashChainLog
 from src.services import IntakeService, GossipService
 
-logging.basicConfig(format="%(message)s", level=getattr(logging, config.log_level, logging.INFO))
+logging.basicConfig(
+    format="%(message)s", level=getattr(logging, config.log_level, logging.INFO)
+)
 
 structlog.configure(
     processors=[
@@ -39,12 +42,19 @@ async def main():
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, shutdown.set)
 
-    server = uvicorn.Server(uvicorn.Config(
-        intake.app, host="0.0.0.0", port=config.http_port, log_level="warning"
-    ))
+    server = uvicorn.Server(
+        uvicorn.Config(
+            intake.app, host="0.0.0.0", port=config.http_port, log_level="warning"
+        )
+    )
 
-    log.info("node_starting", node_id=config.node_id,
-             http=config.http_port, gossip=config.gossip_port, peers=config.peers)
+    log.info(
+        "node_starting",
+        node_id=config.node_id,
+        http=config.http_port,
+        gossip=config.gossip_port,
+        peers=config.peers,
+    )
 
     async def wait_shutdown():
         await shutdown.wait()

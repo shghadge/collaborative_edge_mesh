@@ -20,7 +20,9 @@ class LWWRegister:
     def set(self, value, timestamp=None):
         ts = timestamp or datetime.utcnow()
         # only update if this write is newer (or same time but higher node id)
-        if ts > self._timestamp or (ts == self._timestamp and self.node_id >= self._writer_id):
+        if ts > self._timestamp or (
+            ts == self._timestamp and self.node_id >= self._writer_id
+        ):
             self._value = value
             self._timestamp = ts
             self._writer_id = self.node_id

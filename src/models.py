@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 
 class Event(BaseModel):
     """An event submitted to an edge node."""
+
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     type: str
     value: Any
@@ -16,6 +17,7 @@ class Event(BaseModel):
 
 class NodeStatus(BaseModel):
     """Status info returned by /status endpoint."""
+
     node_id: str
     version: int
     merkle_root: str

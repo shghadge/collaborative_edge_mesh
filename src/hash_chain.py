@@ -24,11 +24,15 @@ class HashChainLog:
             "timestamp": datetime.utcnow().isoformat(),
             "event_id": event_id,
             "event_type": event_type,
-            "data_hash": hashlib.sha256(json.dumps(event_data, sort_keys=True).encode()).hexdigest(),
+            "data_hash": hashlib.sha256(
+                json.dumps(event_data, sort_keys=True).encode()
+            ).hexdigest(),
             "prev_hash": prev_hash,
         }
         # hash the entry itself (including prev_hash) to form the chain
-        entry["hash"] = hashlib.sha256(json.dumps(entry, sort_keys=True).encode()).hexdigest()
+        entry["hash"] = hashlib.sha256(
+            json.dumps(entry, sort_keys=True).encode()
+        ).hexdigest()
 
         self.entries.append(entry)
         return entry
@@ -42,7 +46,10 @@ class HashChainLog:
 
             check = dict(entry)
             stored_hash = check.pop("hash")
-            if hashlib.sha256(json.dumps(check, sort_keys=True).encode()).hexdigest() != stored_hash:
+            if (
+                hashlib.sha256(json.dumps(check, sort_keys=True).encode()).hexdigest()
+                != stored_hash
+            ):
                 return False
 
         return True

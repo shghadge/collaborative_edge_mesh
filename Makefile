@@ -9,6 +9,10 @@ up:
 down:
 	docker compose down
 
+clean:
+	@docker ps -a --filter "name=edge-node" --format '{{.Names}}' | while read c; do docker rm -f $$c 2>/dev/null || true; done
+	docker compose down -v
+
 logs:
 	docker compose logs -f
 
@@ -74,14 +78,14 @@ demo:
 	@echo "\n=== Waiting for gossip convergence (10s) ==="
 	@sleep 10
 	@echo "\n=== Merkle roots ==="
-	@$(Make) merkle
+	@$(MAKE) merkle
 	@echo "\n=== Node states ==="
-	@$(Make) status
+	@$(MAKE) status
 
 # simulate a partition, send events to both sides, then heal and watch convergence
 demo-partition:
 	@echo "=== Isolating node-1 ==="
-	@$(Make) isolate NODE=edge-node-1
+	@$(MAKE) isolate NODE=edge-node-1
 	@sleep 2
 	@echo "\n>> Node 1 (isolated): emergency water reading"
 	@curl -s -X POST http://localhost:8001/event -H "Content-Type: application/json" \
@@ -91,13 +95,13 @@ demo-partition:
 		-d '{"type":"injured_count","value":27,"location":"shelter_east","metadata":{"medics_needed":6,"ambulances_dispatched":2}}' | python3 -m json.tool
 	@sleep 5
 	@echo "\n=== Merkle roots (should DIFFER) ==="
-	@$(Make) merkle
+	@$(MAKE) merkle
 	@echo "\n=== Healing partition ==="
-	@$(Make) heal NODE=edge-node-1
+	@$(MAKE) heal NODE=edge-node-1
 	@echo "Waiting for convergence (15s)..."
 	@sleep 15
 	@echo "\n=== Merkle roots (should MATCH) ==="
-	@$(Make) merkle
+	@$(MAKE) merkle
 
 # run full demo: events then partition test
 demo-full:
@@ -106,3 +110,49 @@ demo-full:
 	@echo "=== PARTITION TEST ==="
 	@echo "=========================================\n"
 	@$(MAKE) demo-partition
+
+# --- Gateway ---
+
+gateway-status:
+	@curl -s http://localhost:8000/gateway/status | python3 -m json.tool
+
+gateway-poll:
+	@curl -s -X POST http://localhost:8000/gateway/poll | python3 -m json.tool
+
+gateway-merged:
+	@curl -s http://localhost:8000/gateway/merged-state | python3 -m json.tool
+
+gateway-divergence:
+	@curl -s http://localhost:8000/gateway/divergence | python3 -m json.tool
+
+gateway-metrics:
+	@curl -s http://localhost:8000/gateway/metrics | python3 -m json.tool
+
+# --- Docker node management (via gateway API) ---
+
+list-nodes:
+	@curl -s http://localhost:8000/nodes | python3 -m json.tool
+
+# usage: make create-node [ID=node-4]
+create-node:
+	@curl -s -X POST "http://localhost:8000/nodes$$([ -n '$(ID)' ] && echo '?node_id=$(ID)')" | python3 -m json.tool
+
+# usage: make remove-node ID=node-4
+remove-node:
+	@curl -s -X DELETE http://localhost:8000/nodes/$(ID) | python3 -m json.tool
+
+# --- Partition control via API ---
+
+# usage: make api-isolate ID=node-1
+api-isolate:
+	@curl -s -X POST http://localhost:8000/nodes/$(ID)/partition | python3 -m json.tool
+
+# usage: make api-heal ID=node-1
+api-heal:
+	@curl -s -X DELETE http://localhost:8000/nodes/$(ID)/partition | python3 -m json.tool
+
+api-split-brain:
+	@curl -s -X POST http://localhost:8000/partition/split-brain | python3 -m json.tool
+
+api-heal-all:
+	@curl -s -X POST http://localhost:8000/partition/heal-all | python3 -m json.tool

@@ -31,7 +31,9 @@ class GossipService:
         self.sock.bind(("0.0.0.0", self.config.gossip_port))
         self.sock.setblocking(False)
 
-        log.info("gossip_started", port=self.config.gossip_port, peers=self.config.peers)
+        log.info(
+            "gossip_started", port=self.config.gossip_port, peers=self.config.peers
+        )
 
         await asyncio.gather(
             self._broadcast_loop(),
@@ -48,25 +50,31 @@ class GossipService:
         while self.running:
             await asyncio.sleep(self.config.gossip_interval)
             try:
-                msg = json.dumps({
-                    "type": "state_update",
-                    "sender": self.config.node_id,
-                    "state": self.state.to_dict(),
-                }).encode()
+                msg = json.dumps(
+                    {
+                        "type": "state_update",
+                        "sender": self.config.node_id,
+                        "state": self.state.to_dict(),
+                    }
+                ).encode()
 
                 if len(msg) > MAX_PACKET:
                     # if state is too big, just send merkle root
-                    msg = json.dumps({
-                        "type": "merkle_only",
-                        "sender": self.config.node_id,
-                        "merkle_root": self.state.merkle_root(),
-                    }).encode()
+                    msg = json.dumps(
+                        {
+                            "type": "merkle_only",
+                            "sender": self.config.node_id,
+                            "merkle_root": self.state.merkle_root(),
+                        }
+                    ).encode()
 
                 loop = asyncio.get_event_loop()
                 for peer in self.config.peers:
                     host, port = self._parse_peer(peer)
                     try:
-                        await loop.run_in_executor(None, self.sock.sendto, msg, (host, int(port)))
+                        await loop.run_in_executor(
+                            None, self.sock.sendto, msg, (host, int(port))
+                        )
                         self.stats["sent"] += 1
                     except Exception as e:
                         self.stats["errors"] += 1
@@ -112,14 +120,22 @@ class GossipService:
 
             if old_root != new_root:
                 self.stats["merged"] += 1
-                log.info("gossip_merged", from_node=sender,
-                         old_root=old_root[:12], new_root=new_root[:12])
+                log.info(
+                    "gossip_merged",
+                    from_node=sender,
+                    old_root=old_root[:12],
+                    new_root=new_root[:12],
+                )
 
         elif message["type"] == "merkle_only":
             remote_root = message.get("merkle_root")
             if remote_root != self.state.merkle_root():
-                log.info("merkle_mismatch", from_node=sender,
-                         ours=self.state.merkle_root()[:12], theirs=remote_root[:12])
+                log.info(
+                    "merkle_mismatch",
+                    from_node=sender,
+                    ours=self.state.merkle_root()[:12],
+                    theirs=remote_root[:12],
+                )
 
     def _parse_peer(self, peer):
         parts = peer.rsplit(":", 1)

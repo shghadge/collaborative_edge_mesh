@@ -20,7 +20,11 @@ class GCounter:
             self.counts[node_id] = max(self.counts.get(node_id, 0), count)
 
     def to_dict(self):
-        return {"type": "gcounter", "node_id": self.node_id, "counts": dict(self.counts)}
+        return {
+            "type": "gcounter",
+            "node_id": self.node_id,
+            "counts": dict(self.counts),
+        }
 
     @classmethod
     def from_dict(cls, data):

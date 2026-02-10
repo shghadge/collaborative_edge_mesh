@@ -18,7 +18,7 @@ class NodeState:
         self.node_id = node_id
         self.version = 0
         self.updated_at = datetime.utcnow()
-        self.counters = {}   # event_type -> GCounter
+        self.counters = {}  # event_type -> GCounter
         self.registers = {}  # key -> LWWRegister
         self.event_ids = []
 
@@ -34,11 +34,13 @@ class NodeState:
             key = f"location:{data['location']}"
             if key not in self.registers:
                 self.registers[key] = LWWRegister(self.node_id)
-            self.registers[key].set({
-                "value": data["value"],
-                "event_id": event_id,
-                "type": event_type,
-            })
+            self.registers[key].set(
+                {
+                    "value": data["value"],
+                    "event_id": event_id,
+                    "type": event_type,
+                }
+            )
 
         # track event id
         if event_id not in self.event_ids:
@@ -54,7 +56,10 @@ class NodeState:
         return sum(c.value for c in self.counters.values())
 
     def merge(self, other):
-        """Merge another node's state. All CRDTs merge independently."""
+        """Merge another node's state. All CRDTs merge independently.
+        Only bumps version if state actually changed."""
+        old_root = self.merkle_root()
+
         for etype, counter in other.counters.items():
             if etype not in self.counters:
                 self.counters[etype] = GCounter(self.node_id)
@@ -70,8 +75,9 @@ class NodeState:
             if eid not in self.event_ids:
                 self.event_ids.append(eid)
 
-        self.version += 1
-        self.updated_at = datetime.utcnow()
+        if self.merkle_root() != old_root:
+            self.version += 1
+            self.updated_at = datetime.utcnow()
 
     def merkle_root(self):
         """Compute a hash fingerprint of the current state for quick comparison.
@@ -120,7 +126,11 @@ class NodeState:
         s = cls(data["node_id"])
         s.version = data["version"]
         s.updated_at = datetime.fromisoformat(data["updated_at"])
-        s.counters = {k: GCounter.from_dict(v) for k, v in data.get("counters", {}).items()}
-        s.registers = {k: LWWRegister.from_dict(v) for k, v in data.get("registers", {}).items()}
+        s.counters = {
+            k: GCounter.from_dict(v) for k, v in data.get("counters", {}).items()
+        }
+        s.registers = {
+            k: LWWRegister.from_dict(v) for k, v in data.get("registers", {}).items()
+        }
         s.event_ids = list(data.get("event_ids", []))
         return s

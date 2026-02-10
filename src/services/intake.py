@@ -37,11 +37,17 @@ class IntakeService:
         async def receive_event(event: Event):
             """Receive an event, log it to the hash chain, record in CRDT state."""
             try:
-                entry = self.chain.append(event.id, event.type, event.model_dump(mode="json"))
+                entry = self.chain.append(
+                    event.id, event.type, event.model_dump(mode="json")
+                )
                 self.state.record_event(
                     event.id,
                     event.type,
-                    {"value": event.value, "location": event.location, **event.metadata},
+                    {
+                        "value": event.value,
+                        "location": event.location,
+                        **event.metadata,
+                    },
                 )
                 log.info("event_received", event_id=event.id, type=event.type)
                 return {
@@ -96,9 +102,17 @@ class IntakeService:
                 old_root = self.state.merkle_root()
                 self.state.merge(incoming)
                 new_root = self.state.merkle_root()
-                log.info("state_merged", from_node=remote_state.get("node_id"),
-                         old_root=old_root[:12], new_root=new_root[:12])
-                return {"status": "merged", "version": self.state.version, "merkle_root": new_root}
+                log.info(
+                    "state_merged",
+                    from_node=remote_state.get("node_id"),
+                    old_root=old_root[:12],
+                    new_root=new_root[:12],
+                )
+                return {
+                    "status": "merged",
+                    "version": self.state.version,
+                    "merkle_root": new_root,
+                }
             except Exception as e:
                 log.error("merge_failed", error=str(e))
                 raise HTTPException(status_code=400, detail=str(e))
