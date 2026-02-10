@@ -1,0 +1,58 @@
+services:
+  edge-node-1:
+    build: .
+    container_name: edge-node-1
+    environment:
+      - NODE_ID=node-1
+      - HTTP_PORT=8000
+      - GOSSIP_PORT=9000
+      - GOSSIP_INTERVAL=5
+      - PEER_NODES=edge-node-2:9000,edge-node-3:9000
+    ports:
+      - "8001:8000"
+    networks:
+      mesh:
+        ipv4_address: 172.28.0.11
+    cap_add:
+      - NET_ADMIN
+
+  edge-node-2:
+    build: .
+    container_name: edge-node-2
+    environment:
+      - NODE_ID=node-2
+      - HTTP_PORT=8000
+      - GOSSIP_PORT=9000
+      - GOSSIP_INTERVAL=5
+      - PEER_NODES=edge-node-1:9000,edge-node-3:9000
+    ports:
+      - "8002:8000"
+    networks:
+      mesh:
+        ipv4_address: 172.28.0.12
+    cap_add:
+      - NET_ADMIN
+
+  edge-node-3:
+    build: .
+    container_name: edge-node-3
+    environment:
+      - NODE_ID=node-3
+      - HTTP_PORT=8000
+      - GOSSIP_PORT=9000
+      - GOSSIP_INTERVAL=5
+      - PEER_NODES=edge-node-1:9000,edge-node-2:9000
+    ports:
+      - "8003:8000"
+    networks:
+      mesh:
+        ipv4_address: 172.28.0.13
+    cap_add:
+      - NET_ADMIN
+
+networks:
+  mesh:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24
