@@ -1,0 +1,258 @@
+/* Basic reset */
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+body {
+    font-family: 'Inter', sans-serif;
+    background-color: #0d1117;
+    color: #c9d1d9;
+    padding: 20px;
+}
+
+/* Header */
+header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 30px;
+    padding-bottom: 20px;
+    border-bottom: 1px solid #30363d;
+}
+
+h1 {
+    font-size: 1.5rem;
+    font-weight: 600;
+    color: #58a6ff;
+}
+
+.stats-bar {
+    display: flex;
+    gap: 20px;
+}
+
+.stat-item {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+}
+
+.label {
+    font-size: 0.75rem;
+    color: #8b949e;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.value {
+    font-size: 1.25rem;
+    font-weight: 600;
+    font-family: 'JetBrains Mono', monospace;
+}
+
+.status-badge {
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 0.9rem;
+}
+
+.status-synced {
+    background-color: rgba(46, 160, 67, 0.15);
+    color: #3fb950;
+    border: 1px solid rgba(46, 160, 67, 0.4);
+}
+
+.status-divergent {
+    background-color: rgba(248, 81, 73, 0.15);
+    color: #f85149;
+    border: 1px solid rgba(248, 81, 73, 0.4);
+}
+
+/* Grid Layout */
+.dashboard-grid {
+    display: grid;
+    grid-template-columns: 2fr 1fr;
+    grid-template-rows: auto auto;
+    gap: 20px;
+}
+
+.card {
+    background-color: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    padding: 20px;
+}
+
+.card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 15px;
+}
+
+h2 {
+    font-size: 1rem;
+    font-weight: 500;
+    color: #e6edf3;
+}
+
+/* Buttons */
+.btn {
+    padding: 6px 12px;
+    font-size: 0.85rem;
+    border-radius: 6px;
+    border: 1px solid rgba(240, 246, 252, 0.1);
+    cursor: pointer;
+    font-family: inherit;
+    font-weight: 500;
+    transition: 0.2s;
+}
+
+.btn-primary {
+    background-color: #238636;
+    color: #ffffff;
+    border-color: rgba(240, 246, 252, 0.1);
+}
+
+.btn-primary:hover {
+    background-color: #2ea043;
+}
+
+.btn-danger {
+    background-color: #da3633;
+    color: #ffffff;
+}
+
+.btn-warning {
+    background-color: #9e6a03;
+    color: #ffffff;
+}
+
+.btn-success {
+    background-color: #1f6feb;
+    color: #ffffff;
+}
+
+.btn-sm {
+    padding: 4px 8px;
+    font-size: 0.75rem;
+}
+
+/* Topology Canvas */
+.topology-card {
+    grid-column: 1 / 2;
+    grid-row: 1 / 3;
+    height: 500px; /* Fixed height for canvas */
+    display: flex;
+    flex-direction: column;
+}
+
+.canvas-container {
+    flex: 1;
+    background-color: #0d1117;
+    border-radius: 4px;
+    position: relative;
+    overflow: hidden;
+}
+
+canvas {
+    width: 100%;
+    height: 100%;
+}
+
+.live-indicator {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.8rem;
+    color: #3fb950;
+}
+
+.dot {
+    width: 8px;
+    height: 8px;
+    background-color: #3fb950;
+    border-radius: 50%;
+    box-shadow: 0 0 8px rgba(63, 185, 80, 0.4);
+    animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+    0% { opacity: 1; }
+    50% { opacity: 0.5; }
+    100% { opacity: 1; }
+}
+
+/* Node List */
+.node-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    max-height: 200px;
+    overflow-y: auto;
+}
+
+.node-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 12px;
+    background-color: #21262d;
+    border-radius: 4px;
+    border-left: 3px solid #3fb950; /* Green for healthy */
+}
+
+.node-item.isolated {
+    border-left-color: #d29922; /* Warning for partition */
+    opacity: 0.7;
+}
+
+.node-info {
+    display: flex;
+    flex-direction: column;
+}
+
+.node-name {
+    font-weight: 600;
+    font-size: 0.9rem;
+}
+
+.node-ip {
+    font-size: 0.75rem;
+    color: #8b949e;
+    font-family: 'JetBrains Mono', monospace;
+}
+
+/* Log Table */
+.logs-card {
+    grid-column: 1 / 3;
+}
+
+.log-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85rem;
+}
+
+.log-table th {
+    text-align: left;
+    padding: 8px;
+    border-bottom: 1px solid #30363d;
+    color: #8b949e;
+}
+
+.log-table td {
+    padding: 8px;
+    border-bottom: 1px solid #21262d;
+    font-family: 'JetBrains Mono', monospace;
+}
+
+.log-row-divergent {
+    color: #f85149;
+}
+
+.log-row-synced {
+    color: #3fb950;
+}

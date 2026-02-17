@@ -35,26 +35,47 @@ class IntakeService:
 
         @app.post("/event")
         async def receive_event(event: Event):
-            """Receive an event, log it to the hash chain, record in CRDT state."""
+            """Receive an event, log it to the hash chain, record in CRDT state.
+
+            The response tells you exactly where the data was stored:
+            which counter, register, pn_counter, or set key was used.
+            """
             try:
                 entry = self.chain.append(
                     event.id, event.type, event.model_dump(mode="json")
                 )
-                self.state.record_event(
+
+                # build the data dict from the event fields + metadata
+                event_data = {
+                    "value": event.value,
+                    "location": event.location,
+                    **event.metadata,
+                }
+
+                # route to correct CRDT based on category
+                stored_in = self.state.record_event(
                     event.id,
                     event.type,
-                    {
-                        "value": event.value,
-                        "location": event.location,
-                        **event.metadata,
-                    },
+                    event_data,
+                    category=event.category.value,
+                    operation=event.operation,
                 )
-                log.info("event_received", event_id=event.id, type=event.type)
+
+                log.info(
+                    "event_received",
+                    event_id=event.id,
+                    type=event.type,
+                    category=event.category.value,
+                    stored_in=stored_in,
+                )
+
                 return {
                     "status": "accepted",
                     "event_id": event.id,
+                    "category": event.category.value,
                     "log_sequence": entry["sequence"],
                     "version": self.state.version,
+                    "stored_in": stored_in,
                 }
             except Exception as e:
                 log.error("event_failed", error=str(e))

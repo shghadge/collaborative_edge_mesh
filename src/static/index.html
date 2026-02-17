@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Edge Mesh Dashboard</title>
+    <link rel="stylesheet" href="style.css">
+    <!-- Google Fonts for premium feel -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Header & Stats -->
+        <header>
+            <div class="logo">
+                <div class="logo-icon"></div>
+                <h1>Collaborative Edge Mesh</h1>
+            </div>
+            <div class="stats-bar">
+                <div class="stat-item">
+                    <span class="label">Nodes</span>
+                    <span class="value" id="stat-nodes">3</span>
+                </div>
+                <div class="stat-item">
+                    <span class="label">Merge Time</span>
+                    <span class="value" id="stat-merge">2.5ms</span>
+                </div>
+                <div class="stat-item" id="stat-status-container">
+                    <span class="label">Status</span>
+                    <span class="value status-badge" id="stat-status">SYNCED</span>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Grid -->
+        <main class="dashboard-grid">
+            
+            <!-- 1. Network Topology -->
+            <section class="card topology-card">
+                <div class="card-header">
+                    <h2>Network Topology</h2>
+                    <div class="live-indicator">
+                        <span class="dot"></span> Live
+                    </div>
+                </div>
+                <div class="canvas-container">
+                    <canvas id="topologyCanvas"></canvas>
+                </div>
+            </section>
+
+            <!-- 2. Node Management -->
+            <section class="card controls-card">
+                <div class="card-header">
+                    <h2>Node Management</h2>
+                    <button class="btn btn-primary" onclick="createNode()">+ New Node</button>
+                </div>
+                <div class="node-list" id="nodeList">
+                    <!-- Dynamic Node Items -->
+                </div>
+            </section>
+
+            <!-- 3. Partition Controls -->
+            <section class="card partition-card">
+                <div class="card-header">
+                    <h2>Partition Control</h2>
+                    <div class="actions">
+                        <button class="btn btn-warning" onclick="splitBrain()">⚡ Split Brain</button>
+                        <button class="btn btn-success" onclick="healAll()">Health All</button>
+                    </div>
+                </div>
+                <div class="partition-list" id="partitionList">
+                    <!-- Dynamic Partition Toggles -->
+                </div>
+            </section>
+
+            <!-- 4. Divergence Log -->
+            <section class="card logs-card">
+                <div class="card-header">
+                    <h2>Divergence Log</h2>
+                    <button class="btn btn-sm" onclick="fetchLogs()">Refresh</button>
+                </div>
+                <div class="log-table-container">
+                    <table class="log-table">
+                        <thead>
+                            <tr>
+                                <th>Timestamp</th>
+                                <th>Status</th>
+                                <th>Merkle Roots</th>
+                            </tr>
+                        </thead>
+                        <tbody id="logBody">
+                            <!-- Dynamic Rows -->
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+        </main>
+    </div>
+    
+    <script src="app.js"></script>
+</body>
+</html>

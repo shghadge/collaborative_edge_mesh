@@ -34,6 +34,7 @@ structlog.configure(
 log = structlog.get_logger()
 
 app = FastAPI(title="Edge Mesh Gateway")
+
 store = SQLiteStore(f"{config.data_dir}/gateway.db")
 gateway = GatewayService(config, store)
 
@@ -48,15 +49,7 @@ except Exception as e:
 # --- Gateway status & state ---
 
 
-@app.get("/")
-async def root():
-    return {"service": "gateway", "node_id": config.node_id}
-
-
-@app.get("/health")
-async def health():
-    return {"status": "ok"}
-
+# --- Gateway status & state ---
 
 @app.get("/gateway/status")
 async def gateway_status():
@@ -152,6 +145,13 @@ async def heal_all():
     if not docker_mgr:
         raise HTTPException(503, "Docker not available")
     return docker_mgr.heal_all()
+
+
+# Mount static files for dashboard
+from fastapi.staticfiles import StaticFiles
+import os
+static_dir = os.path.join(os.path.dirname(__file__), "static")
+app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")
 
 
 # --- Start ---

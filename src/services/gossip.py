@@ -15,6 +15,10 @@ class GossipService:
     """
     UDP gossip protocol. Every few seconds, broadcast our state to all peers.
     Listen for incoming state and merge it.
+
+    Messages include semantic context:
+      - state_sync:  full state with summary of what's inside
+      - merkle_only: compact fingerprint with event count for quick comparison
     """
 
     def __init__(self, config: Config, state: NodeState):
@@ -50,21 +54,27 @@ class GossipService:
         while self.running:
             await asyncio.sleep(self.config.gossip_interval)
             try:
+                state_summary = self.state.summary()
                 msg = json.dumps(
                     {
-                        "type": "state_update",
+                        "type": "state_sync",
+                        "reason": "periodic_sync",
                         "sender": self.config.node_id,
                         "state": self.state.to_dict(),
+                        "state_summary": state_summary,
                     }
                 ).encode()
 
                 if len(msg) > MAX_PACKET:
-                    # if state is too big, just send merkle root
+                    # if state is too big, send a compact digest
                     msg = json.dumps(
                         {
                             "type": "merkle_only",
+                            "reason": "state_too_large_for_udp",
                             "sender": self.config.node_id,
                             "merkle_root": self.state.merkle_root(),
+                            "event_count": self.state.get_event_count(),
+                            "state_summary": state_summary,
                         }
                     ).encode()
 
@@ -112,7 +122,7 @@ class GossipService:
         if sender == self.config.node_id:
             return  # ignore our own messages
 
-        if message["type"] == "state_update":
+        if message["type"] == "state_sync":
             incoming = NodeState.from_dict(message["state"])
             old_root = self.state.merkle_root()
             self.state.merge(incoming)
@@ -123,6 +133,7 @@ class GossipService:
                 log.info(
                     "gossip_merged",
                     from_node=sender,
+                    reason=message.get("reason", "unknown"),
                     old_root=old_root[:12],
                     new_root=new_root[:12],
                 )
@@ -133,8 +144,10 @@ class GossipService:
                 log.info(
                     "merkle_mismatch",
                     from_node=sender,
+                    reason=message.get("reason", "unknown"),
                     ours=self.state.merkle_root()[:12],
                     theirs=remote_root[:12],
+                    their_event_count=message.get("event_count"),
                 )
 
     def _parse_peer(self, peer):

@@ -3,12 +3,16 @@ from datetime import datetime
 
 class LWWRegister:
     """
-    Last-Writer-Wins register. Stores a single value.
+    Last-Writer-Wins register CRDT. Stores a single value.
     On merge, the value with the later timestamp wins.
+
+    Disaster use-case: latest sensor reading at a location
+    (e.g., "water level at bridge_north is 4.1 meters").
     """
 
-    def __init__(self, node_id):
+    def __init__(self, node_id, description=""):
         self.node_id = node_id
+        self.description = description
         self._value = None
         self._timestamp = datetime.min
         self._writer_id = node_id
@@ -41,6 +45,7 @@ class LWWRegister:
         return {
             "type": "lww_register",
             "node_id": self.node_id,
+            "description": self.description,
             "value": self._value,
             "timestamp": self._timestamp.isoformat(),
             "writer_id": self._writer_id,
@@ -48,7 +53,7 @@ class LWWRegister:
 
     @classmethod
     def from_dict(cls, data):
-        r = cls(data["node_id"])
+        r = cls(data["node_id"], description=data.get("description", ""))
         r._value = data["value"]
         r._timestamp = datetime.fromisoformat(data["timestamp"])
         r._writer_id = data["writer_id"]

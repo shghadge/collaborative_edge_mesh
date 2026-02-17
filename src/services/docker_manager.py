@@ -18,6 +18,7 @@ class DockerManager:
         self.managed_nodes = {}  # node_id -> container info
         self._next_ip_suffix = 20  # start dynamic nodes at .20
         self._next_host_port = 8010  # fallback for non-numeric node IDs
+        self.isolated_nodes = set()  # track container names of isolated nodes
 
     def _next_ip(self):
         ip = f"{SUBNET}.{self._next_ip_suffix}"
@@ -54,6 +55,7 @@ class DockerManager:
                         "status": container.status,
                         "id": container.short_id,
                         "managed": container.name in self.managed_nodes,
+                        "isolated": container.name in self.isolated_nodes,
                     }
                 )
         return nodes
@@ -169,6 +171,7 @@ class DockerManager:
             container = self.client.containers.get(container_name)
             container.exec_run("iptables -A INPUT -p udp -j DROP")
             container.exec_run("iptables -A OUTPUT -p udp -j DROP")
+            self.isolated_nodes.add(container_name)
             log.info("node_isolated", node_id=node_id)
             return {"status": "isolated", "node": container_name}
         except docker.errors.NotFound:
@@ -181,6 +184,7 @@ class DockerManager:
             container = self.client.containers.get(container_name)
             container.exec_run("iptables -F INPUT")
             container.exec_run("iptables -F OUTPUT")
+            self.isolated_nodes.discard(container_name)
             log.info("node_healed", node_id=node_id)
             return {"status": "healed", "node": container_name}
         except docker.errors.NotFound:
@@ -194,6 +198,8 @@ class DockerManager:
                 container.exec_run("iptables -F INPUT")
                 container.exec_run("iptables -F OUTPUT")
                 results.append(container.name)
+        
+        self.isolated_nodes.clear()
         log.info("all_healed", nodes=results)
         return {"status": "healed", "nodes": results}
 
@@ -224,12 +230,17 @@ class DockerManager:
                 if ip:
                     c.exec_run(f"iptables -A INPUT -s {ip} -j DROP")
                     c.exec_run(f"iptables -A OUTPUT -d {ip} -j DROP")
-
+        
         for c in group_b:
             for ip in ips_a:
                 if ip:
                     c.exec_run(f"iptables -A INPUT -s {ip} -j DROP")
                     c.exec_run(f"iptables -A OUTPUT -d {ip} -j DROP")
+
+        # Mark all as 'isolated' (partially) so UI shows red lines
+        # This is simplification but effective for demo visualization
+        for c in nodes:
+            self.isolated_nodes.add(c.name)
 
         log.info(
             "split_brain_created",
