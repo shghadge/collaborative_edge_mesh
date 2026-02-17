@@ -35,13 +35,15 @@ class NodeState:
         self.node_id = node_id
         self.version = 0
         self.updated_at = datetime.utcnow()
-        self.counters = {}       # key -> GCounter
-        self.registers = {}      # key -> LWWRegister
-        self.pn_counters = {}    # key -> PNCounter
-        self.sets = {}           # key -> ORSet
+        self.counters = {}  # key -> GCounter
+        self.registers = {}  # key -> LWWRegister
+        self.pn_counters = {}  # key -> PNCounter
+        self.sets = {}  # key -> ORSet
         self.event_ids = []
 
-    def record_event(self, event_id, event_type, data, category="general", operation=None):
+    def record_event(
+        self, event_id, event_type, data, category="general", operation=None
+    ):
         """Record an incoming event, routing it to the appropriate CRDT.
 
         Returns a dict describing where the data was stored.
@@ -53,7 +55,9 @@ class NodeState:
         elif category == "resource":
             stored_in = self._record_resource(event_id, event_type, data, operation)
         elif category == "infrastructure":
-            stored_in = self._record_infrastructure(event_id, event_type, data, operation)
+            stored_in = self._record_infrastructure(
+                event_id, event_type, data, operation
+            )
         else:
             stored_in = self._record_general(event_id, event_type, data)
 
@@ -75,8 +79,7 @@ class NodeState:
         counter_key = f"event_count:{event_type}"
         if counter_key not in self.counters:
             self.counters[counter_key] = GCounter(
-                self.node_id,
-                description=f"Number of {event_type} readings recorded"
+                self.node_id, description=f"Number of {event_type} readings recorded"
             )
         self.counters[counter_key].increment(1)
 
@@ -85,17 +88,18 @@ class NodeState:
         register_key = f"sensor:{location}:{event_type}"
         if register_key not in self.registers:
             self.registers[register_key] = LWWRegister(
-                self.node_id,
-                description=f"Latest {event_type} reading at {location}"
+                self.node_id, description=f"Latest {event_type} reading at {location}"
             )
-        self.registers[register_key].set({
-            "value": data.get("value"),
-            "unit": data.get("unit", ""),
-            "severity": data.get("severity", ""),
-            "event_id": event_id,
-            "event_type": event_type,
-            "category": "sensor",
-        })
+        self.registers[register_key].set(
+            {
+                "value": data.get("value"),
+                "unit": data.get("unit", ""),
+                "severity": data.get("severity", ""),
+                "event_id": event_id,
+                "event_type": event_type,
+                "category": "sensor",
+            }
+        )
 
         return {
             "counter_key": counter_key,
@@ -112,8 +116,7 @@ class NodeState:
         counter_key = f"resource:{location}:{event_type}"
         if counter_key not in self.pn_counters:
             self.pn_counters[counter_key] = PNCounter(
-                self.node_id,
-                description=f"Net {event_type} at {location}"
+                self.node_id, description=f"Net {event_type} at {location}"
             )
 
         value = data.get("value", 0)
@@ -127,8 +130,7 @@ class NodeState:
         event_counter_key = f"event_count:{event_type}"
         if event_counter_key not in self.counters:
             self.counters[event_counter_key] = GCounter(
-                self.node_id,
-                description=f"Number of {event_type} reports recorded"
+                self.node_id, description=f"Number of {event_type} reports recorded"
             )
         self.counters[event_counter_key].increment(1)
 
@@ -148,8 +150,7 @@ class NodeState:
         set_key = f"hazards:{event_type}"
         if set_key not in self.sets:
             self.sets[set_key] = ORSet(
-                self.node_id,
-                description=f"Active {event_type} hazards"
+                self.node_id, description=f"Active {event_type} hazards"
             )
 
         location = data.get("location", "unknown")
@@ -164,24 +165,24 @@ class NodeState:
         register_key = f"infra:{location}:{event_type}"
         if register_key not in self.registers:
             self.registers[register_key] = LWWRegister(
-                self.node_id,
-                description=f"Latest {event_type} status at {location}"
+                self.node_id, description=f"Latest {event_type} status at {location}"
             )
-        self.registers[register_key].set({
-            "value": data.get("value"),
-            "cause": data.get("cause", ""),
-            "estimated_restore": data.get("estimated_restore", ""),
-            "event_id": event_id,
-            "event_type": event_type,
-            "category": "infrastructure",
-        })
+        self.registers[register_key].set(
+            {
+                "value": data.get("value"),
+                "cause": data.get("cause", ""),
+                "estimated_restore": data.get("estimated_restore", ""),
+                "event_id": event_id,
+                "event_type": event_type,
+                "category": "infrastructure",
+            }
+        )
 
         # count the event
         event_counter_key = f"event_count:{event_type}"
         if event_counter_key not in self.counters:
             self.counters[event_counter_key] = GCounter(
-                self.node_id,
-                description=f"Number of {event_type} reports recorded"
+                self.node_id, description=f"Number of {event_type} reports recorded"
             )
         self.counters[event_counter_key].increment(1)
 
@@ -199,8 +200,7 @@ class NodeState:
         counter_key = f"event_count:{event_type}"
         if counter_key not in self.counters:
             self.counters[counter_key] = GCounter(
-                self.node_id,
-                description=f"Number of {event_type} events recorded"
+                self.node_id, description=f"Number of {event_type} events recorded"
             )
         self.counters[counter_key].increment(1)
 
@@ -211,15 +211,16 @@ class NodeState:
             register_key = f"general:{location}:{event_type}"
             if register_key not in self.registers:
                 self.registers[register_key] = LWWRegister(
-                    self.node_id,
-                    description=f"Latest {event_type} at {location}"
+                    self.node_id, description=f"Latest {event_type} at {location}"
                 )
-            self.registers[register_key].set({
-                "value": data["value"],
-                "event_id": event_id,
-                "event_type": event_type,
-                "category": "general",
-            })
+            self.registers[register_key].set(
+                {
+                    "value": data["value"],
+                    "event_id": event_id,
+                    "event_type": event_type,
+                    "category": "general",
+                }
+            )
 
         result = {"counter_key": counter_key, "category": "general"}
         if register_key:
@@ -260,20 +261,26 @@ class NodeState:
         # merge G-Counters
         for key, counter in other.counters.items():
             if key not in self.counters:
-                self.counters[key] = GCounter(self.node_id, description=counter.description)
+                self.counters[key] = GCounter(
+                    self.node_id, description=counter.description
+                )
                 self.counters[key].counts = {}
             self.counters[key].merge(counter)
 
         # merge LWW-Registers
         for key, reg in other.registers.items():
             if key not in self.registers:
-                self.registers[key] = LWWRegister(self.node_id, description=reg.description)
+                self.registers[key] = LWWRegister(
+                    self.node_id, description=reg.description
+                )
             self.registers[key].merge(reg)
 
         # merge PN-Counters
         for key, pnc in other.pn_counters.items():
             if key not in self.pn_counters:
-                self.pn_counters[key] = PNCounter(self.node_id, description=pnc.description)
+                self.pn_counters[key] = PNCounter(
+                    self.node_id, description=pnc.description
+                )
                 self.pn_counters[key]._p.counts = {}
                 self.pn_counters[key]._n.counts = {}
             self.pn_counters[key].merge(pnc)
@@ -364,8 +371,6 @@ class NodeState:
         s.pn_counters = {
             k: PNCounter.from_dict(v) for k, v in data.get("pn_counters", {}).items()
         }
-        s.sets = {
-            k: ORSet.from_dict(v) for k, v in data.get("sets", {}).items()
-        }
+        s.sets = {k: ORSet.from_dict(v) for k, v in data.get("sets", {}).items()}
         s.event_ids = list(data.get("event_ids", []))
         return s

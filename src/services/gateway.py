@@ -49,8 +49,12 @@ class GatewayService:
         }
 
         self.http_retry_attempts = max(int(os.getenv("GATEWAY_HTTP_RETRIES", "2")), 1)
-        self.http_retry_backoff_ms = max(int(os.getenv("GATEWAY_HTTP_RETRY_BACKOFF_MS", "150")), 0)
-        self.node_failure_backoff_seconds = max(float(os.getenv("GATEWAY_NODE_FAILURE_BACKOFF", "2")), 0.0)
+        self.http_retry_backoff_ms = max(
+            int(os.getenv("GATEWAY_HTTP_RETRY_BACKOFF_MS", "150")), 0
+        )
+        self.node_failure_backoff_seconds = max(
+            float(os.getenv("GATEWAY_NODE_FAILURE_BACKOFF", "2")), 0.0
+        )
 
         # parse EDGE_NODES env: "edge-node-1:8000,edge-node-2:8000"
         raw = os.getenv("EDGE_NODES", "")
@@ -69,7 +73,11 @@ class GatewayService:
 
     def register_node(self, node_id, url):
         """Register a new edge node (used by Docker manager when creating nodes)."""
-        self.edge_nodes[node_id] = {"url": url, "last_merkle": None, "last_version": None}
+        self.edge_nodes[node_id] = {
+            "url": url,
+            "last_merkle": None,
+            "last_version": None,
+        }
         self._ensure_node_health(node_id)
         log.info("node_registered", node_id=node_id, url=url)
 
@@ -94,7 +102,9 @@ class GatewayService:
         health = self.node_health[node_id]
         health["consecutive_failures"] += 1
         health["last_error"] = str(error)
-        backoff_seconds = self.node_failure_backoff_seconds * health["consecutive_failures"]
+        backoff_seconds = (
+            self.node_failure_backoff_seconds * health["consecutive_failures"]
+        )
         health["backoff_until"] = time.time() + backoff_seconds
 
     def _mark_node_success(self, node_id, latency_ms):
@@ -144,7 +154,9 @@ class GatewayService:
                 self.runtime_metrics["divergence_started_at"] = now
                 self.runtime_metrics["divergence_duration_seconds"] = 0.0
             else:
-                self.runtime_metrics["divergence_duration_seconds"] = round(now - started_at, 3)
+                self.runtime_metrics["divergence_duration_seconds"] = round(
+                    now - started_at, 3
+                )
         else:
             self.runtime_metrics["consecutive_divergent_polls"] = 0
             if started_at is not None:
@@ -200,14 +212,18 @@ class GatewayService:
 
                 for node_id in reachable_roots:
                     url = self.edge_nodes[node_id]["url"]
-                    data = await self._get_json_with_retry(session, node_id, f"{url}/state")
+                    data = await self._get_json_with_retry(
+                        session, node_id, f"{url}/state"
+                    )
                     if not data:
                         continue
                     try:
                         incoming = NodeState.from_dict(data)
                     except Exception as error:
                         self.runtime_metrics["state_merges_failed"] += 1
-                        log.warning("state_decode_failed", node=node_id, error=str(error))
+                        log.warning(
+                            "state_decode_failed", node=node_id, error=str(error)
+                        )
                         continue
 
                     last_version = self.edge_nodes[node_id].get("last_version")
@@ -238,7 +254,9 @@ class GatewayService:
                         self.runtime_metrics["state_merges_successful"] += 1
 
                 merge_time = time.time() - merge_start
-                self.runtime_metrics["last_merge_duration_ms"] = round(merge_time * 1000, 2)
+                self.runtime_metrics["last_merge_duration_ms"] = round(
+                    merge_time * 1000, 2
+                )
 
                 # save snapshot
                 if self.merged_state:
@@ -251,12 +269,16 @@ class GatewayService:
                     )
                     self.store.save_metric("merge_time_ms", merge_time * 1000)
                     self.store.save_metric("node_count", len(reachable_roots))
-                    self.store.save_metric("is_divergent", 1 if self.is_divergent else 0)
+                    self.store.save_metric(
+                        "is_divergent", 1 if self.is_divergent else 0
+                    )
 
             self.last_poll = time.time()
             self.poll_count += 1
             self.runtime_metrics["polls_completed"] += 1
-            self.runtime_metrics["last_poll_duration_ms"] = round((time.time() - poll_started) * 1000, 2)
+            self.runtime_metrics["last_poll_duration_ms"] = round(
+                (time.time() - poll_started) * 1000, 2
+            )
 
             log.info(
                 "poll_complete",
@@ -267,7 +289,9 @@ class GatewayService:
             )
         except Exception as error:
             self.runtime_metrics["polls_failed"] += 1
-            self.runtime_metrics["last_poll_duration_ms"] = round((time.time() - poll_started) * 1000, 2)
+            self.runtime_metrics["last_poll_duration_ms"] = round(
+                (time.time() - poll_started) * 1000, 2
+            )
             log.error("poll_cycle_failed", error=str(error))
             raise
 

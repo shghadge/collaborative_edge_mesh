@@ -51,6 +51,7 @@ except Exception as e:
 
 # --- Gateway status & state ---
 
+
 @app.get("/gateway/status")
 async def gateway_status():
     return gateway.get_status()
@@ -155,6 +156,7 @@ async def heal_all():
 # Mount static files for dashboard
 from fastapi.staticfiles import StaticFiles
 import os
+
 static_dir = os.path.join(os.path.dirname(__file__), "static")
 app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")
 

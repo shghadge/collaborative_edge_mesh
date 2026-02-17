@@ -65,7 +65,9 @@ def test_event_resource_decrement_updates_pn_counter(tmp_path, monkeypatch):
 
     state_response = client.get("/state")
     assert state_response.status_code == 200
-    pn_value = state_response.json()["pn_counters"]["resource:shelter_east:shelter_occupancy"]["total_value"]
+    pn_value = state_response.json()["pn_counters"][
+        "resource:shelter_east:shelter_occupancy"
+    ]["total_value"]
     assert pn_value == 9
 
 

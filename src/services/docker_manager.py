@@ -198,7 +198,7 @@ class DockerManager:
                 container.exec_run("iptables -F INPUT")
                 container.exec_run("iptables -F OUTPUT")
                 results.append(container.name)
-        
+
         self.isolated_nodes.clear()
         log.info("all_healed", nodes=results)
         return {"status": "healed", "nodes": results}
@@ -230,7 +230,7 @@ class DockerManager:
                 if ip:
                     c.exec_run(f"iptables -A INPUT -s {ip} -j DROP")
                     c.exec_run(f"iptables -A OUTPUT -d {ip} -j DROP")
-        
+
         for c in group_b:
             for ip in ips_a:
                 if ip:

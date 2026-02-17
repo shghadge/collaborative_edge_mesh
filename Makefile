@@ -1,7 +1,8 @@
-.PHONY: build test test-unit test-integration test-crdt test-services
+.PHONY: build test test-unit test-integration test-crdt test-services format format-check
 
 UV ?= uv
 PYTEST ?= PYTHONPATH=. $(UV) run pytest
+RUFF ?= $(UV) run ruff
 
 build:
 	@docker compose build
@@ -21,3 +22,9 @@ test-crdt:
 
 test-services:
 	@$(PYTEST) tests/test_intake_service.py tests/test_gossip_service.py tests/test_gateway_service.py -q
+
+format:
+	@$(RUFF) format .
+
+format-check:
+	@$(RUFF) format --check .

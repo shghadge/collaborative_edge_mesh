@@ -17,8 +17,8 @@ from src.crdt.state import NodeState
 
 # ── G-Counter ───────────────────────────────────────────────────────
 
-class TestGCounter:
 
+class TestGCounter:
     def test_increment_and_value(self):
         c = GCounter("node-1", description="Water level readings count")
         c.increment(3)
@@ -58,8 +58,8 @@ class TestGCounter:
 
 # ── LWW-Register ────────────────────────────────────────────────────
 
-class TestLWWRegister:
 
+class TestLWWRegister:
     def test_set_and_get(self):
         r = LWWRegister("node-1", description="Latest water level at bridge_north")
         r.set({"value": 3.2, "unit": "meters"})
@@ -98,8 +98,8 @@ class TestLWWRegister:
 
 # ── PN-Counter ──────────────────────────────────────────────────────
 
-class TestPNCounter:
 
+class TestPNCounter:
     def test_increment_only(self):
         c = PNCounter("node-1", description="Shelter occupancy")
         c.increment(12)
@@ -142,8 +142,8 @@ class TestPNCounter:
 
 # ── OR-Set ──────────────────────────────────────────────────────────
 
-class TestORSet:
 
+class TestORSet:
     def test_add_and_lookup(self):
         s = ORSet("node-1", description="Active road hazards")
         s.add("highway_101")
@@ -201,14 +201,20 @@ class TestORSet:
 
 # ── NodeState — category routing ────────────────────────────────────
 
-class TestNodeStateSensorRouting:
 
+class TestNodeStateSensorRouting:
     def test_sensor_creates_counter_and_register(self):
         state = NodeState("node-1")
         result = state.record_event(
-            "evt-1", "water_level",
-            {"value": 3.2, "location": "bridge_north", "unit": "meters", "severity": "warning"},
-            category="sensor"
+            "evt-1",
+            "water_level",
+            {
+                "value": 3.2,
+                "location": "bridge_north",
+                "unit": "meters",
+                "severity": "warning",
+            },
+            category="sensor",
         )
         assert result["category"] == "sensor"
         assert result["counter_key"] == "event_count:water_level"
@@ -227,14 +233,16 @@ class TestNodeStateSensorRouting:
         """Two different event types at the same location should NOT overwrite each other."""
         state = NodeState("node-1")
         state.record_event(
-            "evt-1", "water_level",
+            "evt-1",
+            "water_level",
             {"value": 3.2, "location": "bridge_north"},
-            category="sensor"
+            category="sensor",
         )
         state.record_event(
-            "evt-2", "temperature",
+            "evt-2",
+            "temperature",
             {"value": 28.5, "location": "bridge_north"},
-            category="sensor"
+            category="sensor",
         )
         # separate register keys
         assert "sensor:bridge_north:water_level" in state.registers
@@ -244,14 +252,14 @@ class TestNodeStateSensorRouting:
 
 
 class TestNodeStateResourceRouting:
-
     def test_resource_creates_pn_counter(self):
         state = NodeState("node-1")
         result = state.record_event(
-            "evt-1", "shelter_occupancy",
+            "evt-1",
+            "shelter_occupancy",
             {"value": 12, "location": "shelter_east"},
             category="resource",
-            operation="increment"
+            operation="increment",
         )
         assert result["category"] == "resource"
         assert result["pn_counter_key"] == "resource:shelter_east:shelter_occupancy"
@@ -260,27 +268,29 @@ class TestNodeStateResourceRouting:
     def test_resource_decrement(self):
         state = NodeState("node-1")
         state.record_event(
-            "evt-1", "shelter_occupancy",
+            "evt-1",
+            "shelter_occupancy",
             {"value": 12, "location": "shelter_east"},
-            category="resource"
+            category="resource",
         )
         state.record_event(
-            "evt-2", "shelter_occupancy",
+            "evt-2",
+            "shelter_occupancy",
             {"value": 3, "location": "shelter_east"},
             category="resource",
-            operation="decrement"
+            operation="decrement",
         )
         assert state.pn_counters["resource:shelter_east:shelter_occupancy"].value == 9
 
 
 class TestNodeStateInfraRouting:
-
     def test_infra_creates_or_set(self):
         state = NodeState("node-1")
         result = state.record_event(
-            "evt-1", "road_status",
+            "evt-1",
+            "road_status",
             {"value": "blocked", "location": "highway_101", "cause": "flooding"},
-            category="infrastructure"
+            category="infrastructure",
         )
         assert result["category"] == "infrastructure"
         assert result["set_key"] == "hazards:road_status"
@@ -289,27 +299,27 @@ class TestNodeStateInfraRouting:
     def test_infra_remove_clears_hazard(self):
         state = NodeState("node-1")
         state.record_event(
-            "evt-1", "road_status",
+            "evt-1",
+            "road_status",
             {"value": "blocked", "location": "highway_101"},
-            category="infrastructure"
+            category="infrastructure",
         )
         state.record_event(
-            "evt-2", "road_status",
+            "evt-2",
+            "road_status",
             {"value": "clear", "location": "highway_101"},
             category="infrastructure",
-            operation="remove"
+            operation="remove",
         )
         assert "highway_101" not in state.sets["hazards:road_status"].value
 
 
 class TestNodeStateGeneral:
-
     def test_general_backward_compat(self):
         """Events without category default to general behavior."""
         state = NodeState("node-1")
         result = state.record_event(
-            "evt-1", "water_level",
-            {"value": 3.2, "location": "bridge_north"}
+            "evt-1", "water_level", {"value": 3.2, "location": "bridge_north"}
         )
         assert result["category"] == "general"
         assert "event_count:water_level" in state.counters
@@ -318,21 +328,30 @@ class TestNodeStateGeneral:
 
 # ── NodeState — merge, merkle, serialization ────────────────────────
 
-class TestNodeStateMerge:
 
+class TestNodeStateMerge:
     def test_merge_preserves_all_crdt_types(self):
         s1 = NodeState("node-1")
         s2 = NodeState("node-2")
 
-        s1.record_event("e1", "water_level",
-                        {"value": 3.2, "location": "bridge_north"},
-                        category="sensor")
-        s2.record_event("e2", "shelter_occupancy",
-                        {"value": 10, "location": "shelter_east"},
-                        category="resource")
-        s2.record_event("e3", "road_status",
-                        {"value": "blocked", "location": "highway_101"},
-                        category="infrastructure")
+        s1.record_event(
+            "e1",
+            "water_level",
+            {"value": 3.2, "location": "bridge_north"},
+            category="sensor",
+        )
+        s2.record_event(
+            "e2",
+            "shelter_occupancy",
+            {"value": 10, "location": "shelter_east"},
+            category="resource",
+        )
+        s2.record_event(
+            "e3",
+            "road_status",
+            {"value": "blocked", "location": "highway_101"},
+            category="infrastructure",
+        )
 
         s1.merge(s2)
 
@@ -346,9 +365,12 @@ class TestNodeStateMerge:
     def test_merkle_changes_on_new_data(self):
         state = NodeState("node-1")
         root1 = state.merkle_root()
-        state.record_event("e1", "water_level",
-                           {"value": 3.2, "location": "bridge_north"},
-                           category="sensor")
+        state.record_event(
+            "e1",
+            "water_level",
+            {"value": 3.2, "location": "bridge_north"},
+            category="sensor",
+        )
         root2 = state.merkle_root()
         assert root1 != root2
 
@@ -356,12 +378,18 @@ class TestNodeStateMerge:
         s1 = NodeState("node-1")
         s2 = NodeState("node-2")
 
-        s1.record_event("e1", "water_level",
-                        {"value": 3.2, "location": "bridge_north"},
-                        category="sensor")
-        s2.record_event("e1", "water_level",
-                        {"value": 3.2, "location": "bridge_north"},
-                        category="sensor")
+        s1.record_event(
+            "e1",
+            "water_level",
+            {"value": 3.2, "location": "bridge_north"},
+            category="sensor",
+        )
+        s2.record_event(
+            "e1",
+            "water_level",
+            {"value": 3.2, "location": "bridge_north"},
+            category="sensor",
+        )
 
         s1.merge(s2)
         s2.merge(s1)
@@ -370,18 +398,26 @@ class TestNodeStateMerge:
 
 
 class TestNodeStateSerialization:
-
     def test_round_trip(self):
         state = NodeState("node-1")
-        state.record_event("e1", "water_level",
-                           {"value": 3.2, "location": "bridge_north", "unit": "meters"},
-                           category="sensor")
-        state.record_event("e2", "shelter_occupancy",
-                           {"value": 10, "location": "shelter_east"},
-                           category="resource")
-        state.record_event("e3", "road_status",
-                           {"value": "blocked", "location": "highway_101"},
-                           category="infrastructure")
+        state.record_event(
+            "e1",
+            "water_level",
+            {"value": 3.2, "location": "bridge_north", "unit": "meters"},
+            category="sensor",
+        )
+        state.record_event(
+            "e2",
+            "shelter_occupancy",
+            {"value": 10, "location": "shelter_east"},
+            category="resource",
+        )
+        state.record_event(
+            "e3",
+            "road_status",
+            {"value": "blocked", "location": "highway_101"},
+            category="infrastructure",
+        )
 
         d = state.to_dict()
         restored = NodeState.from_dict(d)
@@ -395,9 +431,12 @@ class TestNodeStateSerialization:
 
     def test_to_dict_includes_summary(self):
         state = NodeState("node-1")
-        state.record_event("e1", "water_level",
-                           {"value": 3.2, "location": "bridge_north"},
-                           category="sensor")
+        state.record_event(
+            "e1",
+            "water_level",
+            {"value": 3.2, "location": "bridge_north"},
+            category="sensor",
+        )
         d = state.to_dict()
         assert "state_summary" in d
         assert d["state_summary"]["sensor_readings"] == 1
@@ -406,22 +445,34 @@ class TestNodeStateSerialization:
 
 # ── Summary ─────────────────────────────────────────────────────────
 
-class TestNodeStateSummary:
 
+class TestNodeStateSummary:
     def test_summary_counts_categories(self):
         state = NodeState("node-1")
-        state.record_event("e1", "water_level",
-                           {"value": 3.2, "location": "bridge_north"},
-                           category="sensor")
-        state.record_event("e2", "temperature",
-                           {"value": 28.5, "location": "bridge_north"},
-                           category="sensor")
-        state.record_event("e3", "shelter_occupancy",
-                           {"value": 10, "location": "shelter_east"},
-                           category="resource")
-        state.record_event("e4", "road_status",
-                           {"value": "blocked", "location": "highway_101"},
-                           category="infrastructure")
+        state.record_event(
+            "e1",
+            "water_level",
+            {"value": 3.2, "location": "bridge_north"},
+            category="sensor",
+        )
+        state.record_event(
+            "e2",
+            "temperature",
+            {"value": 28.5, "location": "bridge_north"},
+            category="sensor",
+        )
+        state.record_event(
+            "e3",
+            "shelter_occupancy",
+            {"value": 10, "location": "shelter_east"},
+            category="resource",
+        )
+        state.record_event(
+            "e4",
+            "road_status",
+            {"value": "blocked", "location": "highway_101"},
+            category="infrastructure",
+        )
 
         summary = state.summary()
         assert summary["sensor_readings"] == 2

@@ -103,7 +103,9 @@ def test_poll_once_detects_divergence_and_saves_snapshot(monkeypatch):
     monkeypatch.setenv("NODE_ID", "gateway-1")
     monkeypatch.setenv("EDGE_NODES", "node-a:8001,node-b:8002")
 
-    state_a = _state_with_event("node-a", "evt-a", "water_level", 3.2, "bridge_north", "sensor")
+    state_a = _state_with_event(
+        "node-a", "evt-a", "water_level", 3.2, "bridge_north", "sensor"
+    )
     state_b = _state_with_event(
         "node-b",
         "evt-b",
@@ -145,7 +147,9 @@ def test_poll_once_handles_unreachable_node(monkeypatch):
     monkeypatch.setenv("NODE_ID", "gateway-1")
     monkeypatch.setenv("EDGE_NODES", "node-a:8001,node-b:8002")
 
-    state_a = _state_with_event("node-a", "evt-a", "water_level", 3.2, "bridge_north", "sensor")
+    state_a = _state_with_event(
+        "node-a", "evt-a", "water_level", 3.2, "bridge_north", "sensor"
+    )
 
     responses = {
         "http://node-a:8001/state/merkle": {"merkle_root": state_a.merkle_root()},
@@ -175,10 +179,15 @@ def test_poll_once_retries_http_then_succeeds(monkeypatch):
     monkeypatch.setenv("GATEWAY_HTTP_RETRIES", "2")
     monkeypatch.setenv("GATEWAY_HTTP_RETRY_BACKOFF_MS", "0")
 
-    state_a = _state_with_event("node-a", "evt-a", "water_level", 3.2, "bridge_north", "sensor")
+    state_a = _state_with_event(
+        "node-a", "evt-a", "water_level", 3.2, "bridge_north", "sensor"
+    )
 
     responses = {
-        "http://node-a:8001/state/merkle": [RuntimeError("temporary"), {"merkle_root": state_a.merkle_root()}],
+        "http://node-a:8001/state/merkle": [
+            RuntimeError("temporary"),
+            {"merkle_root": state_a.merkle_root()},
+        ],
         "http://node-a:8001/state": state_a.to_dict(),
     }
 
@@ -203,7 +212,9 @@ def test_poll_once_skips_stale_state(monkeypatch):
     monkeypatch.setenv("NODE_ID", "gateway-1")
     monkeypatch.setenv("EDGE_NODES", "node-a:8001")
 
-    stale_state = _state_with_event("node-a", "evt-a", "water_level", 2.8, "bridge_north", "sensor")
+    stale_state = _state_with_event(
+        "node-a", "evt-a", "water_level", 2.8, "bridge_north", "sensor"
+    )
     stale_state.version = 1
 
     responses = {

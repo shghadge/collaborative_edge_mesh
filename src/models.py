@@ -8,10 +8,10 @@ from pydantic import BaseModel, Field
 class EventCategory(str, Enum):
     """Category of disaster event — determines which CRDT stores the data."""
 
-    SENSOR = "sensor"                # water level, temperature, wind → LWW-Register
-    RESOURCE = "resource"            # shelter occupancy, supplies → PN-Counter
+    SENSOR = "sensor"  # water level, temperature, wind → LWW-Register
+    RESOURCE = "resource"  # shelter occupancy, supplies → PN-Counter
     INFRASTRUCTURE = "infrastructure"  # blocked roads, outages → OR-Set
-    GENERAL = "general"              # uncategorized events → G-Counter + LWW-Register
+    GENERAL = "general"  # uncategorized events → G-Counter + LWW-Register
 
 
 class Event(BaseModel):

@@ -81,7 +81,6 @@ class ORSet:
     def from_dict(cls, data):
         s = cls(data["node_id"], description=data.get("description", ""))
         s._elements = {
-            elem: set(tags)
-            for elem, tags in data.get("elements", {}).items()
+            elem: set(tags) for elem, tags in data.get("elements", {}).items()
         }
         return s
