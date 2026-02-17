@@ -1,5 +1,4 @@
 import asyncio
-import os
 import time
 import structlog
 import aiohttp
@@ -48,18 +47,12 @@ class GatewayService:
             "last_reachable_nodes": 0,
         }
 
-        self.http_retry_attempts = max(int(os.getenv("GATEWAY_HTTP_RETRIES", "2")), 1)
-        self.http_retry_backoff_ms = max(
-            int(os.getenv("GATEWAY_HTTP_RETRY_BACKOFF_MS", "150")), 0
-        )
-        self.node_failure_backoff_seconds = max(
-            float(os.getenv("GATEWAY_NODE_FAILURE_BACKOFF", "2")), 0.0
-        )
+        self.http_retry_attempts = config.gateway_http_retries
+        self.http_retry_backoff_ms = config.gateway_http_retry_backoff_ms
+        self.node_failure_backoff_seconds = config.gateway_node_failure_backoff
 
         # parse EDGE_NODES env: "edge-node-1:8000,edge-node-2:8000"
-        raw = os.getenv("EDGE_NODES", "")
-        for entry in raw.split(","):
-            entry = entry.strip()
+        for entry in config.edge_nodes:
             if not entry:
                 continue
             host, port = entry.rsplit(":", 1)

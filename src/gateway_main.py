@@ -10,7 +10,8 @@ import structlog
 import uvicorn
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 
 from src.config import config
 from src.storage import SQLiteStore
@@ -44,6 +45,43 @@ try:
 except Exception as e:
     log.warning("docker_unavailable", error=str(e))
     docker_mgr = None
+
+
+def _api_error(
+    status_code: int, code: str, message: str, details=None
+) -> HTTPException:
+    payload = {"code": code, "message": message}
+    if details is not None:
+        payload["details"] = details
+    return HTTPException(status_code=status_code, detail=payload)
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    if (
+        isinstance(exc.detail, dict)
+        and "code" in exc.detail
+        and "message" in exc.detail
+    ):
+        payload = dict(exc.detail)
+    else:
+        payload = {
+            "code": "HTTP_ERROR",
+            "message": str(exc.detail),
+        }
+    return JSONResponse(status_code=exc.status_code, content=payload)
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    log.error("gateway_unhandled_exception", error=str(exc), path=str(request.url.path))
+    return JSONResponse(
+        status_code=500,
+        content={
+            "code": "INTERNAL_SERVER_ERROR",
+            "message": "Unexpected gateway error",
+        },
+    )
 
 
 # --- Gateway status & state ---
@@ -101,24 +139,24 @@ async def metrics(name: Optional[str] = None, limit: int = 100):
 @app.get("/nodes")
 async def list_nodes():
     if not docker_mgr:
-        raise HTTPException(503, "Docker not available")
+        raise _api_error(503, "DOCKER_UNAVAILABLE", "Docker not available")
     return docker_mgr.list_nodes()
 
 
 @app.post("/nodes")
 async def create_node(node_id: Optional[str] = None):
     if not docker_mgr:
-        raise HTTPException(503, "Docker not available")
+        raise _api_error(503, "DOCKER_UNAVAILABLE", "Docker not available")
     try:
         return docker_mgr.create_node(node_id)
     except Exception as e:
-        raise HTTPException(500, str(e))
+        raise _api_error(500, "NODE_CREATE_FAILED", "Failed to create node", str(e))
 
 
 @app.delete("/nodes/{node_id}")
 async def remove_node(node_id: str):
     if not docker_mgr:
-        raise HTTPException(503, "Docker not available")
+        raise _api_error(503, "DOCKER_UNAVAILABLE", "Docker not available")
     return docker_mgr.remove_node(node_id)
 
 
@@ -128,28 +166,28 @@ async def remove_node(node_id: str):
 @app.post("/nodes/{node_id}/partition")
 async def isolate_node(node_id: str):
     if not docker_mgr:
-        raise HTTPException(503, "Docker not available")
+        raise _api_error(503, "DOCKER_UNAVAILABLE", "Docker not available")
     return docker_mgr.isolate_node(node_id)
 
 
 @app.delete("/nodes/{node_id}/partition")
 async def heal_node(node_id: str):
     if not docker_mgr:
-        raise HTTPException(503, "Docker not available")
+        raise _api_error(503, "DOCKER_UNAVAILABLE", "Docker not available")
     return docker_mgr.heal_node(node_id)
 
 
 @app.post("/partition/split-brain")
 async def split_brain():
     if not docker_mgr:
-        raise HTTPException(503, "Docker not available")
+        raise _api_error(503, "DOCKER_UNAVAILABLE", "Docker not available")
     return docker_mgr.create_split_brain()
 
 
 @app.post("/partition/heal-all")
 async def heal_all():
     if not docker_mgr:
-        raise HTTPException(503, "Docker not available")
+        raise _api_error(503, "DOCKER_UNAVAILABLE", "Docker not available")
     return docker_mgr.heal_all()
 
 
@@ -170,7 +208,7 @@ async def main():
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, shutdown.set)
 
-    poll_interval = float(__import__("os").getenv("GATEWAY_POLL_INTERVAL", "10"))
+    poll_interval = config.gateway_poll_interval
 
     server = uvicorn.Server(
         uvicorn.Config(app, host="0.0.0.0", port=config.http_port, log_level="warning")

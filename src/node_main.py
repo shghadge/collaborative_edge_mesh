@@ -36,6 +36,13 @@ async def main():
     intake = IntakeService(config, state, chain)
     gossip = GossipService(config, state)
 
+    @intake.app.get("/gossip/stats")
+    async def gossip_stats():
+        return {
+            "node_id": config.node_id,
+            "stats": gossip.get_stats(),
+        }
+
     shutdown = asyncio.Event()
 
     loop = asyncio.get_event_loop()
