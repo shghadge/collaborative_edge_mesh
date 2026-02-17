@@ -55,6 +55,7 @@ class FakeClientSession:
     def __init__(self, responses, timeout=None):
         self.responses = responses
         self.timeout = timeout
+        self.get_calls = {}
 
     async def __aenter__(self):
         return self
@@ -63,7 +64,12 @@ class FakeClientSession:
         return False
 
     def get(self, url):
+        self.get_calls[url] = self.get_calls.get(url, 0) + 1
         response = self.responses[url]
+        if isinstance(response, list):
+            if not response:
+                raise RuntimeError(f"no more fake responses for {url}")
+            response = response.pop(0)
         if isinstance(response, Exception):
             return FakeResponseContext(error=response)
         return FakeResponseContext(payload=response)
@@ -161,3 +167,60 @@ def test_poll_once_handles_unreachable_node(monkeypatch):
     assert len(store.snapshots) == 1
     assert store.snapshots[0]["node_count"] == 1
     assert store.divergence_logs[-1][1]["node-b"] == "unreachable"
+
+
+def test_poll_once_retries_http_then_succeeds(monkeypatch):
+    monkeypatch.setenv("NODE_ID", "gateway-1")
+    monkeypatch.setenv("EDGE_NODES", "node-a:8001")
+    monkeypatch.setenv("GATEWAY_HTTP_RETRIES", "2")
+    monkeypatch.setenv("GATEWAY_HTTP_RETRY_BACKOFF_MS", "0")
+
+    state_a = _state_with_event("node-a", "evt-a", "water_level", 3.2, "bridge_north", "sensor")
+
+    responses = {
+        "http://node-a:8001/state/merkle": [RuntimeError("temporary"), {"merkle_root": state_a.merkle_root()}],
+        "http://node-a:8001/state": state_a.to_dict(),
+    }
+
+    fake_session = FakeClientSession(responses)
+    monkeypatch.setattr(
+        gateway_module.aiohttp,
+        "ClientSession",
+        lambda timeout=None: fake_session,
+    )
+
+    store = FakeStore()
+    service = GatewayService(Config(), store)
+    asyncio.run(service.poll_once())
+
+    assert service.runtime_metrics["http_retries"] == 1
+    assert service.runtime_metrics["total_http_success"] >= 2
+    assert service.runtime_metrics["polls_completed"] == 1
+    assert fake_session.get_calls["http://node-a:8001/state/merkle"] == 2
+
+
+def test_poll_once_skips_stale_state(monkeypatch):
+    monkeypatch.setenv("NODE_ID", "gateway-1")
+    monkeypatch.setenv("EDGE_NODES", "node-a:8001")
+
+    stale_state = _state_with_event("node-a", "evt-a", "water_level", 2.8, "bridge_north", "sensor")
+    stale_state.version = 1
+
+    responses = {
+        "http://node-a:8001/state/merkle": {"merkle_root": stale_state.merkle_root()},
+        "http://node-a:8001/state": stale_state.to_dict(),
+    }
+
+    monkeypatch.setattr(
+        gateway_module.aiohttp,
+        "ClientSession",
+        lambda timeout=None: FakeClientSession(responses, timeout=timeout),
+    )
+
+    store = FakeStore()
+    service = GatewayService(Config(), store)
+    service.edge_nodes["node-a"]["last_version"] = 5
+    asyncio.run(service.poll_once())
+
+    assert service.runtime_metrics["stale_state_skips"] == 1
+    assert service.runtime_metrics["state_merges_successful"] == 0

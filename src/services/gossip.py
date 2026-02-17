@@ -2,6 +2,7 @@ import asyncio
 import json
 import socket
 import structlog
+import time
 
 from ..config import Config
 from ..crdt import NodeState
@@ -26,7 +27,23 @@ class GossipService:
         self.state = state
         self.running = False
         self.sock = None
-        self.stats = {"sent": 0, "received": 0, "merged": 0, "errors": 0}
+        self.stats = {
+            "sent": 0,
+            "received": 0,
+            "merged": 0,
+            "errors": 0,
+            "sent_bytes": 0,
+            "received_bytes": 0,
+            "broadcast_cycles": 0,
+            "state_sync_sent": 0,
+            "merkle_only_sent": 0,
+            "merkle_mismatches": 0,
+            "merge_time_ms_total": 0.0,
+            "last_merge_ms": 0.0,
+            "last_message_type": None,
+            "last_message_at": None,
+            "last_successful_merge_at": None,
+        }
 
     async def start(self):
         self.running = True
@@ -54,7 +71,9 @@ class GossipService:
         while self.running:
             await asyncio.sleep(self.config.gossip_interval)
             try:
+                self.stats["broadcast_cycles"] += 1
                 state_summary = self.state.summary()
+                message_type = "state_sync"
                 msg = json.dumps(
                     {
                         "type": "state_sync",
@@ -67,6 +86,7 @@ class GossipService:
 
                 if len(msg) > MAX_PACKET:
                     # if state is too big, send a compact digest
+                    message_type = "merkle_only"
                     msg = json.dumps(
                         {
                             "type": "merkle_only",
@@ -86,6 +106,11 @@ class GossipService:
                             None, self.sock.sendto, msg, (host, int(port))
                         )
                         self.stats["sent"] += 1
+                        self.stats["sent_bytes"] += len(msg)
+                        if message_type == "state_sync":
+                            self.stats["state_sync_sent"] += 1
+                        else:
+                            self.stats["merkle_only_sent"] += 1
                     except Exception as e:
                         self.stats["errors"] += 1
                         log.debug("gossip_send_failed", peer=peer, error=str(e))
@@ -102,10 +127,14 @@ class GossipService:
                 if data is None:
                     continue
                 self.stats["received"] += 1
+                self.stats["received_bytes"] += len(data)
                 message = json.loads(data.decode())
+                self.stats["last_message_type"] = message.get("type")
+                self.stats["last_message_at"] = time.time()
                 self._handle(message)
             except Exception as e:
                 if self.running:
+                    self.stats["errors"] += 1
                     log.debug("receive_error", error=str(e))
 
     def _recv(self):
@@ -125,11 +154,16 @@ class GossipService:
         if message["type"] == "state_sync":
             incoming = NodeState.from_dict(message["state"])
             old_root = self.state.merkle_root()
+            started = time.time()
             self.state.merge(incoming)
             new_root = self.state.merkle_root()
+            elapsed_ms = (time.time() - started) * 1000
+            self.stats["last_merge_ms"] = round(elapsed_ms, 3)
+            self.stats["merge_time_ms_total"] += elapsed_ms
 
             if old_root != new_root:
                 self.stats["merged"] += 1
+                self.stats["last_successful_merge_at"] = time.time()
                 log.info(
                     "gossip_merged",
                     from_node=sender,
@@ -141,6 +175,7 @@ class GossipService:
         elif message["type"] == "merkle_only":
             remote_root = message.get("merkle_root")
             if remote_root != self.state.merkle_root():
+                self.stats["merkle_mismatches"] += 1
                 log.info(
                     "merkle_mismatch",
                     from_node=sender,
@@ -155,4 +190,8 @@ class GossipService:
         return parts[0], int(parts[1]) if len(parts) > 1 else 9000
 
     def get_stats(self):
-        return dict(self.stats)
+        stats = dict(self.stats)
+        merged = stats.get("merged", 0)
+        total_merge_ms = stats.get("merge_time_ms_total", 0.0)
+        stats["avg_merge_ms"] = round(total_merge_ms / merged, 3) if merged else 0.0
+        return stats

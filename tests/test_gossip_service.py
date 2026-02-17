@@ -32,7 +32,13 @@ def test_state_sync_message_merges_remote_state(monkeypatch):
     service._handle(message)
 
     assert service.stats["merged"] == 1
+    assert service.stats["last_merge_ms"] >= 0
+    assert service.stats["merge_time_ms_total"] >= service.stats["last_merge_ms"]
+    assert service.stats["last_successful_merge_at"] is not None
     assert "sensor:bridge_north:water_level" in service.state.registers
+
+    full_stats = service.get_stats()
+    assert full_stats["avg_merge_ms"] >= 0
 
 
 def test_own_state_sync_message_is_ignored(monkeypatch):
@@ -73,4 +79,5 @@ def test_merkle_only_message_does_not_mutate_state(monkeypatch):
     service._handle(message)
 
     assert service.stats["merged"] == 0
+    assert service.stats["merkle_mismatches"] == 1
     assert service.state.merkle_root() == before_root

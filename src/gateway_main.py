@@ -56,6 +56,11 @@ async def gateway_status():
     return gateway.get_status()
 
 
+@app.get("/gateway/runtime-metrics")
+async def gateway_runtime_metrics():
+    return gateway.get_runtime_metrics()
+
+
 @app.post("/gateway/poll")
 async def trigger_poll():
     """Manually trigger a poll cycle."""
