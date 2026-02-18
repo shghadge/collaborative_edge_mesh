@@ -74,7 +74,7 @@ h1 {
 .dashboard-grid {
     display: grid;
     grid-template-columns: 2fr 1fr;
-    grid-template-rows: auto auto;
+    grid-template-rows: auto auto auto;
     gap: 20px;
 }
 
@@ -140,6 +140,12 @@ h2 {
     font-size: 0.75rem;
 }
 
+.btn:disabled,
+input:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
 /* Topology Canvas */
 .topology-card {
     grid-column: 1 / 2;
@@ -190,8 +196,23 @@ canvas {
     display: flex;
     flex-direction: column;
     gap: 10px;
-    max-height: 200px;
+    max-height: 240px;
     overflow-y: auto;
+}
+
+.inline-controls {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 12px;
+}
+
+.inline-controls input {
+    background: #0d1117;
+    border: 1px solid #30363d;
+    color: #c9d1d9;
+    border-radius: 6px;
+    padding: 6px 8px;
+    width: 90px;
 }
 
 .node-item {
@@ -230,6 +251,45 @@ canvas {
     grid-column: 1 / 3;
 }
 
+.metrics-card {
+    grid-column: 2 / 3;
+}
+
+.metrics-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+}
+
+.metric {
+    background: #0d1117;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.scenario-actions {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 12px;
+    flex-wrap: wrap;
+}
+
+.action-result {
+    background: #0d1117;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    padding: 10px;
+    min-height: 72px;
+    font-size: 0.8rem;
+    color: #8b949e;
+    white-space: pre-wrap;
+    font-family: 'JetBrains Mono', monospace;
+}
+
 .log-table {
     width: 100%;
     border-collapse: collapse;
@@ -255,4 +315,75 @@ canvas {
 
 .log-row-synced {
     color: #3fb950;
+}
+
+.loading-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(13, 17, 23, 0.72);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    z-index: 999;
+    gap: 10px;
+}
+
+.loading-overlay.hidden {
+    display: none;
+}
+
+.spinner {
+    width: 42px;
+    height: 42px;
+    border-radius: 50%;
+    border: 4px solid rgba(88, 166, 255, 0.25);
+    border-top-color: #58a6ff;
+    animation: spin 0.9s linear infinite;
+}
+
+@keyframes spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+.loading-text {
+    color: #c9d1d9;
+    font-size: 0.9rem;
+}
+
+.toast-container {
+    position: fixed;
+    top: 16px;
+    right: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    z-index: 1000;
+}
+
+.toast {
+    min-width: 260px;
+    max-width: 380px;
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-left: 4px solid #58a6ff;
+    border-radius: 8px;
+    padding: 10px 12px;
+    color: #c9d1d9;
+    font-size: 0.82rem;
+    box-shadow: 0 8px 18px rgba(0, 0, 0, 0.35);
+}
+
+.toast.success {
+    border-left-color: #3fb950;
+}
+
+.toast.warning {
+    border-left-color: #d29922;
+}
+
+.toast.error {
+    border-left-color: #f85149;
 }

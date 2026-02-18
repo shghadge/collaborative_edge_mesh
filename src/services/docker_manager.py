@@ -1,6 +1,8 @@
 import asyncio
+from datetime import datetime
 import structlog
 import docker
+import uuid
 
 log = structlog.get_logger()
 
@@ -24,6 +26,59 @@ class DockerManager:
         ip = f"{SUBNET}.{self._next_ip_suffix}"
         self._next_ip_suffix += 1
         return ip
+
+    def _action_response(self, action, target, status, message, **extra):
+        payload = {
+            "action_id": str(uuid.uuid4()),
+            "timestamp": datetime.utcnow().isoformat(),
+            "action": action,
+            "target": target,
+            "status": status,
+            "message": message,
+        }
+        payload.update(extra)
+        return payload
+
+    def _node_number_from_name(self, name):
+        try:
+            return int(name.replace("edge-node-", ""))
+        except ValueError:
+            return None
+
+    def _host_port_for_node_name(self, name):
+        number = self._node_number_from_name(name)
+        if number is None:
+            return None
+        return 8000 + number
+
+    def _node_id_from_container_name(self, name):
+        number = self._node_number_from_name(name)
+        if number is None:
+            return name
+        return f"node-{number}"
+
+    def _existing_node_numbers(self):
+        numbers = set()
+
+        # include stopped containers too, so we avoid name collisions
+        for container in self.client.containers.list(all=True):
+            number = self._node_number_from_name(container.name)
+            if number is not None:
+                numbers.add(number)
+
+        for container_name in self.managed_nodes:
+            number = self._node_number_from_name(container_name)
+            if number is not None:
+                numbers.add(number)
+
+        return numbers
+
+    def _next_available_node_id(self):
+        used = self._existing_node_numbers()
+        candidate = 1
+        while candidate in used:
+            candidate += 1
+        return f"node-{candidate}"
 
     def _get_network(self):
         """Find the mesh network."""
@@ -49,13 +104,22 @@ class DockerManager:
         nodes = []
         for container in self.client.containers.list():
             if "edge-node" in container.name:
+                managed_info = self.managed_nodes.get(container.name, {})
+                node_id = self._node_id_from_container_name(container.name)
+                host_port = managed_info.get("host_port")
+                if host_port is None:
+                    host_port = self._host_port_for_node_name(container.name)
+
                 nodes.append(
                     {
                         "name": container.name,
+                        "node_id": node_id,
                         "status": container.status,
                         "id": container.short_id,
                         "managed": container.name in self.managed_nodes,
                         "isolated": container.name in self.isolated_nodes,
+                        "host_port": host_port,
+                        "url": f"http://localhost:{host_port}" if host_port else None,
                     }
                 )
         return nodes
@@ -63,10 +127,33 @@ class DockerManager:
     def create_node(self, node_id=None):
         """Spin up a new edge node container and register it with the gateway."""
         if node_id is None:
-            existing = len(self.list_nodes())
-            node_id = f"node-{existing + 1}"
+            node_id = self._next_available_node_id()
 
         container_name = f"edge-node-{node_id.replace('node-', '')}"
+
+        # if container name exists, resolve before creating to avoid Docker 409 conflict
+        try:
+            existing_container = self.client.containers.get(container_name)
+            if existing_container.status == "running":
+                host_port = self._host_port_for_node_name(container_name)
+                return self._action_response(
+                    action="create_node",
+                    target=container_name,
+                    status="already_exists",
+                    message=f"{container_name} already exists",
+                    node_id=node_id,
+                    container=container_name,
+                    host_port=host_port,
+                    url=f"http://localhost:{host_port}" if host_port else None,
+                )
+
+            # stale stopped container with same name: remove and continue
+            existing_container.remove(force=True)
+            self.managed_nodes.pop(container_name, None)
+            self.isolated_nodes.discard(container_name)
+        except docker.errors.NotFound:
+            pass
+
         ip = self._next_ip()
         http_port = 8000
 
@@ -138,14 +225,18 @@ class DockerManager:
             host_port=host_port,
         )
 
-        return {
-            "node_id": node_id,
-            "container": container_name,
-            "ip": actual_ip,
-            "host_port": host_port,
-            "url": f"http://localhost:{host_port}",
-            "peers": peer_str,
-        }
+        return self._action_response(
+            action="create_node",
+            target=container_name,
+            status="created",
+            message=f"Created {container_name}",
+            node_id=node_id,
+            container=container_name,
+            ip=actual_ip,
+            host_port=host_port,
+            url=f"http://localhost:{host_port}",
+            peers=peer_str,
+        )
 
     def remove_node(self, node_id):
         """Stop and remove a node container."""
@@ -156,39 +247,91 @@ class DockerManager:
             container.stop(timeout=5)
             container.remove()
         except docker.errors.NotFound:
-            return {"error": f"{container_name} not found"}
+            return self._action_response(
+                action="remove_node",
+                target=container_name,
+                status="not_found",
+                message=f"{container_name} not found",
+            )
 
         self.managed_nodes.pop(container_name, None)
+        self.isolated_nodes.discard(container_name)
         self.gateway.unregister_node(container_name)
         log.info("node_removed", node_id=node_id, container=container_name)
 
-        return {"status": "removed", "container": container_name}
+        return self._action_response(
+            action="remove_node",
+            target=container_name,
+            status="removed",
+            message=f"Removed {container_name}",
+            container=container_name,
+        )
 
     def isolate_node(self, node_id):
         """Drop all UDP traffic to/from a node (partition it from gossip)."""
         container_name = f"edge-node-{node_id.replace('node-', '')}"
+
+        if container_name in self.isolated_nodes:
+            return self._action_response(
+                action="isolate_node",
+                target=container_name,
+                status="already_isolated",
+                message=f"{container_name} is already isolated",
+            )
+
         try:
             container = self.client.containers.get(container_name)
             container.exec_run("iptables -A INPUT -p udp -j DROP")
             container.exec_run("iptables -A OUTPUT -p udp -j DROP")
             self.isolated_nodes.add(container_name)
             log.info("node_isolated", node_id=node_id)
-            return {"status": "isolated", "node": container_name}
+            return self._action_response(
+                action="isolate_node",
+                target=container_name,
+                status="isolated",
+                message=f"Isolated {container_name}",
+                node=container_name,
+            )
         except docker.errors.NotFound:
-            return {"error": f"{container_name} not found"}
+            return self._action_response(
+                action="isolate_node",
+                target=container_name,
+                status="not_found",
+                message=f"{container_name} not found",
+            )
 
     def heal_node(self, node_id):
         """Flush iptables rules, restoring connectivity."""
         container_name = f"edge-node-{node_id.replace('node-', '')}"
+
+        if container_name not in self.isolated_nodes:
+            return self._action_response(
+                action="heal_node",
+                target=container_name,
+                status="already_healthy",
+                message=f"{container_name} is not isolated",
+            )
+
         try:
             container = self.client.containers.get(container_name)
             container.exec_run("iptables -F INPUT")
             container.exec_run("iptables -F OUTPUT")
             self.isolated_nodes.discard(container_name)
             log.info("node_healed", node_id=node_id)
-            return {"status": "healed", "node": container_name}
+            return self._action_response(
+                action="heal_node",
+                target=container_name,
+                status="healed",
+                message=f"Healed {container_name}",
+                node=container_name,
+            )
         except docker.errors.NotFound:
-            return {"error": f"{container_name} not found"}
+            return self._action_response(
+                action="heal_node",
+                target=container_name,
+                status="not_found",
+                message=f"{container_name} not found",
+            )
 
     def heal_all(self):
         """Heal all running edge nodes."""
@@ -201,13 +344,24 @@ class DockerManager:
 
         self.isolated_nodes.clear()
         log.info("all_healed", nodes=results)
-        return {"status": "healed", "nodes": results}
+        return self._action_response(
+            action="heal_all",
+            target="mesh",
+            status="healed",
+            message="Healed all edge nodes",
+            nodes=results,
+        )
 
     def create_split_brain(self):
         """Partition the mesh into two groups."""
         nodes = [c for c in self.client.containers.list() if "edge-node" in c.name]
         if len(nodes) < 2:
-            return {"error": "need at least 2 nodes"}
+            return self._action_response(
+                action="split_brain",
+                target="mesh",
+                status="failed",
+                message="Need at least 2 nodes",
+            )
 
         mid = len(nodes) // 2
         group_a = nodes[:mid]
@@ -248,8 +402,11 @@ class DockerManager:
             group_b=[c.name for c in group_b],
         )
 
-        return {
-            "status": "split_brain",
-            "group_a": [c.name for c in group_a],
-            "group_b": [c.name for c in group_b],
-        }
+        return self._action_response(
+            action="split_brain",
+            target="mesh",
+            status="split_brain",
+            message="Created split-brain partition",
+            group_a=[c.name for c in group_a],
+            group_b=[c.name for c in group_b],
+        )

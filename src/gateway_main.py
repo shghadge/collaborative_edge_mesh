@@ -17,6 +17,10 @@ from src.config import config
 from src.storage import SQLiteStore
 from src.services.gateway import GatewayService
 from src.services.docker_manager import DockerManager
+from src.services.scenarios import (
+    run_bootstrap_events_convergence,
+    run_split_brain_then_heal,
+)
 
 logging.basicConfig(
     format="%(message)s", level=getattr(logging, config.log_level, logging.INFO)
@@ -153,6 +157,34 @@ async def create_node(node_id: Optional[str] = None):
         raise _api_error(500, "NODE_CREATE_FAILED", "Failed to create node", str(e))
 
 
+@app.post("/nodes/batch")
+async def create_nodes_batch(count: int = 1):
+    if not docker_mgr:
+        raise _api_error(503, "DOCKER_UNAVAILABLE", "Docker not available")
+    if count < 1 or count > 20:
+        raise _api_error(400, "INVALID_COUNT", "count must be between 1 and 20")
+
+    created = []
+    failed = []
+    for _ in range(count):
+        try:
+            result = docker_mgr.create_node()
+            created.append(result)
+        except Exception as e:
+            failed.append(str(e))
+
+    status = "completed" if not failed else "partial"
+    return {
+        "action": "create_nodes_batch",
+        "status": status,
+        "requested": count,
+        "created_count": len(created),
+        "failed_count": len(failed),
+        "created": created,
+        "failures": failed,
+    }
+
+
 @app.delete("/nodes/{node_id}")
 async def remove_node(node_id: str):
     if not docker_mgr:
@@ -189,6 +221,70 @@ async def heal_all():
     if not docker_mgr:
         raise _api_error(503, "DOCKER_UNAVAILABLE", "Docker not available")
     return docker_mgr.heal_all()
+
+
+@app.post("/scenarios/split-brain-heal")
+async def scenario_split_brain_heal(
+    isolate_seconds: float = 8.0,
+    verify_polls: int = 2,
+):
+    if not docker_mgr:
+        raise _api_error(503, "DOCKER_UNAVAILABLE", "Docker not available")
+    if isolate_seconds < 0:
+        raise _api_error(
+            400,
+            "INVALID_ISOLATE_SECONDS",
+            "isolate_seconds must be >= 0",
+        )
+    if verify_polls < 1 or verify_polls > 20:
+        raise _api_error(
+            400,
+            "INVALID_VERIFY_POLLS",
+            "verify_polls must be between 1 and 20",
+        )
+
+    return await run_split_brain_then_heal(
+        docker_manager=docker_mgr,
+        gateway_service=gateway,
+        isolate_seconds=isolate_seconds,
+        verify_polls=verify_polls,
+    )
+
+
+@app.post("/scenarios/bootstrap-converge")
+async def scenario_bootstrap_converge(
+    create_nodes: int = 0,
+    events_per_node: int = 1,
+    verify_polls: int = 3,
+):
+    if not docker_mgr:
+        raise _api_error(503, "DOCKER_UNAVAILABLE", "Docker not available")
+    if create_nodes < 0 or create_nodes > 20:
+        raise _api_error(
+            400,
+            "INVALID_CREATE_NODES",
+            "create_nodes must be between 0 and 20",
+        )
+    if events_per_node < 1 or events_per_node > 10:
+        raise _api_error(
+            400,
+            "INVALID_EVENTS_PER_NODE",
+            "events_per_node must be between 1 and 10",
+        )
+    if verify_polls < 1 or verify_polls > 20:
+        raise _api_error(
+            400,
+            "INVALID_VERIFY_POLLS",
+            "verify_polls must be between 1 and 20",
+        )
+
+    return await run_bootstrap_events_convergence(
+        docker_manager=docker_mgr,
+        gateway_service=gateway,
+        create_nodes=create_nodes,
+        events_per_node=events_per_node,
+        verify_polls=verify_polls,
+    )
 
 
 # Mount static files for dashboard
