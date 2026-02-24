@@ -80,6 +80,37 @@ class GatewayService:
         self.node_health.pop(node_id, None)
         log.info("node_unregistered", node_id=node_id)
 
+    def sync_nodes(self, nodes):
+        """Replace current edge node map with discovered nodes."""
+        desired = {}
+        for node in nodes:
+            node_id = node.get("node_id")
+            url = node.get("url")
+            if not node_id or not url:
+                continue
+
+            existing = self.edge_nodes.get(node_id, {})
+            desired[node_id] = {
+                "url": url,
+                "last_merkle": existing.get("last_merkle"),
+                "last_version": existing.get("last_version"),
+            }
+
+        removed = [node_id for node_id in self.edge_nodes if node_id not in desired]
+        self.edge_nodes = desired
+
+        for node_id in desired:
+            self._ensure_node_health(node_id)
+
+        for node_id in removed:
+            self.node_health.pop(node_id, None)
+
+        log.info(
+            "nodes_synced",
+            total=len(self.edge_nodes),
+            removed=removed,
+        )
+
     def _ensure_node_health(self, node_id):
         if node_id not in self.node_health:
             self.node_health[node_id] = {

@@ -81,7 +81,9 @@ async def run_bootstrap_events_convergence(
             create_failures.append(str(error))
 
     nodes = await asyncio.to_thread(docker_manager.list_nodes)
-    targets = [node for node in nodes if node.get("url")]
+    targets = [
+        node for node in nodes if node.get("internal_url") or node.get("url")
+    ]
 
     if not targets:
         return {
@@ -107,7 +109,35 @@ async def run_bootstrap_events_convergence(
                     "body": body,
                 }
 
+    async def _wait_for_node_ready(node_url, attempts=10, delay_seconds=0.4):
+        timeout = aiohttp.ClientTimeout(total=3)
+        for attempt in range(max(int(attempts), 1)):
+            try:
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    async with session.get(f"{node_url}/state/merkle") as response:
+                        if response.status < 400:
+                            return True
+            except Exception:
+                pass
+
+            if attempt < attempts - 1:
+                await asyncio.sleep(max(delay_seconds, 0.0))
+
+        return False
+
     sender = event_sender or _default_sender
+
+    if event_sender is None:
+        readiness = []
+        for node in targets:
+            node_url = node.get("internal_url") or node.get("url")
+            node_id = node.get("node_id", node.get("name", "unknown"))
+            is_ready = await _wait_for_node_ready(node_url)
+            readiness.append({"node_id": node_id, "node_url": node_url, "ready": is_ready})
+
+        not_ready = [entry for entry in readiness if not entry["ready"]]
+        if not_ready:
+            await asyncio.sleep(0.5)
 
     send_results = []
     sample_types = [
@@ -117,7 +147,7 @@ async def run_bootstrap_events_convergence(
     ]
 
     for idx, node in enumerate(targets):
-        node_url = node["url"]
+        node_url = node.get("internal_url") or node.get("url")
         node_id = node.get("node_id", node.get("name", "unknown"))
         for event_idx in range(max(int(events_per_node), 1)):
             event_type, category, location, value = sample_types[

@@ -14,7 +14,7 @@ SUBNET = "172.28.0"
 class DockerManager:
     """Manages edge node containers via the Docker API."""
 
-    def __init__(self, gateway_service):
+    def __init__(self, gateway_service=None):
         self.client = docker.from_env()
         self.gateway = gateway_service
         self.managed_nodes = {}  # node_id -> container info
@@ -26,6 +26,13 @@ class DockerManager:
         ip = f"{SUBNET}.{self._next_ip_suffix}"
         self._next_ip_suffix += 1
         return ip
+
+    def _list_all_containers(self):
+        try:
+            return self.client.containers.list(all=True)
+        except TypeError:
+            # test doubles may not support keyword args
+            return self.client.containers.list()
 
     def _action_response(self, action, target, status, message, **extra):
         payload = {
@@ -57,11 +64,14 @@ class DockerManager:
             return name
         return f"node-{number}"
 
+    def _internal_url_for_container_name(self, name):
+        return f"http://{name}:8000"
+
     def _existing_node_numbers(self):
         numbers = set()
 
         # include stopped containers too, so we avoid name collisions
-        for container in self.client.containers.list(all=True):
+        for container in self._list_all_containers():
             number = self._node_number_from_name(container.name)
             if number is not None:
                 numbers.add(number)
@@ -72,6 +82,40 @@ class DockerManager:
                 numbers.add(number)
 
         return numbers
+
+    def _existing_published_ports(self):
+        ports = set()
+        for container in self._list_all_containers():
+            host_config = container.attrs.get("HostConfig") or {}
+            bindings = host_config.get("PortBindings") or {}
+            if not isinstance(bindings, dict):
+                continue
+            for entries in bindings.values():
+                if not entries:
+                    continue
+                for binding in entries:
+                    host_port = binding.get("HostPort")
+                    if host_port and str(host_port).isdigit():
+                        ports.add(int(host_port))
+        return ports
+
+    def _select_host_port(self, node_id):
+        preferred = None
+        node_num = node_id.replace("node-", "")
+        try:
+            preferred = 8000 + int(node_num)
+        except ValueError:
+            preferred = None
+
+        used_ports = self._existing_published_ports()
+        if preferred is not None and preferred not in used_ports:
+            return preferred
+
+        candidate = self._next_host_port
+        while candidate in used_ports:
+            candidate += 1
+        self._next_host_port = candidate + 1
+        return candidate
 
     def _next_available_node_id(self):
         used = self._existing_node_numbers()
@@ -120,9 +164,30 @@ class DockerManager:
                         "isolated": container.name in self.isolated_nodes,
                         "host_port": host_port,
                         "url": f"http://localhost:{host_port}" if host_port else None,
+                        "internal_url": self._internal_url_for_container_name(
+                            container.name
+                        ),
                     }
                 )
         return nodes
+
+    def list_gateways(self):
+        """List all running gateway containers with internal service URLs."""
+        gateways = []
+        for container in self.client.containers.list():
+            if "gateway" not in container.name or "simulator" in container.name:
+                continue
+
+            gateways.append(
+                {
+                    "name": container.name,
+                    "status": container.status,
+                    "url": f"http://{container.name}:8000",
+                }
+            )
+
+        gateways.sort(key=lambda item: item["name"])
+        return gateways
 
     def create_node(self, node_id=None):
         """Spin up a new edge node container and register it with the gateway."""
@@ -157,13 +222,7 @@ class DockerManager:
         ip = self._next_ip()
         http_port = 8000
 
-        # assign a host port: node-4 -> 8004, node-5 -> 8005, etc.
-        node_num = node_id.replace("node-", "")
-        try:
-            host_port = 8000 + int(node_num)
-        except ValueError:
-            host_port = self._next_host_port
-            self._next_host_port += 1
+        host_port = self._select_host_port(node_id)
 
         # figure out existing peers
         peers = []
@@ -215,7 +274,8 @@ class DockerManager:
         }
 
         # register with gateway for polling
-        self.gateway.register_node(container_name, f"http://{actual_ip}:{http_port}")
+        if self.gateway is not None:
+            self.gateway.register_node(container_name, f"http://{actual_ip}:{http_port}")
 
         log.info(
             "node_created",
@@ -235,6 +295,7 @@ class DockerManager:
             ip=actual_ip,
             host_port=host_port,
             url=f"http://localhost:{host_port}",
+            internal_url=self._internal_url_for_container_name(container_name),
             peers=peer_str,
         )
 
@@ -256,7 +317,8 @@ class DockerManager:
 
         self.managed_nodes.pop(container_name, None)
         self.isolated_nodes.discard(container_name)
-        self.gateway.unregister_node(container_name)
+        if self.gateway is not None:
+            self.gateway.unregister_node(container_name)
         log.info("node_removed", node_id=node_id, container=container_name)
 
         return self._action_response(

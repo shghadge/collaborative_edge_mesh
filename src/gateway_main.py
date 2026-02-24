@@ -1,6 +1,6 @@
 """
 Gateway entry point. Runs the gateway polling loop and HTTP API.
-Provides endpoints for state management, Docker node control, and partition simulation.
+Provides endpoints for state management and gateway node-sync control.
 """
 
 import asyncio
@@ -8,19 +8,15 @@ import logging
 import signal
 import structlog
 import uvicorn
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
 from src.config import config
 from src.storage import SQLiteStore
 from src.services.gateway import GatewayService
-from src.services.docker_manager import DockerManager
-from src.services.scenarios import (
-    run_bootstrap_events_convergence,
-    run_split_brain_then_heal,
-)
 
 logging.basicConfig(
     format="%(message)s", level=getattr(logging, config.log_level, logging.INFO)
@@ -43,12 +39,14 @@ app = FastAPI(title="Edge Mesh Gateway")
 store = SQLiteStore(f"{config.data_dir}/gateway.db")
 gateway = GatewayService(config, store)
 
-# docker manager may fail if docker isn't available
-try:
-    docker_mgr = DockerManager(gateway)
-except Exception as e:
-    log.warning("docker_unavailable", error=str(e))
-    docker_mgr = None
+
+class GatewayNode(BaseModel):
+    node_id: str
+    url: str
+
+
+class GatewayNodeSyncRequest(BaseModel):
+    nodes: List[GatewayNode]
 
 
 def _api_error(
@@ -104,6 +102,30 @@ async def gateway_runtime_metrics():
     return gateway.get_runtime_metrics()
 
 
+@app.post("/gateway/nodes/register")
+async def register_gateway_node(node: GatewayNode):
+    gateway.register_node(node.node_id, node.url)
+    return {"status": "registered", "node_id": node.node_id, "url": node.url}
+
+
+@app.delete("/gateway/nodes/{node_id}")
+async def unregister_gateway_node(node_id: str):
+    gateway.unregister_node(node_id)
+    return {"status": "unregistered", "node_id": node_id}
+
+
+@app.post("/gateway/nodes/sync")
+async def sync_gateway_nodes(payload: GatewayNodeSyncRequest):
+    gateway.sync_nodes([node.model_dump() for node in payload.nodes])
+    return {
+        "status": "synced",
+        "registered_count": len(gateway.edge_nodes),
+        "registered_nodes": {
+            node_id: info["url"] for node_id, info in gateway.edge_nodes.items()
+        },
+    }
+
+
 @app.post("/gateway/poll")
 async def trigger_poll():
     """Manually trigger a poll cycle."""
@@ -135,164 +157,6 @@ async def divergence():
 @app.get("/gateway/metrics")
 async def metrics(name: Optional[str] = None, limit: int = 100):
     return store.get_metrics(name, limit)
-
-
-# --- Docker node management ---
-
-
-@app.get("/nodes")
-async def list_nodes():
-    if not docker_mgr:
-        raise _api_error(503, "DOCKER_UNAVAILABLE", "Docker not available")
-    return docker_mgr.list_nodes()
-
-
-@app.post("/nodes")
-async def create_node(node_id: Optional[str] = None):
-    if not docker_mgr:
-        raise _api_error(503, "DOCKER_UNAVAILABLE", "Docker not available")
-    try:
-        return docker_mgr.create_node(node_id)
-    except Exception as e:
-        raise _api_error(500, "NODE_CREATE_FAILED", "Failed to create node", str(e))
-
-
-@app.post("/nodes/batch")
-async def create_nodes_batch(count: int = 1):
-    if not docker_mgr:
-        raise _api_error(503, "DOCKER_UNAVAILABLE", "Docker not available")
-    if count < 1 or count > 20:
-        raise _api_error(400, "INVALID_COUNT", "count must be between 1 and 20")
-
-    created = []
-    failed = []
-    for _ in range(count):
-        try:
-            result = docker_mgr.create_node()
-            created.append(result)
-        except Exception as e:
-            failed.append(str(e))
-
-    status = "completed" if not failed else "partial"
-    return {
-        "action": "create_nodes_batch",
-        "status": status,
-        "requested": count,
-        "created_count": len(created),
-        "failed_count": len(failed),
-        "created": created,
-        "failures": failed,
-    }
-
-
-@app.delete("/nodes/{node_id}")
-async def remove_node(node_id: str):
-    if not docker_mgr:
-        raise _api_error(503, "DOCKER_UNAVAILABLE", "Docker not available")
-    return docker_mgr.remove_node(node_id)
-
-
-# --- Partition control ---
-
-
-@app.post("/nodes/{node_id}/partition")
-async def isolate_node(node_id: str):
-    if not docker_mgr:
-        raise _api_error(503, "DOCKER_UNAVAILABLE", "Docker not available")
-    return docker_mgr.isolate_node(node_id)
-
-
-@app.delete("/nodes/{node_id}/partition")
-async def heal_node(node_id: str):
-    if not docker_mgr:
-        raise _api_error(503, "DOCKER_UNAVAILABLE", "Docker not available")
-    return docker_mgr.heal_node(node_id)
-
-
-@app.post("/partition/split-brain")
-async def split_brain():
-    if not docker_mgr:
-        raise _api_error(503, "DOCKER_UNAVAILABLE", "Docker not available")
-    return docker_mgr.create_split_brain()
-
-
-@app.post("/partition/heal-all")
-async def heal_all():
-    if not docker_mgr:
-        raise _api_error(503, "DOCKER_UNAVAILABLE", "Docker not available")
-    return docker_mgr.heal_all()
-
-
-@app.post("/scenarios/split-brain-heal")
-async def scenario_split_brain_heal(
-    isolate_seconds: float = 8.0,
-    verify_polls: int = 2,
-):
-    if not docker_mgr:
-        raise _api_error(503, "DOCKER_UNAVAILABLE", "Docker not available")
-    if isolate_seconds < 0:
-        raise _api_error(
-            400,
-            "INVALID_ISOLATE_SECONDS",
-            "isolate_seconds must be >= 0",
-        )
-    if verify_polls < 1 or verify_polls > 20:
-        raise _api_error(
-            400,
-            "INVALID_VERIFY_POLLS",
-            "verify_polls must be between 1 and 20",
-        )
-
-    return await run_split_brain_then_heal(
-        docker_manager=docker_mgr,
-        gateway_service=gateway,
-        isolate_seconds=isolate_seconds,
-        verify_polls=verify_polls,
-    )
-
-
-@app.post("/scenarios/bootstrap-converge")
-async def scenario_bootstrap_converge(
-    create_nodes: int = 0,
-    events_per_node: int = 1,
-    verify_polls: int = 3,
-):
-    if not docker_mgr:
-        raise _api_error(503, "DOCKER_UNAVAILABLE", "Docker not available")
-    if create_nodes < 0 or create_nodes > 20:
-        raise _api_error(
-            400,
-            "INVALID_CREATE_NODES",
-            "create_nodes must be between 0 and 20",
-        )
-    if events_per_node < 1 or events_per_node > 10:
-        raise _api_error(
-            400,
-            "INVALID_EVENTS_PER_NODE",
-            "events_per_node must be between 1 and 10",
-        )
-    if verify_polls < 1 or verify_polls > 20:
-        raise _api_error(
-            400,
-            "INVALID_VERIFY_POLLS",
-            "verify_polls must be between 1 and 20",
-        )
-
-    return await run_bootstrap_events_convergence(
-        docker_manager=docker_mgr,
-        gateway_service=gateway,
-        create_nodes=create_nodes,
-        events_per_node=events_per_node,
-        verify_polls=verify_polls,
-    )
-
-
-# Mount static files for dashboard
-from fastapi.staticfiles import StaticFiles
-import os
-
-static_dir = os.path.join(os.path.dirname(__file__), "static")
-app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")
 
 
 # --- Start ---
