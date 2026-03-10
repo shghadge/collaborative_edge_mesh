@@ -8,7 +8,6 @@ from src.services.intake import IntakeService
 
 def _build_node(node_id, tmp_path, monkeypatch):
     monkeypatch.setenv("NODE_ID", node_id)
-    monkeypatch.setenv("PEER_NODES", "")
     config = Config()
     state = NodeState(config.node_id)
     chain = HashChainLog(config.node_id, data_dir=str(tmp_path / f"{node_id}_logs"))

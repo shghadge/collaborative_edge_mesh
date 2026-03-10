@@ -1,385 +1,748 @@
-const API_BASE = window.location.origin;
+/* ═══════════════════════════════════════════════════════════
+   Edge Mesh Observatory — Dashboard JS
+   ═══════════════════════════════════════════════════════════ */
 
-// State
+// --- State ---
 let nodes = [];
-let logs = [];
-let isDivergent = false;
-let status = "SYNCED";
-let runtimeMetrics = {};
-let lastActionResult = null;
-let operationPending = false;
-let fetchInFlight = false;
+let liveMetrics = {};
+let eventLog = [];
+let charts = {};
+let pollInterval = null;
+const POLL_MS = 3000;
 
-// Canvas
-const canvas = document.getElementById("topologyCanvas");
-const ctx = canvas.getContext("2d");
+// --- Init ---
+document.addEventListener('DOMContentLoaded', () => {
+    initCharts();
+    refreshAll();
+    pollInterval = setInterval(pollData, POLL_MS);
+});
 
-// Init
-function init() {
-    resizeCanvas();
-    window.addEventListener("resize", resizeCanvas);
-
-    // Initial fetch
-    fetchData();
-
-    // Poll every 2s
-    setInterval(fetchData, 2000);
-}
-
-function resizeCanvas() {
-    const parent = canvas.parentElement;
-    canvas.width = parent.clientWidth;
-    canvas.height = parent.clientHeight;
-}
-
-// --- API Calls ---
-
-async function fetchData() {
-    if (fetchInFlight) {
-        return;
-    }
-    fetchInFlight = true;
-    try {
-        const [nodesRes, statusRes, divRes, metricsRes, runtimeRes] = await Promise.all([
-            fetch(`${API_BASE}/nodes`).then(r => r.json()),
-            fetch(`${API_BASE}/gateway/status`).then(r => r.json()),
-            fetch(`${API_BASE}/gateway/divergence`).then(r => r.json()),
-            fetch(`${API_BASE}/gateway/metrics?name=merge_time_ms&limit=1`).then(r => r.json()),
-            fetch(`${API_BASE}/gateway/runtime-metrics`).then(r => r.json())
-        ]);
-
-        nodes = nodesRes;
-        isDivergent = divRes.is_divergent;
-        logs = divRes.log;
-        runtimeMetrics = runtimeRes.runtime_metrics || {};
-
-        // Check convergence status
-        status = isDivergent ? "DIVERGENT" : "SYNCED";
-
-        // Update Stats Bar
-        document.getElementById("stat-nodes").innerText = nodes.length;
-        document.getElementById("stat-status").innerText = status;
-        document.getElementById("stat-status").className = `value status-badge ${isDivergent ? 'status-divergent' : 'status-synced'}`;
-        document.getElementById("stat-retries").innerText = runtimeMetrics.http_retries ?? 0;
-
-        if (metricsRes.length > 0) {
-            document.getElementById("stat-merge").innerText = metricsRes[0].value.toFixed(2) + "ms";
-        } else {
-            document.getElementById("stat-merge").innerText = (runtimeMetrics.last_merge_duration_ms ?? 0) + "ms";
-        }
-
-        // Render UI
-        renderTopology();
-        renderNodeList();
-        renderRuntimeMetrics();
-        renderLogs();
-        renderActionResult();
-
-    } catch (e) {
-        console.error("Poll failed", e);
-    } finally {
-        fetchInFlight = false;
-    }
-}
-
-async function apiAction(url, options = {}) {
-    const response = await fetch(url, options);
-    const data = await response.json();
-    if (!response.ok) {
-        const message = data.message || data.detail || `Request failed (${response.status})`;
-        throw new Error(message);
+// --- API Helpers ---
+async function api(method, path, body = null) {
+    const opts = {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+    };
+    if (body) opts.body = JSON.stringify(body);
+    const res = await fetch(path, opts);
+    const data = await res.json();
+    if (!res.ok) {
+        const msg = data.message || data.detail?.message || JSON.stringify(data);
+        throw new Error(msg);
     }
     return data;
 }
 
-function setActionResult(payload) {
-    lastActionResult = payload;
-    renderActionResult();
-}
-
-function showLoading(text = "Running operation...") {
-    operationPending = true;
-    setControlsDisabled(true);
-    const overlay = document.getElementById("loadingOverlay");
-    const loadingText = document.getElementById("loadingText");
-    if (loadingText) loadingText.innerText = text;
-    if (overlay) overlay.classList.remove("hidden");
-}
-
-function hideLoading() {
-    operationPending = false;
-    setControlsDisabled(false);
-    const overlay = document.getElementById("loadingOverlay");
-    if (overlay) overlay.classList.add("hidden");
-}
-
-function setControlsDisabled(disabled) {
-    const controls = document.querySelectorAll("button, input");
-    controls.forEach((element) => {
-        if (element.id === "loadingOverlay") {
-            return;
-        }
-        element.disabled = disabled;
-    });
-}
-
-function showToast(message, level = "success", ttlMs = 3500) {
-    const container = document.getElementById("toastContainer");
-    if (!container) return;
-
-    const toast = document.createElement("div");
-    toast.className = `toast ${level}`;
-    toast.innerText = message;
-    container.appendChild(toast);
-
+function toast(message, type = 'info') {
+    const container = document.getElementById('toast-container');
+    const el = document.createElement('div');
+    el.className = `toast ${type}`;
+    el.textContent = message;
+    container.appendChild(el);
     setTimeout(() => {
-        toast.remove();
-    }, ttlMs);
+        el.classList.add('out');
+        setTimeout(() => el.remove(), 300);
+    }, 3500);
 }
 
-function summarizeAction(payload) {
-    if (!payload) return "No action details";
-    const action = payload.action || "operation";
-    const status = payload.status || "unknown";
-
-    if (action === "split_brain_then_heal") {
-        return `${action}: ${status} • converged=${payload.converged}`;
-    }
-
-    if (action === "bootstrap_events_convergence") {
-        return `${action}: ${status} • events ok=${payload.successful_events ?? 0}/${(payload.successful_events ?? 0) + (payload.failed_events ?? 0)}`;
-    }
-
-    if (action === "create_nodes_batch") {
-        return `${action}: ${status} • created=${payload.created_count}/${payload.requested}`;
-    }
-
-    return `${action}: ${status} • ${payload.message || "completed"}`;
+// --- Refresh ---
+async function refreshAll() {
+    await Promise.allSettled([
+        fetchNodes(),
+        fetchLiveMetrics(),
+        fetchTimeseries(),
+    ]);
 }
 
-async function runActionWithLoading(actionFn, loadingText) {
-    if (operationPending) {
-        showToast("Another operation is already running", "warning", 3000);
+async function pollData() {
+    await Promise.allSettled([
+        fetchNodes(),
+        fetchLiveMetrics(),
+    ]);
+}
+
+// --- Nodes ---
+async function fetchNodes() {
+    try {
+        nodes = await api('GET', '/nodes');
+        renderNodes();
+        renderTopology();
+        updateNodeSelector();
+        document.getElementById('stat-node-count').textContent = nodes.length;
+    } catch (e) {
+        // Docker may not be ready
+    }
+}
+
+function renderNodes() {
+    const container = document.getElementById('node-list');
+    if (!nodes.length) {
+        container.innerHTML = '<div class="empty-state">No nodes running</div>';
         return;
     }
 
-    showLoading(loadingText);
-    showToast("Operation started...", "warning", 1800);
+    container.innerHTML = nodes.map(n => {
+        const statusClass = n.isolated ? 'isolated' : (n.status === 'running' ? 'running' : 'stopped');
+        const statusLabel = n.isolated ? 'isolated' : n.status;
+        return `
+            <div class="node-item">
+                <span class="node-dot ${statusClass}"></span>
+                <span class="node-name">${n.name}</span>
+                <span class="node-id">${n.node_id} · ${statusLabel}</span>
+                <div class="node-actions">
+                    ${n.isolated
+                ? `<button class="btn btn-sm btn-success" onclick="healNode('${n.node_id}')">Heal</button>`
+                : `<button class="btn btn-sm btn-warning" onclick="isolateNode('${n.node_id}')">Isolate</button>`
+            }
+                    <button class="btn btn-sm" onclick="removeNode('${n.node_id}')">✕</button>
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+function updateNodeSelector() {
+    const select = document.getElementById('event-target');
+    const current = select.value;
+    select.innerHTML = '<option value="">Any node</option>' +
+        nodes.map(n => `<option value="${n.node_id}" ${n.node_id === current ? 'selected' : ''}>${n.name} (${n.node_id})</option>`).join('');
+}
+
+// --- Node Actions ---
+async function createNode() {
     try {
-        const result = await actionFn();
-        setActionResult(result);
-        const level = result?.status === "failed" ? "error" : (result?.status === "partial" ? "warning" : "success");
-        showToast(summarizeAction(result), level);
-    } catch (error) {
-        const err = { status: "error", message: error.message, action: "operation" };
-        setActionResult(err);
-        showToast(error.message, "error", 5000);
-    } finally {
-        hideLoading();
-        fetchData();
+        const result = await api('POST', '/nodes');
+        toast(`Created ${result.container || result.node_id}`, 'success');
+        await fetchNodes();
+    } catch (e) {
+        toast(`Create failed: ${e.message}`, 'error');
     }
 }
 
-async function createNode() {
-    return runActionWithLoading(
-        () => apiAction(`${API_BASE}/nodes`, { method: "POST" }),
-        "Creating node..."
-    );
+async function createNodesBatch(count) {
+    try {
+        const result = await api('POST', `/nodes/batch?count=${count}`);
+        toast(`Created ${result.created_count} nodes`, 'success');
+        await fetchNodes();
+    } catch (e) {
+        toast(`Batch create failed: ${e.message}`, 'error');
+    }
 }
 
-async function createNodeBatch() {
-    const count = Number(document.getElementById("batchCount")?.value || 1);
-    return runActionWithLoading(
-        () => apiAction(`${API_BASE}/nodes/batch?count=${count}`, { method: "POST" }),
-        `Creating ${count} nodes...`
-    );
+async function removeNode(nodeId) {
+    try {
+        await api('DELETE', `/nodes/${nodeId}`);
+        toast(`Removed ${nodeId}`, 'info');
+        await fetchNodes();
+    } catch (e) {
+        toast(`Remove failed: ${e.message}`, 'error');
+    }
 }
 
-async function removeNode(id) {
-    if (!confirm(`Delete ${id}?`)) return;
-    return runActionWithLoading(
-        () => apiAction(`${API_BASE}/nodes/${id}`, { method: "DELETE" }),
-        `Removing ${id}...`
-    );
+async function isolateNode(nodeId) {
+    try {
+        await api('POST', `/nodes/${nodeId}/partition`);
+        toast(`Isolated ${nodeId}`, 'info');
+        await fetchNodes();
+    } catch (e) {
+        toast(`Isolate failed: ${e.message}`, 'error');
+    }
 }
 
-async function isolateNode(id) {
-    return runActionWithLoading(
-        () => apiAction(`${API_BASE}/nodes/${id}/partition`, { method: "POST" }),
-        `Isolating ${id}...`
-    );
-}
-
-async function healNode(id) {
-    return runActionWithLoading(
-        () => apiAction(`${API_BASE}/nodes/${id}/partition`, { method: "DELETE" }),
-        `Healing ${id}...`
-    );
-}
-
-async function healAll() {
-    return runActionWithLoading(
-        () => apiAction(`${API_BASE}/partition/heal-all`, { method: "POST" }),
-        "Healing all partitions..."
-    );
+async function healNode(nodeId) {
+    try {
+        await api('DELETE', `/nodes/${nodeId}/partition`);
+        toast(`Healed ${nodeId}`, 'success');
+        await fetchNodes();
+    } catch (e) {
+        toast(`Heal failed: ${e.message}`, 'error');
+    }
 }
 
 async function splitBrain() {
-    return runActionWithLoading(
-        () => apiAction(`${API_BASE}/partition/split-brain`, { method: "POST" }),
-        "Creating split-brain partition..."
+    try {
+        const result = await api('POST', '/partition/split-brain');
+        toast('Split brain created', 'info');
+        await fetchNodes();
+    } catch (e) {
+        toast(`Split brain failed: ${e.message}`, 'error');
+    }
+}
+
+async function healAll() {
+    try {
+        await api('POST', '/partition/heal-all');
+        toast('All nodes healed', 'success');
+        await fetchNodes();
+    } catch (e) {
+        toast(`Heal all failed: ${e.message}`, 'error');
+    }
+}
+
+async function triggerPoll() {
+    try {
+        await api('POST', '/gateway/poll');
+        toast('Poll triggered', 'info');
+        await fetchLiveMetrics();
+    } catch (e) {
+        toast(`Poll failed: ${e.message}`, 'error');
+    }
+}
+
+// --- Event Sending ---
+async function sendEvent(e) {
+    e.preventDefault();
+    const btn = document.getElementById('send-event-btn');
+    btn.disabled = true;
+
+    const type = document.getElementById('event-type').value;
+    const value = document.getElementById('event-value').value;
+    const category = document.getElementById('event-category').value;
+    const targetNode = document.getElementById('event-target').value;
+    const location = document.getElementById('event-location').value;
+    const operation = document.getElementById('event-operation').value;
+
+    // Parse value (number or string)
+    let parsedValue = value;
+    if (!isNaN(value) && value.trim() !== '') {
+        parsedValue = parseFloat(value);
+    }
+
+    try {
+        const url = targetNode
+            ? `/event/send?target_node=${encodeURIComponent(targetNode)}`
+            : '/event/send';
+
+        const result = await api('POST', url, {
+            type,
+            value: parsedValue,
+            category,
+            location: location || undefined,
+            operation: operation || undefined,
+        });
+
+        // Add to local event log
+        eventLog.unshift({
+            timestamp: new Date().toISOString(),
+            node: result.target_node || result.node_id,
+            type,
+            category,
+            state_size_bytes: result.state_size_bytes,
+            merkle_root: result.merkle_root_after,
+            tracking_id: result.tracking_id,
+        });
+        renderEventLog();
+
+        // Show result
+        const resultEl = document.getElementById('event-result');
+        resultEl.classList.remove('hidden', 'error');
+        resultEl.textContent = `✓ Sent to ${result.target_node} | tracking: ${result.tracking_id?.substring(0, 8)}... | state: ${result.state_size_bytes || '?'} bytes`;
+
+        toast(`Event sent to ${result.target_node}`, 'success');
+    } catch (e) {
+        const resultEl = document.getElementById('event-result');
+        resultEl.classList.remove('hidden');
+        resultEl.classList.add('error');
+        resultEl.textContent = `✕ Failed: ${e.message}`;
+        toast(`Event send failed: ${e.message}`, 'error');
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+// --- Live Metrics ---
+async function fetchLiveMetrics() {
+    try {
+        liveMetrics = await api('GET', '/metrics/live');
+        renderLiveMetrics();
+        renderPerNodeStats();
+    } catch (e) {
+        // Gateway may not be ready
+    }
+}
+
+function renderLiveMetrics() {
+    const m = liveMetrics;
+
+    // Convergence time
+    const convTime = m.convergence_time_seconds;
+    document.getElementById('mv-convergence').textContent =
+        convTime !== null && convTime !== undefined ? `${convTime}s` : '—';
+    document.getElementById('stat-convergence-time').textContent =
+        convTime !== null && convTime !== undefined ? `${convTime}s` : '—';
+
+    // Data loss
+    const dl = m.data_loss_percent;
+    document.getElementById('mv-data-loss').textContent =
+        dl !== null && dl !== undefined ? `${dl}%` : '—';
+
+    // Gossip
+    document.getElementById('mv-gossip').textContent =
+        (m.total_gossip_messages_sent || 0).toLocaleString();
+    document.getElementById('stat-gossip-count').textContent =
+        m.total_gossip_messages_sent || 0;
+
+    // State size
+    const totalSize = m.total_state_size_bytes || 0;
+    document.getElementById('mv-state-size').textContent = formatBytes(totalSize);
+
+    // Network status
+    const isDivergent = m.is_divergent;
+    const statusEl = document.getElementById('mv-divergence');
+    const detailEl = document.getElementById('mv-divergence-detail');
+    const headerStatusEl = document.getElementById('stat-network-status');
+
+    if (isDivergent) {
+        statusEl.textContent = 'Divergent';
+        statusEl.style.color = 'var(--accent-red)';
+        detailEl.textContent = `Diverged for ${m.divergence_duration_seconds || 0}s`;
+        headerStatusEl.innerHTML = '<span class="status-dot divergent"></span> Divergent';
+    } else {
+        statusEl.textContent = 'Converged';
+        statusEl.style.color = 'var(--accent-green)';
+        detailEl.textContent = 'All Merkle roots match';
+        headerStatusEl.innerHTML = '<span class="status-dot converged"></span> OK';
+    }
+
+    // Update badge
+    document.getElementById('metrics-update-badge').textContent =
+        `Poll #${m.polls_completed || 0}`;
+}
+
+function renderPerNodeStats() {
+    const tbody = document.getElementById('per-node-tbody');
+    const perNode = liveMetrics.per_node || [];
+
+    if (!perNode.length) {
+        tbody.innerHTML = '<tr><td colspan="6" class="empty-cell">Waiting for data...</td></tr>';
+        return;
+    }
+
+    tbody.innerHTML = perNode.map(n => `
+        <tr>
+            <td>
+                <span class="node-dot ${n.isolated ? 'isolated' : 'running'}" style="display:inline-block;vertical-align:middle;margin-right:4px;width:6px;height:6px;"></span>
+                ${n.node_id || n.name}
+            </td>
+            <td>${n.event_count ?? '—'}</td>
+            <td>${n.gossip_sent ?? '—'}</td>
+            <td>${n.peers_discovered ?? '—'}</td>
+            <td>${n.state_size_bytes ? formatBytes(n.state_size_bytes) : '—'}</td>
+            <td>${n.merkle_root || '—'}</td>
+        </tr>
+    `).join('');
+}
+
+// --- Event Log ---
+function renderEventLog() {
+    const tbody = document.getElementById('event-log-tbody');
+    const badge = document.getElementById('event-log-count');
+    badge.textContent = `${eventLog.length} event${eventLog.length !== 1 ? 's' : ''}`;
+
+    if (!eventLog.length) {
+        tbody.innerHTML = '<tr><td colspan="6" class="empty-cell">No events sent yet</td></tr>';
+        return;
+    }
+
+    tbody.innerHTML = eventLog.slice(0, 50).map(ev => `
+        <tr>
+            <td>${formatTime(ev.timestamp)}</td>
+            <td>${ev.node}</td>
+            <td>${ev.type}</td>
+            <td>${ev.category}</td>
+            <td>${ev.state_size_bytes ? formatBytes(ev.state_size_bytes) : '—'}</td>
+            <td>${ev.merkle_root ? ev.merkle_root.substring(0, 12) : '—'}</td>
+        </tr>
+    `).join('');
+}
+
+// --- Charts ---
+function initCharts() {
+    const defaults = Chart.defaults;
+    defaults.color = '#8892a4';
+    defaults.borderColor = 'rgba(255, 255, 255, 0.04)';
+    defaults.font.family = "'Inter', system-ui, sans-serif";
+    defaults.font.size = 10;
+
+    const commonOpts = {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: { duration: 400 },
+        plugins: {
+            legend: { display: false },
+        },
+        scales: {
+            x: {
+                grid: { color: 'rgba(255, 255, 255, 0.03)' },
+                ticks: { maxTicksLimit: 8, font: { size: 9 } },
+            },
+            y: {
+                grid: { color: 'rgba(255, 255, 255, 0.03)' },
+                beginAtZero: true,
+                ticks: { font: { size: 9 } },
+            },
+        },
+    };
+
+    charts.convergence = new Chart(
+        document.getElementById('chart-convergence').getContext('2d'),
+        {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [{
+                    label: 'Convergence Time (s)',
+                    data: [],
+                    borderColor: '#63b3ed',
+                    backgroundColor: 'rgba(99, 179, 237, 0.1)',
+                    borderWidth: 2,
+                    pointRadius: 3,
+                    pointBackgroundColor: '#63b3ed',
+                    fill: true,
+                    tension: 0.3,
+                }],
+            },
+            options: { ...commonOpts },
+        }
+    );
+
+    charts.stateSize = new Chart(
+        document.getElementById('chart-state-size').getContext('2d'),
+        {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [{
+                    label: 'State Size (bytes)',
+                    data: [],
+                    borderColor: '#b794f4',
+                    backgroundColor: 'rgba(183, 148, 244, 0.1)',
+                    borderWidth: 2,
+                    pointRadius: 3,
+                    pointBackgroundColor: '#b794f4',
+                    fill: true,
+                    tension: 0.3,
+                }],
+            },
+            options: { ...commonOpts },
+        }
+    );
+
+    charts.nodeCount = new Chart(
+        document.getElementById('chart-node-count').getContext('2d'),
+        {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [{
+                    label: 'Active Nodes',
+                    data: [],
+                    borderColor: '#68d391',
+                    backgroundColor: 'rgba(104, 211, 145, 0.1)',
+                    borderWidth: 2,
+                    pointRadius: 3,
+                    pointBackgroundColor: '#68d391',
+                    fill: true,
+                    tension: 0.3,
+                    stepped: 'after',
+                }],
+            },
+            options: { ...commonOpts },
+        }
     );
 }
 
-async function runSplitBrainHealScenario() {
-    return runActionWithLoading(
-        () => apiAction(`${API_BASE}/scenarios/split-brain-heal?isolate_seconds=6&verify_polls=2`, {
-            method: "POST",
-        }),
-        "Running split-brain then heal scenario..."
-    );
+async function fetchTimeseries() {
+    try {
+        const [convergeData, sizeData, countData] = await Promise.all([
+            api('GET', '/metrics/timeseries?metric=convergence_time&limit=50'),
+            api('GET', '/metrics/timeseries?metric=state_size_bytes&limit=50'),
+            api('GET', '/metrics/timeseries?metric=node_count&limit=50'),
+        ]);
+
+        updateChart(charts.convergence, convergeData);
+        updateChart(charts.stateSize, sizeData);
+        updateChart(charts.nodeCount, countData);
+    } catch (e) {
+        // Gateway or timeseries not ready
+    }
 }
 
-async function runBootstrapConvergeScenario() {
-    return runActionWithLoading(
-        () => apiAction(`${API_BASE}/scenarios/bootstrap-converge?create_nodes=1&events_per_node=2&verify_polls=3`, {
-            method: "POST",
-        }),
-        "Running bootstrap & convergence scenario..."
-    );
+function updateChart(chart, data) {
+    if (!Array.isArray(data)) return;
+    // Data comes in reverse chronological order
+    const reversed = [...data].reverse();
+    chart.data.labels = reversed.map(d => formatTime(d.timestamp));
+    chart.data.datasets[0].data = reversed.map(d => d.value);
+    chart.update('none');
 }
 
-function fetchLogs() {
-    fetchData();
-}
-
-// --- Rendering ---
-
+// --- Topology Canvas ---
 function renderTopology() {
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    const canvas = document.getElementById('topology-canvas');
+    const container = canvas.parentElement;
+    const ctx = canvas.getContext('2d');
+    const dpr = window.devicePixelRatio || 1;
 
-    const centerX = canvas.width / 2;
-    const centerY = canvas.height / 2;
-    const radius = Math.min(centerX, centerY) - 60;
+    // Read CSS layout dimensions BEFORE modifying the canvas
+    const rect = container.getBoundingClientRect();
+    const w = rect.width - 32;   // subtract padding
+    const h = rect.height - 32;
 
-    // Calculate positions
-    const angleStep = (2 * Math.PI) / nodes.length;
-    nodes.forEach((node, i) => {
-        node.x = centerX + radius * Math.cos(i * angleStep - Math.PI / 2);
-        node.y = centerY + radius * Math.sin(i * angleStep - Math.PI / 2);
+    if (w <= 0 || h <= 0) return;
+
+    // Set canvas buffer size (high-res) and CSS display size
+    canvas.width = Math.round(w * dpr);
+    canvas.height = Math.round(h * dpr);
+    canvas.style.width = w + 'px';
+    canvas.style.height = h + 'px';
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    ctx.clearRect(0, 0, w, h);
+
+    if (!nodes.length) {
+        ctx.fillStyle = '#5a6478';
+        ctx.font = '13px Inter, system-ui, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('Create nodes to see the topology', w / 2, h / 2);
+        return;
+    }
+
+    // Calculate positions in a circle
+    const cx = w / 2;
+    const cy = h / 2;
+    const radius = Math.min(w, h) * 0.35;
+    const positions = nodes.map((_, i) => {
+        const angle = (i * 2 * Math.PI / nodes.length) - Math.PI / 2;
+        return {
+            x: cx + radius * Math.cos(angle),
+            y: cy + radius * Math.sin(angle),
+        };
     });
 
-    // Draw connections (mesh = everyone connected to everyone)
+    // Draw connections
     for (let i = 0; i < nodes.length; i++) {
         for (let j = i + 1; j < nodes.length; j++) {
-            const n1 = nodes[i];
-            const n2 = nodes[j];
-
-            // Color based on status
-            // If EITHER node is isolated, draw red line
-            const isPartitioned = n1.isolated || n2.isolated;
+            const eitherIsolated = nodes[i].isolated || nodes[j].isolated;
 
             ctx.beginPath();
-            ctx.moveTo(n1.x, n1.y);
-            ctx.lineTo(n2.x, n2.y);
-            ctx.strokeStyle = isPartitioned ? "rgba(248, 81, 73, 0.4)" : "rgba(56, 139, 253, 0.2)";
-            ctx.lineWidth = isPartitioned ? 1 : 2;
+            ctx.moveTo(positions[i].x, positions[i].y);
+            ctx.lineTo(positions[j].x, positions[j].y);
+
+            if (eitherIsolated) {
+                ctx.strokeStyle = 'rgba(252, 129, 129, 0.15)';
+                ctx.setLineDash([4, 4]);
+            } else {
+                ctx.strokeStyle = 'rgba(99, 179, 237, 0.2)';
+                ctx.setLineDash([]);
+            }
+            ctx.lineWidth = 1;
             ctx.stroke();
+            ctx.setLineDash([]);
         }
     }
 
     // Draw nodes
-    nodes.forEach(node => {
-        ctx.beginPath();
-        ctx.arc(node.x, node.y, 25, 0, 2 * Math.PI);
-        ctx.fillStyle = "#161b22";
-        ctx.fill();
-        ctx.lineWidth = 3;
+    nodes.forEach((node, i) => {
+        const pos = positions[i];
+        const isIsolated = node.isolated;
 
-        // Border color: Orange if isolated, Green if running
-        const borderColor = node.isolated ? "#d29922" : (node.status === "running" ? "#3fb950" : "#8b949e");
-        ctx.strokeStyle = borderColor;
-        ctx.stroke();
+        // Glow
+        const gradient = ctx.createRadialGradient(pos.x, pos.y, 0, pos.x, pos.y, 24);
+        gradient.addColorStop(0, isIsolated
+            ? 'rgba(252, 129, 129, 0.25)'
+            : 'rgba(99, 179, 237, 0.25)');
+        gradient.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = gradient;
+        ctx.beginPath();
+        ctx.arc(pos.x, pos.y, 24, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Node circle
+        ctx.beginPath();
+        ctx.arc(pos.x, pos.y, 10, 0, Math.PI * 2);
+        ctx.fillStyle = isIsolated ? '#fc8181' : '#63b3ed';
+        ctx.fill();
+
+        // Inner dot
+        ctx.beginPath();
+        ctx.arc(pos.x, pos.y, 3, 0, Math.PI * 2);
+        ctx.fillStyle = isIsolated ? '#fed7d7' : '#bee3f8';
+        ctx.fill();
 
         // Label
-        ctx.fillStyle = "#c9d1d9";
-        ctx.font = "12px Inter";
-        ctx.textAlign = "center";
-        ctx.fillText(node.name.replace("edge-", ""), node.x, node.y + 40);
-
-        // ID inside
-        ctx.fillStyle = "#8b949e";
-        ctx.font = "10px JetBrains Mono";
-        ctx.fillText(node.id.substring(0, 4), node.x, node.y + 4);
+        ctx.fillStyle = '#8892a4';
+        ctx.font = '10px Inter, system-ui, sans-serif';
+        ctx.textAlign = 'center';
+        const label = node.node_id || node.name || '';
+        ctx.fillText(label.length > 12 ? label.substring(0, 12) + '…' : label, pos.x, pos.y + 24);
     });
 }
 
-function renderNodeList() {
-    const list = document.getElementById("nodeList");
-    list.innerHTML = "";
+// Re-render topology on window resize
+let resizeTimer;
+window.addEventListener('resize', () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(renderTopology, 150);
+});
 
-    nodes.forEach(node => {
-        const item = document.createElement("div");
-        const isDynamic = node.managed; // created via API
-        const nodeId = node.name.replace("edge-", "");
-
-        item.className = `node-item ${node.isolated ? 'isolated' : ''}`;
-        item.innerHTML = `
-            <div class="node-info">
-                <span class="node-name">${node.name} ${node.isolated ? '(ISOLATED)' : ''}</span>
-                <span class="node-ip">${node.id} • ${node.status} • ${node.url || 'n/a'}</span>
-            </div>
-            <div class="actions">
-                ${!node.isolated ?
-                `<button class="btn btn-sm btn-warning" onclick="isolateNode('${nodeId}')">Isolate</button>` :
-                `<button class="btn btn-sm btn-success" onclick="healNode('${nodeId}')">Heal</button>`
-            }
-                ${isDynamic ? `<button class="btn btn-sm btn-danger" onclick="removeNode('${nodeId}')">×</button>` : ''}
-            </div>
-        `;
-        list.appendChild(item);
-    });
+// --- Utilities ---
+function formatBytes(bytes) {
+    if (bytes == null || isNaN(bytes)) return '—';
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
-function renderRuntimeMetrics() {
-    document.getElementById("metric-polls").innerText = runtimeMetrics.polls_completed ?? 0;
-    document.getElementById("metric-http-success").innerText = runtimeMetrics.total_http_success ?? 0;
-    document.getElementById("metric-http-failures").innerText = runtimeMetrics.total_http_failures ?? 0;
-    document.getElementById("metric-convergence").innerText = runtimeMetrics.total_convergence_events ?? 0;
-    document.getElementById("metric-div-duration").innerText = `${runtimeMetrics.divergence_duration_seconds ?? 0}s`;
-    document.getElementById("metric-reachable").innerText = runtimeMetrics.last_reachable_nodes ?? 0;
+function formatTime(isoString) {
+    if (!isoString) return '—';
+    try {
+        const d = new Date(isoString);
+        if (isNaN(d.getTime())) return isoString.substring(11, 19);
+        return d.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    } catch {
+        return isoString.substring(11, 19);
+    }
 }
 
-function renderActionResult() {
-    const panel = document.getElementById("actionResult");
-    if (!panel) return;
+// --- Evaluation Suite ---
+let evalPollTimer = null;
 
-    if (!lastActionResult) {
-        panel.innerText = "No actions yet.";
+async function runEvaluation() {
+    const btn = document.getElementById('btn-run-eval');
+    const nodeCountsRaw = document.getElementById('eval-node-counts').value;
+    const eventsPerNode = parseInt(document.getElementById('eval-events-per-node').value) || 5;
+
+    const nodeCounts = nodeCountsRaw.split(',').map(s => parseInt(s.trim())).filter(n => n > 0);
+    if (!nodeCounts.length) {
+        toast('Enter at least one node count', 'error');
         return;
     }
 
-    panel.innerText = summarizeAction(lastActionResult);
+    btn.classList.add('running');
+    document.getElementById('btn-download-eval').disabled = true;
+    document.getElementById('eval-progress-wrap').classList.remove('hidden');
+    document.getElementById('eval-progress-fill').style.width = '0%';
+    document.getElementById('eval-step-label').textContent = 'Starting...';
+    document.getElementById('eval-status-badge').textContent = 'Running';
+    document.getElementById('eval-status-badge').className = 'badge badge-warning';
+
+    try {
+        await api('POST', '/evaluation/run', {
+            node_counts: nodeCounts,
+            events_per_node: eventsPerNode,
+        });
+        toast('Evaluation started', 'success');
+        startEvalPolling();
+    } catch (e) {
+        toast(`Failed to start: ${e.message}`, 'error');
+        btn.classList.remove('running');
+    }
 }
 
-function renderLogs() {
-    const tbody = document.getElementById("logBody");
-    tbody.innerHTML = "";
+function startEvalPolling() {
+    if (evalPollTimer) clearInterval(evalPollTimer);
+    evalPollTimer = setInterval(pollEvalStatus, 2000);
+}
 
-    logs.slice(0, 10).forEach(entry => {
-        const tr = document.createElement("tr");
-        const date = new Date(entry.timestamp).toLocaleTimeString();
-        tr.innerHTML = `
-            <td>${date}</td>
-            <td class="${entry.is_divergent ? 'log-row-divergent' : 'log-row-synced'}">
-                ${entry.is_divergent ? 'DIVERGENT' : 'SYNCED'}
-            </td>
-            <td>
-                <pre style="margin:0; font-size:10px;">${JSON.stringify(entry.merkle_roots, null, 2)}</pre>
-            </td>
+async function pollEvalStatus() {
+    try {
+        const status = await api('GET', '/evaluation/status');
+
+        // Update progress bar
+        const pct = status.total_steps > 0
+            ? Math.round((status.progress / status.total_steps) * 100)
+            : 0;
+        document.getElementById('eval-progress-fill').style.width = pct + '%';
+        document.getElementById('eval-step-label').textContent = status.current_step || '...';
+
+        // Update badge
+        if (status.running) {
+            document.getElementById('eval-status-badge').textContent =
+                `Step ${status.progress + 1}/${status.total_steps}`;
+        }
+
+        // If done, stop polling and fetch results
+        if (!status.running) {
+            clearInterval(evalPollTimer);
+            evalPollTimer = null;
+
+            const btn = document.getElementById('btn-run-eval');
+            btn.classList.remove('running');
+
+            if (status.error) {
+                document.getElementById('eval-status-badge').textContent = 'Error';
+                document.getElementById('eval-status-badge').className = 'badge badge-error';
+                toast(`Evaluation error: ${status.error}`, 'error');
+            } else {
+                document.getElementById('eval-progress-fill').style.width = '100%';
+                document.getElementById('eval-status-badge').textContent = 'Complete';
+                document.getElementById('eval-status-badge').className = 'badge badge-success';
+                toast('Evaluation complete!', 'success');
+            }
+
+            if (status.has_csv) {
+                document.getElementById('btn-download-eval').disabled = false;
+            }
+
+            // Fetch and display results
+            await fetchEvalResults();
+        }
+    } catch (e) {
+        // Silently retry
+    }
+}
+
+async function fetchEvalResults() {
+    try {
+        const data = await api('GET', '/evaluation/results');
+        renderEvalResults(data.results || []);
+        if (data.has_csv) {
+            document.getElementById('btn-download-eval').disabled = false;
+        }
+    } catch (e) {
+        // No results yet
+    }
+}
+
+function renderEvalResults(results) {
+    const tbody = document.getElementById('eval-results-tbody');
+    if (!results.length) {
+        tbody.innerHTML = '<tr><td colspan="8" class="empty-cell">No evaluation data — click Run Evaluation to start</td></tr>';
+        return;
+    }
+
+    const scenarioLabels = {
+        baseline_convergence: { label: 'Baseline', cls: 'eval-tag-baseline' },
+        partition_heal: { label: 'Partition', cls: 'eval-tag-partition' },
+        scaling_events: { label: 'Scaling', cls: 'eval-tag-scaling' },
+    };
+
+    tbody.innerHTML = results.map(r => {
+        const s = scenarioLabels[r.scenario] || { label: r.scenario, cls: '' };
+        const rowCls = r.is_converged ? 'eval-row-converged' : 'eval-row-diverged';
+        const convTime = r.convergence_time_s != null ? `${r.convergence_time_s.toFixed(3)}s` : '—';
+        const dataLoss = r.data_loss_pct != null ? `${r.data_loss_pct}%` : '—';
+        const convergedIcon = r.is_converged ? '✅' : '❌';
+
+        return `
+            <tr class="${rowCls}">
+                <td><span class="eval-scenario-tag ${s.cls}">${s.label}</span></td>
+                <td>${r.node_count}</td>
+                <td>${r.events_sent}</td>
+                <td>${convTime}</td>
+                <td>${dataLoss}</td>
+                <td>${r.gossip_messages_sent}</td>
+                <td>${formatBytes(r.total_state_size_bytes)}</td>
+                <td>${convergedIcon}</td>
+            </tr>
         `;
-        tbody.appendChild(tr);
-    });
+    }).join('');
 }
 
-init();
+function downloadEvaluation() {
+    window.open('/evaluation/download', '_blank');
+}
+
+// Periodically refresh charts (every 15s)
+setInterval(fetchTimeseries, 15000);

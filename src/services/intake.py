@@ -1,5 +1,7 @@
+import json
+import uuid
 import structlog
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict
 
 from fastapi import FastAPI, HTTPException
@@ -39,8 +41,12 @@ class IntakeService:
 
             The response tells you exactly where the data was stored:
             which counter, register, pn_counter, or set key was used.
+            Also returns tracking metadata for per-message observability.
             """
             try:
+                tracking_id = str(uuid.uuid4())
+                recorded_at = datetime.now(timezone.utc).isoformat()
+
                 entry = self.chain.append(
                     event.id, event.type, event.model_dump(mode="json")
                 )
@@ -61,12 +67,18 @@ class IntakeService:
                     operation=event.operation,
                 )
 
+                # Compute tracking metadata
+                merkle_root_after = self.state.merkle_root()
+                state_dict = self.state.to_dict()
+                state_size_bytes = len(json.dumps(state_dict))
+
                 log.info(
                     "event_received",
                     event_id=event.id,
                     type=event.type,
                     category=event.category.value,
                     stored_in=stored_in,
+                    tracking_id=tracking_id,
                 )
 
                 return {
@@ -76,6 +88,11 @@ class IntakeService:
                     "log_sequence": entry["sequence"],
                     "version": self.state.version,
                     "stored_in": stored_in,
+                    # Per-message tracking metadata
+                    "tracking_id": tracking_id,
+                    "recorded_at": recorded_at,
+                    "state_size_bytes": state_size_bytes,
+                    "merkle_root_after": merkle_root_after,
                 }
             except Exception as e:
                 log.error("event_failed", error=str(e))
@@ -100,7 +117,7 @@ class IntakeService:
                 node_id=self.config.node_id,
                 version=self.state.version,
                 merkle_root=self.state.merkle_root(),
-                peer_count=len(self.config.peers),
+                peer_count=0,  # updated dynamically via /peers endpoint
                 event_count=self.state.get_event_count(),
                 uptime_seconds=uptime,
             ).model_dump()
@@ -137,5 +154,22 @@ class IntakeService:
             except Exception as e:
                 log.error("merge_failed", error=str(e))
                 raise HTTPException(status_code=400, detail=str(e))
+
+        @app.get("/metrics/summary")
+        async def metrics_summary():
+            """Node-level metric snapshot for dashboard per-node stats."""
+            state_dict = self.state.to_dict()
+            state_size = len(json.dumps(state_dict))
+            uptime = (datetime.now(timezone.utc) - self.start_time.replace(
+                tzinfo=timezone.utc
+            )).total_seconds()
+            return {
+                "node_id": self.config.node_id,
+                "event_count": self.state.get_event_count(),
+                "state_size_bytes": state_size,
+                "merkle_root": self.state.merkle_root(),
+                "version": self.state.version,
+                "uptime_seconds": round(uptime, 2),
+            }
 
         return app

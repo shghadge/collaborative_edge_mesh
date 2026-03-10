@@ -1,206 +1,347 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
-    <head>
-        <meta charset="UTF-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <title>Edge Mesh Dashboard</title>
-        <link rel="stylesheet" href="style.css" />
-        <!-- Google Fonts for premium feel -->
-        <link
-            href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap"
-            rel="stylesheet"
-        />
-    </head>
-    <body>
-        <div class="app-container">
-            <!-- Header & Stats -->
-            <header>
-                <div class="logo">
-                    <div class="logo-icon"></div>
-                    <h1>Collaborative Edge Mesh</h1>
-                </div>
-                <div class="stats-bar">
-                    <div class="stat-item">
-                        <span class="label">Nodes</span>
-                        <span class="value" id="stat-nodes">3</span>
-                    </div>
-                    <div class="stat-item">
-                        <span class="label">Merge Time</span>
-                        <span class="value" id="stat-merge">2.5ms</span>
-                    </div>
-                    <div class="stat-item">
-                        <span class="label">HTTP Retries</span>
-                        <span class="value" id="stat-retries">0</span>
-                    </div>
-                    <div class="stat-item" id="stat-status-container">
-                        <span class="label">Status</span>
-                        <span class="value status-badge" id="stat-status"
-                            >SYNCED</span
-                        >
-                    </div>
-                </div>
-            </header>
-
-            <!-- Main Grid -->
-            <main class="dashboard-grid">
-                <!-- 1. Network Topology -->
-                <section class="card topology-card">
-                    <div class="card-header">
-                        <h2>Network Topology</h2>
-                        <div class="live-indicator">
-                            <span class="dot"></span> Live
-                        </div>
-                    </div>
-                    <div class="canvas-container">
-                        <canvas id="topologyCanvas"></canvas>
-                    </div>
-                </section>
-
-                <!-- 2. Node Management -->
-                <section class="card controls-card">
-                    <div class="card-header">
-                        <h2>Node Management</h2>
-                        <div class="actions">
-                            <button
-                                class="btn btn-primary"
-                                onclick="createNode()"
-                            >
-                                + New Node
-                            </button>
-                        </div>
-                    </div>
-                    <div class="inline-controls">
-                        <input
-                            id="batchCount"
-                            type="number"
-                            min="1"
-                            max="20"
-                            value="2"
-                        />
-                        <button
-                            class="btn btn-sm btn-primary"
-                            onclick="createNodeBatch()"
-                        >
-                            Create Batch
-                        </button>
-                    </div>
-                    <div class="node-list" id="nodeList">
-                        <!-- Dynamic Node Items -->
-                    </div>
-                </section>
-
-                <!-- 3. Partition Controls -->
-                <section class="card partition-card">
-                    <div class="card-header">
-                        <h2>Partition Control</h2>
-                        <div class="actions">
-                            <button
-                                class="btn btn-warning"
-                                onclick="splitBrain()"
-                            >
-                                Split Brain
-                            </button>
-                            <button class="btn btn-success" onclick="healAll()">
-                                Heal All
-                            </button>
-                        </div>
-                    </div>
-                    <div class="scenario-actions">
-                        <button
-                            class="btn btn-sm"
-                            onclick="runSplitBrainHealScenario()"
-                        >
-                            Run Split→Heal Scenario
-                        </button>
-                        <button
-                            class="btn btn-sm"
-                            onclick="runBootstrapConvergeScenario()"
-                        >
-                            Run Bootstrap Scenario
-                        </button>
-                    </div>
-                    <div class="action-result" id="actionResult">
-                        No actions yet.
-                    </div>
-                </section>
-
-                <!-- 4. Runtime Metrics -->
-                <section class="card metrics-card">
-                    <div class="card-header">
-                        <h2>Runtime Metrics</h2>
-                        <button class="btn btn-sm" onclick="fetchData()">
-                            Refresh
-                        </button>
-                    </div>
-                    <div class="metrics-grid">
-                        <div class="metric">
-                            <span class="label">Polls</span>
-                            <span class="value" id="metric-polls">0</span>
-                        </div>
-                        <div class="metric">
-                            <span class="label">HTTP Success</span>
-                            <span class="value" id="metric-http-success"
-                                >0</span
-                            >
-                        </div>
-                        <div class="metric">
-                            <span class="label">HTTP Failures</span>
-                            <span class="value" id="metric-http-failures"
-                                >0</span
-                            >
-                        </div>
-                        <div class="metric">
-                            <span class="label">Convergence Events</span>
-                            <span class="value" id="metric-convergence">0</span>
-                        </div>
-                        <div class="metric">
-                            <span class="label">Divergence Duration</span>
-                            <span class="value" id="metric-div-duration"
-                                >0s</span
-                            >
-                        </div>
-                        <div class="metric">
-                            <span class="label">Reachable Nodes</span>
-                            <span class="value" id="metric-reachable">0</span>
-                        </div>
-                    </div>
-                </section>
-
-                <!-- 5. Divergence Log -->
-                <section class="card logs-card">
-                    <div class="card-header">
-                        <h2>Divergence Log</h2>
-                        <button class="btn btn-sm" onclick="fetchLogs()">
-                            Refresh
-                        </button>
-                    </div>
-                    <div class="log-table-container">
-                        <table class="log-table">
-                            <thead>
-                                <tr>
-                                    <th>Timestamp</th>
-                                    <th>Status</th>
-                                    <th>Merkle Roots</th>
-                                </tr>
-                            </thead>
-                            <tbody id="logBody">
-                                <!-- Dynamic Rows -->
-                            </tbody>
-                        </table>
-                    </div>
-                </section>
-            </main>
-        </div>
-
-        <div id="loadingOverlay" class="loading-overlay hidden">
-            <div class="spinner"></div>
-            <div class="loading-text" id="loadingText">
-                Running operation...
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Interactive dashboard for monitoring and controlling the collaborative edge mesh network - real-time metrics, network topology, and partition testing" />
+    <title>Edge Mesh Observatory</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/style.css" />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+</head>
+<body>
+    <!-- Header / Stats Bar -->
+    <header id="header">
+        <div class="header-left">
+            <div class="logo">
+                <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="3"/>
+                    <circle cx="12" cy="4" r="1.5"/>
+                    <circle cx="20" cy="12" r="1.5"/>
+                    <circle cx="12" cy="20" r="1.5"/>
+                    <circle cx="4" cy="12" r="1.5"/>
+                    <line x1="12" y1="6" x2="12" y2="9"/>
+                    <line x1="14.5" y1="12" x2="18" y2="12"/>
+                    <line x1="12" y1="15" x2="12" y2="18"/>
+                    <line x1="6" y1="12" x2="9.5" y2="12"/>
+                </svg>
+                <h1>Edge Mesh Observatory</h1>
             </div>
         </div>
+        <div class="header-stats">
+            <div class="stat-pill" id="stat-nodes">
+                <span class="stat-label">Nodes</span>
+                <span class="stat-value" id="stat-node-count">0</span>
+            </div>
+            <div class="stat-pill" id="stat-convergence">
+                <span class="stat-label">Convergence</span>
+                <span class="stat-value" id="stat-convergence-time">&mdash;</span>
+            </div>
+            <div class="stat-pill" id="stat-status">
+                <span class="stat-label">Status</span>
+                <span class="stat-value" id="stat-network-status">
+                    <span class="status-dot converged"></span> OK
+                </span>
+            </div>
+            <div class="stat-pill" id="stat-gossip">
+                <span class="stat-label">Gossip</span>
+                <span class="stat-value" id="stat-gossip-count">0</span>
+            </div>
+        </div>
+    </header>
 
-        <div id="toastContainer" class="toast-container"></div>
+    <main>
+        <!-- Row 1: Topology + Event Sender -->
+        <div class="grid-row grid-cols-2">
+            <section class="panel" id="topology-panel">
+                <div class="panel-header">
+                    <h2>Network Topology</h2>
+                    <div class="panel-actions">
+                        <button class="btn btn-icon" onclick="refreshAll()" title="Refresh" id="btn-refresh">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2v6h-6M3 12a9 9 0 0115.36-6.36L21 8M3 22v-6h6M21 12a9 9 0 01-15.36 6.36L3 16"/></svg>
+                        </button>
+                    </div>
+                </div>
+                <div class="topology-container">
+                    <canvas id="topology-canvas"></canvas>
+                </div>
+            </section>
 
-        <script src="app.js"></script>
-    </body>
+            <section class="panel" id="event-sender-panel">
+                <div class="panel-header">
+                    <h2>Send Event</h2>
+                </div>
+                <form id="event-form" class="event-form" onsubmit="sendEvent(event)">
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="event-type">Type</label>
+                            <input type="text" id="event-type" placeholder="e.g. water_level" value="temperature" required />
+                        </div>
+                        <div class="form-group">
+                            <label for="event-value">Value</label>
+                            <input type="text" id="event-value" placeholder="e.g. 3.2" value="25.0" required />
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="event-category">Category</label>
+                            <select id="event-category">
+                                <option value="sensor">Sensor</option>
+                                <option value="resource">Resource</option>
+                                <option value="infrastructure">Infrastructure</option>
+                                <option value="general" selected>General</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="event-target">Target Node</label>
+                            <select id="event-target">
+                                <option value="">Any node</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="event-location">Location</label>
+                            <input type="text" id="event-location" placeholder="e.g. bridge_north" value="sensor_a" />
+                        </div>
+                        <div class="form-group">
+                            <label for="event-operation">Operation</label>
+                            <select id="event-operation">
+                                <option value="" selected>Default</option>
+                                <option value="increment">Increment</option>
+                                <option value="decrement">Decrement</option>
+                            </select>
+                        </div>
+                    </div>
+                    <button type="submit" class="btn btn-primary btn-block" id="send-event-btn">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg>
+                        Send Event
+                    </button>
+                </form>
+                <div id="event-result" class="event-result hidden"></div>
+            </section>
+        </div>
+
+        <!-- Row 2: Node Management + Live Metrics -->
+        <div class="grid-row grid-cols-2">
+            <section class="panel" id="node-management-panel">
+                <div class="panel-header">
+                    <h2>Node Management</h2>
+                    <div class="panel-actions">
+                        <button class="btn btn-sm" onclick="createNode()" id="btn-add-node">+ Add Node</button>
+                        <button class="btn btn-sm btn-outline" onclick="createNodesBatch(3)" id="btn-add-3-nodes">+ 3 Nodes</button>
+                    </div>
+                </div>
+                <div class="node-list" id="node-list">
+                    <div class="empty-state">No nodes running</div>
+                </div>
+                <div class="partition-controls">
+                    <button class="btn btn-warning" onclick="splitBrain()" id="btn-split-brain">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 3h5v5M4 20L21 3M21 16v5h-5M15 15l6 6M4 4l5 5"/></svg>
+                        Split Brain
+                    </button>
+                    <button class="btn btn-success" onclick="healAll()" id="btn-heal-all">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 11-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+                        Heal All
+                    </button>
+                    <button class="btn btn-outline" onclick="triggerPoll()" id="btn-trigger-poll">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                        Trigger Poll
+                    </button>
+                </div>
+            </section>
+
+            <section class="panel" id="live-metrics-panel">
+                <div class="panel-header">
+                    <h2>Live Metrics</h2>
+                    <span class="badge" id="metrics-update-badge">Polling&hellip;</span>
+                </div>
+                <div class="metrics-grid">
+                    <div class="metric-card" id="mc-convergence">
+                        <div class="metric-icon">⏱</div>
+                        <div class="metric-body">
+                            <span class="metric-label">Convergence Time</span>
+                            <span class="metric-value" id="mv-convergence">&mdash;</span>
+                            <span class="metric-unit">seconds</span>
+                        </div>
+                    </div>
+                    <div class="metric-card" id="mc-data-loss">
+                        <div class="metric-icon">📉</div>
+                        <div class="metric-body">
+                            <span class="metric-label">Data Loss</span>
+                            <span class="metric-value" id="mv-data-loss">0%</span>
+                            <span class="metric-unit">of events</span>
+                        </div>
+                    </div>
+                    <div class="metric-card" id="mc-gossip">
+                        <div class="metric-icon">💬</div>
+                        <div class="metric-body">
+                            <span class="metric-label">Gossip Messages</span>
+                            <span class="metric-value" id="mv-gossip">0</span>
+                            <span class="metric-unit">sent total</span>
+                        </div>
+                    </div>
+                    <div class="metric-card" id="mc-state-size">
+                        <div class="metric-icon">📦</div>
+                        <div class="metric-body">
+                            <span class="metric-label">State Size</span>
+                            <span class="metric-value" id="mv-state-size">0 B</span>
+                            <span class="metric-unit">bytes total</span>
+                        </div>
+                    </div>
+                    <div class="metric-card wide" id="mc-divergence">
+                        <div class="metric-icon">🔀</div>
+                        <div class="metric-body">
+                            <span class="metric-label">Network Status</span>
+                            <span class="metric-value" id="mv-divergence">Converged</span>
+                            <span class="metric-unit" id="mv-divergence-detail">All Merkle roots match</span>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </div>
+
+        <!-- Row 3: Charts -->
+        <div class="grid-row grid-cols-3">
+            <section class="panel chart-panel" id="chart-convergence-panel">
+                <div class="panel-header">
+                    <h2>Convergence Time</h2>
+                </div>
+                <div class="chart-container">
+                    <canvas id="chart-convergence"></canvas>
+                </div>
+            </section>
+            <section class="panel chart-panel" id="chart-state-size-panel">
+                <div class="panel-header">
+                    <h2>State Size Growth</h2>
+                </div>
+                <div class="chart-container">
+                    <canvas id="chart-state-size"></canvas>
+                </div>
+            </section>
+            <section class="panel chart-panel" id="chart-node-count-panel">
+                <div class="panel-header">
+                    <h2>Node Count</h2>
+                </div>
+                <div class="chart-container">
+                    <canvas id="chart-node-count"></canvas>
+                </div>
+            </section>
+        </div>
+
+        <!-- Row 3.5: Evaluation -->
+        <div class="grid-row grid-cols-1">
+            <section class="panel" id="evaluation-panel">
+                <div class="panel-header">
+                    <h2>📊 Evaluation Suite</h2>
+                    <span class="badge" id="eval-status-badge">Idle</span>
+                </div>
+                <div class="eval-controls">
+                    <div class="eval-config">
+                        <div class="form-group">
+                            <label for="eval-node-counts">Node Counts</label>
+                            <input type="text" id="eval-node-counts" value="5" placeholder="e.g. 3, 5, 7" />
+                        </div>
+                        <div class="form-group">
+                            <label for="eval-events-per-node">Events / Node</label>
+                            <input type="number" id="eval-events-per-node" value="5" min="1" max="50" />
+                        </div>
+                        <div class="form-group eval-actions">
+                            <button class="btn btn-primary" onclick="runEvaluation()" id="btn-run-eval">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                                Run Evaluation
+                            </button>
+                            <button class="btn btn-outline" onclick="downloadEvaluation()" id="btn-download-eval" disabled>
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                                Download CSV
+                            </button>
+                        </div>
+                    </div>
+                    <div class="eval-progress-wrap hidden" id="eval-progress-wrap">
+                        <div class="eval-progress-bar">
+                            <div class="eval-progress-fill" id="eval-progress-fill" style="width: 0%"></div>
+                        </div>
+                        <div class="eval-step-label" id="eval-step-label">Starting...</div>
+                    </div>
+                </div>
+                <div class="table-wrap" id="eval-results-wrap">
+                    <table id="eval-results-table">
+                        <thead>
+                            <tr>
+                                <th>Scenario</th>
+                                <th>Nodes</th>
+                                <th>Events</th>
+                                <th>Conv. Time</th>
+                                <th>Data Loss</th>
+                                <th>Gossip Msgs</th>
+                                <th>State Size</th>
+                                <th>Converged</th>
+                            </tr>
+                        </thead>
+                        <tbody id="eval-results-tbody">
+                            <tr><td colspan="8" class="empty-cell">No evaluation data — click Run Evaluation to start</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+        </div>
+
+        <!-- Row 4: Per-Node Stats + Event Log -->
+        <div class="grid-row grid-cols-2">
+            <section class="panel" id="per-node-panel">
+                <div class="panel-header">
+                    <h2>Per-Node Stats</h2>
+                </div>
+                <div class="table-wrap">
+                    <table id="per-node-table">
+                        <thead>
+                            <tr>
+                                <th>Node</th>
+                                <th>Events</th>
+                                <th>Gossip Sent</th>
+                                <th>Peers</th>
+                                <th>State Size</th>
+                                <th>Merkle</th>
+                            </tr>
+                        </thead>
+                        <tbody id="per-node-tbody">
+                            <tr><td colspan="6" class="empty-cell">Waiting for data&hellip;</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <section class="panel" id="event-log-panel">
+                <div class="panel-header">
+                    <h2>Event Log</h2>
+                    <span class="badge" id="event-log-count">0 events</span>
+                </div>
+                <div class="table-wrap">
+                    <table id="event-log-table">
+                        <thead>
+                            <tr>
+                                <th>Time</th>
+                                <th>Node</th>
+                                <th>Type</th>
+                                <th>Category</th>
+                                <th>State Size</th>
+                                <th>Merkle</th>
+                            </tr>
+                        </thead>
+                        <tbody id="event-log-tbody">
+                            <tr><td colspan="6" class="empty-cell">No events sent yet</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+        </div>
+    </main>
+
+    <!-- Toast container -->
+    <div id="toast-container"></div>
+
+    <script src="/app.js"></script>
+</body>
 </html>

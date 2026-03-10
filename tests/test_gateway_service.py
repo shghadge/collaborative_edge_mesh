@@ -11,6 +11,8 @@ class FakeStore:
         self.divergence_logs = []
         self.snapshots = []
         self.metrics = []
+        self.timeseries = []
+        self.event_tracking = []
 
     def log_divergence(self, is_divergent, merkle_roots):
         self.divergence_logs.append((is_divergent, merkle_roots))
@@ -27,6 +29,18 @@ class FakeStore:
 
     def save_metric(self, name, value, metadata=None):
         self.metrics.append({"name": name, "value": value, "metadata": metadata or {}})
+
+    def save_timeseries_metric(self, metric_name, value, metadata=None):
+        self.timeseries.append({"metric_name": metric_name, "value": value})
+
+    def get_timeseries(self, metric_name, limit=100):
+        return [t for t in self.timeseries if t["metric_name"] == metric_name][:limit]
+
+    def save_event_tracking(self, tracking_id, node_id, event_type, category, **kwargs):
+        self.event_tracking.append({"tracking_id": tracking_id, "node_id": node_id})
+
+    def get_event_tracking(self, limit=50):
+        return self.event_tracking[:limit]
 
 
 class FakeResponse:

@@ -36,6 +36,24 @@ class SQLiteStore:
                 value REAL NOT NULL,
                 metadata_json TEXT
             );
+            CREATE TABLE IF NOT EXISTS event_tracking (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                tracking_id TEXT NOT NULL,
+                node_id TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                category TEXT NOT NULL,
+                state_size_bytes INTEGER,
+                merkle_root_after TEXT,
+                metadata_json TEXT
+            );
+            CREATE TABLE IF NOT EXISTS metric_timeseries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                metric_name TEXT NOT NULL,
+                value REAL NOT NULL,
+                metadata_json TEXT
+            );
         """)
 
     def save_snapshot(self, merkle_root, node_count, source_nodes, state_dict):
@@ -119,6 +137,75 @@ class SQLiteStore:
             {
                 "timestamp": r["timestamp"],
                 "name": r["name"],
+                "value": r["value"],
+                "metadata": json.loads(r["metadata_json"] or "{}"),
+            }
+            for r in rows
+        ]
+
+    # --- Event Tracking ---
+
+    def save_event_tracking(
+        self, tracking_id, node_id, event_type, category,
+        state_size_bytes=None, merkle_root_after=None, metadata=None,
+    ):
+        self.conn.execute(
+            "INSERT INTO event_tracking (timestamp, tracking_id, node_id, event_type, category, state_size_bytes, merkle_root_after, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                datetime.utcnow().isoformat(),
+                tracking_id,
+                node_id,
+                event_type,
+                category,
+                state_size_bytes,
+                merkle_root_after,
+                json.dumps(metadata or {}),
+            ),
+        )
+        self.conn.commit()
+
+    def get_event_tracking(self, limit=50):
+        rows = self.conn.execute(
+            "SELECT * FROM event_tracking ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()
+        return [
+            {
+                "id": r["id"],
+                "timestamp": r["timestamp"],
+                "tracking_id": r["tracking_id"],
+                "node_id": r["node_id"],
+                "event_type": r["event_type"],
+                "category": r["category"],
+                "state_size_bytes": r["state_size_bytes"],
+                "merkle_root_after": r["merkle_root_after"],
+                "metadata": json.loads(r["metadata_json"] or "{}"),
+            }
+            for r in rows
+        ]
+
+    # --- Time-Series Metrics ---
+
+    def save_timeseries_metric(self, metric_name, value, metadata=None):
+        self.conn.execute(
+            "INSERT INTO metric_timeseries (timestamp, metric_name, value, metadata_json) VALUES (?, ?, ?, ?)",
+            (
+                datetime.utcnow().isoformat(),
+                metric_name,
+                value,
+                json.dumps(metadata or {}),
+            ),
+        )
+        self.conn.commit()
+
+    def get_timeseries(self, metric_name, limit=100):
+        rows = self.conn.execute(
+            "SELECT * FROM metric_timeseries WHERE metric_name = ? ORDER BY id DESC LIMIT ?",
+            (metric_name, limit),
+        ).fetchall()
+        return [
+            {
+                "timestamp": r["timestamp"],
+                "metric_name": r["metric_name"],
                 "value": r["value"],
                 "metadata": json.loads(r["metadata_json"] or "{}"),
             }

@@ -4,9 +4,7 @@ serializes with meaningful descriptions, and that NodeState routes events
 to the right CRDT by category.
 """
 
-import json
-import pytest
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from src.crdt.gcounter import GCounter
 from src.crdt.lww_register import LWWRegister

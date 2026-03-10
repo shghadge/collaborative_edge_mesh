@@ -3,11 +3,15 @@ import json
 import socket
 import structlog
 import time
+from typing import TYPE_CHECKING
 
 from ..config import Config
 from ..crdt import NodeState
 
 log = structlog.get_logger()
+
+if TYPE_CHECKING:
+    from .peer_discovery import PeerDiscovery
 
 MAX_PACKET = 60000
 
@@ -22,9 +26,10 @@ class GossipService:
       - merkle_only: compact fingerprint with event count for quick comparison
     """
 
-    def __init__(self, config: Config, state: NodeState):
+    def __init__(self, config: Config, state: NodeState, peer_discovery: "PeerDiscovery | None" = None):
         self.config = config
         self.state = state
+        self.peer_discovery = peer_discovery
         self.running = False
         self.sock = None
         self.stats = {
@@ -43,6 +48,7 @@ class GossipService:
             "last_message_type": None,
             "last_message_at": None,
             "last_successful_merge_at": None,
+            "peers_discovered": 0,
         }
 
     async def start(self):
@@ -53,7 +59,7 @@ class GossipService:
         self.sock.setblocking(False)
 
         log.info(
-            "gossip_started", port=self.config.gossip_port, peers=self.config.peers
+            "gossip_started", port=self.config.gossip_port, discovery="mdns" if self.peer_discovery else "none"
         )
 
         await asyncio.gather(
@@ -99,7 +105,9 @@ class GossipService:
                     ).encode()
 
                 loop = asyncio.get_event_loop()
-                for peer in self.config.peers:
+                peers = self.peer_discovery.get_peers() if self.peer_discovery else []
+                self.stats["peers_discovered"] = len(peers)
+                for peer in peers:
                     host, port = self._parse_peer(peer)
                     try:
                         await loop.run_in_executor(

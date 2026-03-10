@@ -1,4 +1,3 @@
-import asyncio
 from datetime import datetime
 import structlog
 import docker
@@ -224,20 +223,6 @@ class DockerManager:
 
         host_port = self._select_host_port(node_id)
 
-        # figure out existing peers
-        peers = []
-        for container in self.client.containers.list():
-            if "edge-node" in container.name and container.status == "running":
-                networks = container.attrs.get("NetworkSettings", {}).get(
-                    "Networks", {}
-                )
-                for net_name, net_info in networks.items():
-                    if "mesh" in net_name:
-                        peer_ip = net_info.get("IPAddress")
-                        if peer_ip:
-                            peers.append(f"{peer_ip}:9000")
-
-        peer_str = ",".join(peers)
         image = self._get_image_name()
         network = self._get_network()
 
@@ -250,7 +235,6 @@ class DockerManager:
                 "HTTP_PORT": str(http_port),
                 "GOSSIP_PORT": "9000",
                 "GOSSIP_INTERVAL": "5",
-                "PEER_NODES": peer_str,
             },
             ports={f"{http_port}/tcp": host_port},
             network=network.name,
@@ -296,7 +280,6 @@ class DockerManager:
             host_port=host_port,
             url=f"http://localhost:{host_port}",
             internal_url=self._internal_url_for_container_name(container_name),
-            peers=peer_str,
         )
 
     def remove_node(self, node_id):

@@ -159,7 +159,31 @@ async def metrics(name: Optional[str] = None, limit: int = 100):
     return store.get_metrics(name, limit)
 
 
-# --- Start ---
+@app.get("/gateway/timeseries")
+async def timeseries(metric: str = "state_size_bytes", limit: int = 100):
+    """Get time-series data for dashboard charts."""
+    return store.get_timeseries(metric, limit)
+
+
+@app.get("/gateway/event-tracking")
+async def event_tracking(limit: int = 50):
+    """Get per-event tracking history."""
+    return store.get_event_tracking(limit)
+
+
+@app.post("/gateway/event-tracking")
+async def save_event_tracking_record(record: dict):
+    """Save an event tracking record."""
+    store.save_event_tracking(
+        tracking_id=record.get("tracking_id", "unknown"),
+        node_id=record.get("node_id", "unknown"),
+        event_type=record.get("event_type", "unknown"),
+        category=record.get("category", "general"),
+        state_size_bytes=record.get("state_size_bytes"),
+        merkle_root_after=record.get("merkle_root_after"),
+        metadata=record.get("metadata"),
+    )
+    return {"status": "saved"}
 
 
 async def main():

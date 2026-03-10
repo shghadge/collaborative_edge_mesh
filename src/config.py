@@ -21,10 +21,6 @@ class Config:
             float(os.getenv("GATEWAY_NODE_FAILURE_BACKOFF", "2")), 0.0
         )
 
-        # comma-separated list like "edge-node-2:9000,edge-node-3:9000"
-        raw = os.getenv("PEER_NODES", "")
-        self.peers = [p.strip() for p in raw.split(",") if p.strip()]
-
         # comma-separated list like "edge-node-1:8000,edge-node-2:8000"
         raw_edge_nodes = os.getenv("EDGE_NODES", "")
         self.edge_nodes = [p.strip() for p in raw_edge_nodes.split(",") if p.strip()]

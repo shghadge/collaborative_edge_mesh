@@ -1,5 +1,5 @@
 """
-Edge node entry point. Starts the HTTP intake and UDP gossip services.
+Edge node entry point. Starts the HTTP intake, UDP gossip, and mDNS discovery services.
 """
 
 import asyncio
@@ -11,7 +11,7 @@ import uvicorn
 from src.config import config
 from src.crdt import NodeState
 from src.hash_chain import HashChainLog
-from src.services import IntakeService, GossipService
+from src.services import IntakeService, GossipService, PeerDiscovery
 
 logging.basicConfig(
     format="%(message)s", level=getattr(logging, config.log_level, logging.INFO)
@@ -34,13 +34,26 @@ async def main():
     state = NodeState(config.node_id)
     chain = HashChainLog(config.node_id, f"{config.data_dir}/logs")
     intake = IntakeService(config, state, chain)
-    gossip = GossipService(config, state)
+
+    # mDNS peer discovery
+    discovery = PeerDiscovery(config.node_id, config.gossip_port)
+    gossip = GossipService(config, state, peer_discovery=discovery)
 
     @intake.app.get("/gossip/stats")
     async def gossip_stats():
         return {
             "node_id": config.node_id,
             "stats": gossip.get_stats(),
+        }
+
+    @intake.app.get("/peers")
+    async def discovered_peers():
+        return {
+            "node_id": config.node_id,
+            "discovery": "mdns",
+            "peers": discovery.get_peers(),
+            "peer_count": len(discovery.get_peers()),
+            "stats": discovery.stats,
         }
 
     shutdown = asyncio.Event()
@@ -60,7 +73,7 @@ async def main():
         node_id=config.node_id,
         http=config.http_port,
         gossip=config.gossip_port,
-        peers=config.peers,
+        discovery="mdns",
     )
 
     async def wait_shutdown():
@@ -68,11 +81,13 @@ async def main():
         raise asyncio.CancelledError()
 
     try:
+        await discovery.start()
         await asyncio.gather(server.serve(), gossip.start(), wait_shutdown())
     except asyncio.CancelledError:
         pass
     finally:
         await gossip.stop()
+        await discovery.stop()
         log.info("node_stopped", node_id=config.node_id)
 
 

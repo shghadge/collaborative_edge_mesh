@@ -5,7 +5,6 @@ from src.services.gossip import GossipService
 
 def _build_gossip_service(monkeypatch, node_id="node-1"):
     monkeypatch.setenv("NODE_ID", node_id)
-    monkeypatch.setenv("PEER_NODES", "")
     config = Config()
     state = NodeState(config.node_id)
     return GossipService(config, state)

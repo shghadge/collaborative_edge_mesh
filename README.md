@@ -2,6 +2,16 @@
 
 CRDT-based edge mesh for disaster analytics. Nodes sync data using gossip protocol and merge state using conflict-free data types.
 
+## Runtime Topology
+
+- **Simulator service**: hosts dashboard + simulation control APIs
+- **Gateway service**: polling/merge/metrics backend
+- **Edge nodes**: created dynamically from simulator (no default nodes at startup)
+
+After `make docker-rebuild`:
+- Dashboard + simulator API: `http://localhost:8000`
+- Gateway API: `http://localhost:7000`
+
 ## Setup
 
 ```bash
@@ -13,7 +23,14 @@ uv sync
 
 ```bash
 make build   # build docker images
+make docker-rebuild  # clean + rebuild + start simulator/gateway
 ```
+
+## Create Nodes (On-Demand)
+
+- Start with zero edge nodes
+- Use dashboard batch create or API: `POST /nodes/batch?count=<n>` on simulator
+- First created node starts as `node-1`, then increments
 
 ## Testing
 
