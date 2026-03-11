@@ -4,18 +4,78 @@
 
 // --- State ---
 let nodes = [];
+let gateways = [];
 let liveMetrics = {};
 let eventLog = [];
 let charts = {};
 let pollInterval = null;
-const POLL_MS = 3000;
+let ws = null;
+let wsConnected = false;
+const POLL_MS = 10000; // Fallback poll (slower since WS handles real-time)
 
 // --- Init ---
 document.addEventListener('DOMContentLoaded', () => {
     initCharts();
     refreshAll();
-    pollInterval = setInterval(pollData, POLL_MS);
+    connectWebSocket();
+    // Fallback polling in case WebSocket is unavailable
+    pollInterval = setInterval(() => {
+        if (!wsConnected) pollData();
+    }, POLL_MS);
 });
+
+// --- WebSocket ---
+function connectWebSocket() {
+    try {
+        const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+        ws = new WebSocket(`${protocol}://${window.location.host}/ws`);
+
+        ws.onopen = () => {
+            wsConnected = true;
+            console.log('WebSocket connected');
+        };
+
+        ws.onmessage = (event) => {
+            try {
+                const data = JSON.parse(event.data);
+                if (data.type === 'update') {
+                    if (data.nodes) {
+                        nodes = data.nodes;
+                        renderNodes();
+                        renderTopology();
+                        updateEventTargetSelector();
+                    }
+                    if (data.gateways) {
+                        gateways = data.gateways;
+                        renderGateways();
+                        updateGatewaySelector();
+                    }
+                    if (data.metrics) {
+                        liveMetrics = data.metrics;
+                        renderMetrics();
+                        updateCharts();
+                    }
+                }
+            } catch (e) {
+                console.warn('WebSocket message parse error', e);
+            }
+        };
+
+        ws.onclose = () => {
+            wsConnected = false;
+            console.log('WebSocket disconnected, retrying in 3s...');
+            setTimeout(connectWebSocket, 3000);
+        };
+
+        ws.onerror = () => {
+            wsConnected = false;
+            ws.close();
+        };
+    } catch (e) {
+        wsConnected = false;
+        console.warn('WebSocket not available, using polling fallback');
+    }
+}
 
 // --- API Helpers ---
 async function api(method, path, body = null) {
@@ -48,6 +108,7 @@ function toast(message, type = 'info') {
 // --- Refresh ---
 async function refreshAll() {
     await Promise.allSettled([
+        fetchGateways(),
         fetchNodes(),
         fetchLiveMetrics(),
         fetchTimeseries(),
@@ -56,9 +117,67 @@ async function refreshAll() {
 
 async function pollData() {
     await Promise.allSettled([
+        fetchGateways(),
         fetchNodes(),
         fetchLiveMetrics(),
     ]);
+}
+
+// --- Gateways ---
+async function fetchGateways() {
+    try {
+        gateways = await api('GET', '/gateways');
+        renderGateways();
+        updateGatewaySelector();
+    } catch (e) {
+        // Docker may not be ready
+    }
+}
+
+function renderGateways() {
+    const container = document.getElementById('gateway-list');
+    if (!container) return;
+
+    if (!gateways.length) {
+        container.innerHTML = '<div class="empty-state">No gateways running</div>';
+        return;
+    }
+
+    container.innerHTML = gateways.map(g => {
+        const assignedCount = g.assigned_nodes ? g.assigned_nodes.length : 0;
+        return `
+            <div class="node-item">
+                <span class="node-dot running"></span>
+                <span class="node-name" style="color: #ed8936;">${g.name}</span>
+                <span class="node-id">port ${g.host_port} &middot; ${assignedCount} nodes</span>
+                <div class="node-actions">
+                    <button class="btn btn-sm btn-outline" onclick="removeGateway('${g.name}')">✕</button>
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+async function createGateway() {
+    try {
+        const result = await api('POST', '/gateways');
+        toast(`Created ${result.gateway_id || result.container}`, 'success');
+        await fetchGateways();
+        await fetchNodes();
+    } catch (e) {
+        toast(`Create failed: ${e.message}`, 'error');
+    }
+}
+
+async function removeGateway(gatewayId) {
+    try {
+        await api('DELETE', `/gateways/${gatewayId}`);
+        toast(`Removed ${gatewayId}`, 'info');
+        await fetchGateways();
+        await fetchNodes();
+    } catch (e) {
+        toast(`Remove failed: ${e.message}`, 'error');
+    }
 }
 
 // --- Nodes ---
@@ -68,7 +187,8 @@ async function fetchNodes() {
         renderNodes();
         renderTopology();
         updateNodeSelector();
-        document.getElementById('stat-node-count').textContent = nodes.length;
+        const statEl = document.getElementById('stat-node-count');
+        if (statEl) statEl.textContent = nodes.length;
     } catch (e) {
         // Docker may not be ready
     }
@@ -81,15 +201,24 @@ function renderNodes() {
         return;
     }
 
+    const activeGateways = gateways || [];
+
     container.innerHTML = nodes.map(n => {
         const statusClass = n.isolated ? 'isolated' : (n.status === 'running' ? 'running' : 'stopped');
         const statusLabel = n.isolated ? 'isolated' : n.status;
+        const gwLabel = n.assigned_gateway ? ` &middot; ${n.assigned_gateway}` : '';
+
+        const optionsHtml = ['<option value="">Auto (Round-Robin)</option>', ...activeGateways.map(g => `<option value="${g.name}" ${g.name === n.assigned_gateway ? 'selected' : ''}>${g.name}</option>`)].join('');
+
         return `
             <div class="node-item">
                 <span class="node-dot ${statusClass}"></span>
                 <span class="node-name">${n.name}</span>
-                <span class="node-id">${n.node_id} · ${statusLabel}</span>
-                <div class="node-actions">
+                <span class="node-id">${n.node_id} &middot; ${statusLabel}${gwLabel}</span>
+                <div class="node-actions" style="display: flex; gap: 6px; align-items: center;">
+                    <select onchange="changeNodeGateway('${n.node_id}', this.value)" style="font-size: 11px; padding: 2px 4px; border-radius: 4px; border: 1px solid var(--border-color); background: var(--surface); color: var(--text-secondary);">
+                        ${optionsHtml}
+                    </select>
                     ${n.isolated
                 ? `<button class="btn btn-sm btn-success" onclick="healNode('${n.node_id}')">Heal</button>`
                 : `<button class="btn btn-sm btn-warning" onclick="isolateNode('${n.node_id}')">Isolate</button>`
@@ -103,15 +232,32 @@ function renderNodes() {
 
 function updateNodeSelector() {
     const select = document.getElementById('event-target');
+    if (!select) return;
     const current = select.value;
     select.innerHTML = '<option value="">Any node</option>' +
         nodes.map(n => `<option value="${n.node_id}" ${n.node_id === current ? 'selected' : ''}>${n.name} (${n.node_id})</option>`).join('');
 }
 
+function updateGatewaySelector() {
+    const selects = document.querySelectorAll('.gateway-selector');
+    selects.forEach(select => {
+        const current = select.value;
+        let html = '<option value="">Auto (Round-Robin)</option>';
+        if (gateways) {
+            gateways.forEach(g => {
+                html += `<option value="${g.name}" ${g.name === current ? 'selected' : ''}>${g.name}</option>`;
+            });
+        }
+        select.innerHTML = html;
+    });
+}
+
 // --- Node Actions ---
 async function createNode() {
     try {
-        const result = await api('POST', '/nodes');
+        const gwSelect = document.getElementById('gateway-selector');
+        const query = gwSelect && gwSelect.value ? `?assigned_gateway=${encodeURIComponent(gwSelect.value)}` : '';
+        const result = await api('POST', `/nodes${query}`);
         toast(`Created ${result.container || result.node_id}`, 'success');
         await fetchNodes();
     } catch (e) {
@@ -121,11 +267,23 @@ async function createNode() {
 
 async function createNodesBatch(count) {
     try {
-        const result = await api('POST', `/nodes/batch?count=${count}`);
+        const gwSelect = document.getElementById('gateway-selector');
+        const query = gwSelect && gwSelect.value ? `&assigned_gateway=${encodeURIComponent(gwSelect.value)}` : '';
+        const result = await api('POST', `/nodes/batch?count=${count}${query}`);
         toast(`Created ${result.created_count} nodes`, 'success');
         await fetchNodes();
     } catch (e) {
         toast(`Batch create failed: ${e.message}`, 'error');
+    }
+}
+
+async function changeNodeGateway(nodeId, gatewayName) {
+    try {
+        await api('PUT', `/nodes/${nodeId}/gateway`, { assigned_gateway: gatewayName });
+        toast(`Reassigned ${nodeId} to ${gatewayName || 'Auto'}`, 'info');
+        await fetchNodes();
+    } catch (e) {
+        toast(`Reassign failed: ${e.message}`, 'error');
     }
 }
 
@@ -477,106 +635,239 @@ function updateChart(chart, data) {
     chart.update('none');
 }
 
-// --- Topology Canvas ---
-function renderTopology() {
-    const canvas = document.getElementById('topology-canvas');
-    const container = canvas.parentElement;
-    const ctx = canvas.getContext('2d');
-    const dpr = window.devicePixelRatio || 1;
+// --- D3 Topology Canvas ---
+let simulation = null;
+let d3Nodes = [];
+let d3Links = [];
+let lastTopologyFingerprint = '';
 
-    // Read CSS layout dimensions BEFORE modifying the canvas
+function renderTopology() {
+    const svgEl = document.getElementById('topology-canvas');
+    if (!svgEl) return;
+    const container = svgEl.parentElement;
     const rect = container.getBoundingClientRect();
-    const w = rect.width - 32;   // subtract padding
-    const h = rect.height - 32;
+    const w = rect.width;
+    const h = rect.height;
 
     if (w <= 0 || h <= 0) return;
 
-    // Set canvas buffer size (high-res) and CSS display size
-    canvas.width = Math.round(w * dpr);
-    canvas.height = Math.round(h * dpr);
-    canvas.style.width = w + 'px';
-    canvas.style.height = h + 'px';
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const svg = d3.select('#topology-canvas')
+        .attr('width', w)
+        .attr('height', h);
 
-    ctx.clearRect(0, 0, w, h);
-
-    if (!nodes.length) {
-        ctx.fillStyle = '#5a6478';
-        ctx.font = '13px Inter, system-ui, sans-serif';
-        ctx.textAlign = 'center';
-        ctx.fillText('Create nodes to see the topology', w / 2, h / 2);
+    if (!nodes.length && (!gateways || !gateways.length)) {
+        svg.selectAll('*').remove();
+        svg.append('text')
+            .attr('x', w / 2)
+            .attr('y', h / 2)
+            .attr('text-anchor', 'middle')
+            .attr('fill', '#5a6478')
+            .style('font-family', 'Inter, system-ui, sans-serif')
+            .style('font-size', '13px')
+            .text('Create nodes to see the topology');
+        lastTopologyFingerprint = '';
         return;
     }
 
-    // Calculate positions in a circle
-    const cx = w / 2;
-    const cy = h / 2;
-    const radius = Math.min(w, h) * 0.35;
-    const positions = nodes.map((_, i) => {
-        const angle = (i * 2 * Math.PI / nodes.length) - Math.PI / 2;
-        return {
-            x: cx + radius * Math.cos(angle),
-            y: cy + radius * Math.sin(angle),
-        };
+    // Prepare data
+    const activeGateways = gateways || [];
+    const newNodes = [];
+    const newLinks = [];
+    const nodeById = new Map();
+
+    activeGateways.forEach(gw => {
+        const n = { id: gw.name, type: 'gateway', label: gw.name };
+        newNodes.push(n);
+        nodeById.set(n.id, n);
     });
 
-    // Draw connections
+    nodes.forEach(node => {
+        const n = { id: node.name, type: 'node', label: node.node_id || node.name, isolated: node.isolated };
+        newNodes.push(n);
+        nodeById.set(n.id, n);
+    });
+
+    // links
+    nodes.forEach(node => {
+        if (node.assigned_gateway && nodeById.has(node.assigned_gateway) && !node.isolated) {
+            newLinks.push({ source: node.name, target: node.assigned_gateway, type: 'gateway-link' });
+        }
+    });
+
+
     for (let i = 0; i < nodes.length; i++) {
         for (let j = i + 1; j < nodes.length; j++) {
+            const sameGateway =
+                nodes[i].assigned_gateway &&
+                nodes[j].assigned_gateway &&
+                nodes[i].assigned_gateway === nodes[j].assigned_gateway;
+            if (!sameGateway) continue;
+
             const eitherIsolated = nodes[i].isolated || nodes[j].isolated;
-
-            ctx.beginPath();
-            ctx.moveTo(positions[i].x, positions[i].y);
-            ctx.lineTo(positions[j].x, positions[j].y);
-
-            if (eitherIsolated) {
-                ctx.strokeStyle = 'rgba(252, 129, 129, 0.15)';
-                ctx.setLineDash([4, 4]);
+            if (!eitherIsolated) {
+                newLinks.push({ source: nodes[i].name, target: nodes[j].name, type: 'mesh-link' });
             } else {
-                ctx.strokeStyle = 'rgba(99, 179, 237, 0.2)';
-                ctx.setLineDash([]);
+                newLinks.push({ source: nodes[i].name, target: nodes[j].name, type: 'isolated-link' });
             }
-            ctx.lineWidth = 1;
-            ctx.stroke();
-            ctx.setLineDash([]);
         }
     }
 
-    // Draw nodes
-    nodes.forEach((node, i) => {
-        const pos = positions[i];
-        const isIsolated = node.isolated;
+    // Build a fingerprint of the current graph structure to detect changes
+    const nodeFingerprint = newNodes.map(n => `${n.id}:${n.type}:${n.isolated || false}`).sort().join('|');
+    const linkFingerprint = newLinks.map(l => `${l.source}-${l.target}:${l.type}`).sort().join('|');
+    const currentFingerprint = nodeFingerprint + '##' + linkFingerprint;
+    const graphChanged = currentFingerprint !== lastTopologyFingerprint;
+    lastTopologyFingerprint = currentFingerprint;
 
-        // Glow
-        const gradient = ctx.createRadialGradient(pos.x, pos.y, 0, pos.x, pos.y, 24);
-        gradient.addColorStop(0, isIsolated
-            ? 'rgba(252, 129, 129, 0.25)'
-            : 'rgba(99, 179, 237, 0.25)');
-        gradient.addColorStop(1, 'rgba(0,0,0,0)');
-        ctx.fillStyle = gradient;
-        ctx.beginPath();
-        ctx.arc(pos.x, pos.y, 24, 0, Math.PI * 2);
-        ctx.fill();
-
-        // Node circle
-        ctx.beginPath();
-        ctx.arc(pos.x, pos.y, 10, 0, Math.PI * 2);
-        ctx.fillStyle = isIsolated ? '#fc8181' : '#63b3ed';
-        ctx.fill();
-
-        // Inner dot
-        ctx.beginPath();
-        ctx.arc(pos.x, pos.y, 3, 0, Math.PI * 2);
-        ctx.fillStyle = isIsolated ? '#fed7d7' : '#bee3f8';
-        ctx.fill();
-
-        // Label
-        ctx.fillStyle = '#8892a4';
-        ctx.font = '10px Inter, system-ui, sans-serif';
-        ctx.textAlign = 'center';
-        const label = node.node_id || node.name || '';
-        ctx.fillText(label.length > 12 ? label.substring(0, 12) + '…' : label, pos.x, pos.y + 24);
+    // Merge with existing for stable layout
+    const oldNodeById = new Map(d3Nodes.map(d => [d.id, d]));
+    d3Nodes = newNodes.map(n => {
+        const old = oldNodeById.get(n.id);
+        if (old) {
+            n.x = old.x;
+            n.y = old.y;
+            n.vx = old.vx;
+            n.vy = old.vy;
+            n.fx = old.fx;
+            n.fy = old.fy;
+        }
+        return n;
     });
+    d3Links = newLinks;
+
+    svg.selectAll('*').remove();
+
+    const defs = svg.append('defs');
+    const glowFilter = defs.append('filter').attr('id', 'glow');
+    glowFilter.append('feGaussianBlur').attr('stdDeviation', '4').attr('result', 'coloredBlur');
+    const feMerge = glowFilter.append('feMerge');
+    feMerge.append('feMergeNode').attr('in', 'coloredBlur');
+    feMerge.append('feMergeNode').attr('in', 'SourceGraphic');
+
+    const g = svg.append('g');
+
+    if (!simulation) {
+        simulation = d3.forceSimulation()
+            .force('charge', d3.forceManyBody().strength(d => d.type === 'gateway' ? -600 : -250))
+            .force('center', d3.forceCenter(w / 2, h / 2))
+            .force('collision', d3.forceCollide().radius(d => d.type === 'gateway' ? 40 : 25));
+    } else {
+        simulation.force('center', d3.forceCenter(w / 2, h / 2));
+    }
+
+    simulation.nodes(d3Nodes);
+    simulation.force('link', d3.forceLink(d3Links).id(d => d.id).distance(d => {
+        if (d.type === 'gateway-link') return 80;
+        return 140;
+    }).strength(d => {
+        if (d.type === 'isolated-link') return 0.01;
+        if (d.type === 'gateway-link') return 0.8;
+        return 0.1;
+    }));
+
+    // Only re-energize the simulation when the graph structure actually changed
+    if (graphChanged) {
+        simulation.alpha(0.3).restart();
+    } else {
+        // Just nudge to redraw without drifting
+        simulation.alpha(0).restart();
+    }
+
+    // Draw links
+    const link = g.append('g')
+        .selectAll('line')
+        .data(d3Links)
+        .join('line')
+        .attr('stroke', d => {
+            if (d.type === 'isolated-link') return 'rgba(252, 129, 129, 0.15)';
+            if (d.type === 'gateway-link') return 'rgba(237, 137, 54, 0.5)';
+            return 'rgba(99, 179, 237, 0.2)';
+        })
+        .attr('stroke-dasharray', d => {
+            if (d.type === 'isolated-link' || d.type === 'gateway-link') return '4,4';
+            return null;
+        });
+
+    // Draw nodes
+    const node = g.append('g')
+        .selectAll('g')
+        .data(d3Nodes)
+        .join('g')
+        .call(d3.drag()
+            .on('start', dragstarted)
+            .on('drag', dragged)
+            .on('end', dragended)
+        );
+
+    // Gateway style
+    const gatewaysG = node.filter(d => d.type === 'gateway');
+    gatewaysG.append('rect')
+        .attr('x', -15).attr('y', -15).attr('width', 30).attr('height', 30)
+        .attr('fill', 'rgba(237, 137, 54, 0.2)');
+    gatewaysG.append('rect')
+        .attr('x', -8).attr('y', -8).attr('width', 16).attr('height', 16)
+        .attr('fill', '#ed8936');
+    gatewaysG.append('rect')
+        .attr('x', -2).attr('y', -2).attr('width', 4).attr('height', 4)
+        .attr('fill', '#fbd38d');
+
+    // Edge node style
+    const edgesG = node.filter(d => d.type === 'node');
+
+    edgesG.append('circle')
+        .attr('r', 10)
+        .attr('fill', d => d.isolated ? '#fc8181' : '#63b3ed')
+        .style('filter', 'url(#glow)');
+    edgesG.append('circle')
+        .attr('r', 10)
+        .attr('fill', 'none')
+        .attr('stroke', d => d.isolated ? 'rgba(252, 129, 129, 0.3)' : 'rgba(99, 179, 237, 0.3)')
+        .attr('stroke-width', 8);
+    edgesG.append('circle')
+        .attr('r', 3)
+        .attr('fill', d => d.isolated ? '#fed7d7' : '#bee3f8');
+
+    node.append('text')
+        .attr('y', 25)
+        .attr('text-anchor', 'middle')
+        .attr('fill', d => d.type === 'gateway' ? '#bdc4d1' : '#8892a4')
+        .style('font-family', 'Inter, system-ui, sans-serif')
+        .style('font-size', d => d.type === 'gateway' ? '11px' : '10px')
+        .style('font-weight', d => d.type === 'gateway' ? 'bold' : 'normal')
+        .text(d => d.label.length > 12 ? d.label.substring(0, 12) + '…' : d.label);
+
+    simulation.on('tick', () => {
+        // Enforce bounding box constraints
+        node.attr('transform', d => {
+            const r = d.type === 'gateway' ? 20 : 10;
+            d.x = Math.max(r, Math.min(w - r, d.x));
+            d.y = Math.max(r, Math.min(h - r, d.y));
+            return `translate(${d.x},${d.y})`;
+        });
+
+        link
+            .attr('x1', d => d.source.x)
+            .attr('y1', d => d.source.y)
+            .attr('x2', d => d.target.x)
+            .attr('y2', d => d.target.y);
+    });
+
+    function dragstarted(event) {
+        if (!event.active) simulation.alphaTarget(0.3).restart();
+        event.subject.fx = event.subject.x;
+        event.subject.fy = event.subject.y;
+    }
+
+    function dragged(event) {
+        event.subject.fx = event.x;
+        event.subject.fy = event.y;
+    }
+
+    function dragended(event) {
+        if (!event.active) simulation.alphaTarget(0);
+        event.subject.fx = null;
+        event.subject.fy = null;
+    }
 }
 
 // Re-render topology on window resize
@@ -585,6 +876,25 @@ window.addEventListener('resize', () => {
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(renderTopology, 150);
 });
+
+function toggleFullscreen() {
+    const topologyPanel = document.getElementById('topology-panel');
+    topologyPanel.classList.toggle('fullscreen');
+
+    setTimeout(() => {
+        if (simulation) {
+            simulation.alpha(0.3).restart();
+        }
+        renderTopology();
+    }, 10);
+}
+
+function toggleAccordion(headerEl) {
+    const panel = headerEl.closest('.accordion-panel');
+    if (panel) {
+        panel.classList.toggle('open');
+    }
+}
 
 // --- Utilities ---
 function formatBytes(bytes) {

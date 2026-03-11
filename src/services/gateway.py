@@ -202,20 +202,29 @@ class GatewayService:
 
         try:
             async with aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=5)
+                timeout=aiohttp.ClientTimeout(total=5),
+                connector=aiohttp.TCPConnector(limit=50),
             ) as session:
-                # fetch merkle roots from all nodes
-                for node_id, info in self.edge_nodes.items():
+                # Fetch merkle roots from all nodes CONCURRENTLY
+                async def _fetch_merkle(node_id, info):
                     data = await self._get_json_with_retry(
-                        session,
-                        node_id,
-                        f"{info['url']}/state/merkle",
+                        session, node_id, f"{info['url']}/state/merkle",
                     )
                     if not data:
-                        merkle_roots[node_id] = "unreachable"
+                        return node_id, "unreachable"
+                    root = data.get("merkle_root", "unreachable")
+                    info["last_merkle"] = root
+                    return node_id, root
+
+                merkle_results = await asyncio.gather(
+                    *[_fetch_merkle(nid, info) for nid, info in self.edge_nodes.items()],
+                    return_exceptions=True,
+                )
+                for result in merkle_results:
+                    if isinstance(result, Exception):
                         continue
-                    merkle_roots[node_id] = data.get("merkle_root", "unreachable")
-                    info["last_merkle"] = merkle_roots[node_id]
+                    node_id, root = result
+                    merkle_roots[node_id] = root
 
                 # check divergence
                 reachable_roots = {
@@ -231,14 +240,25 @@ class GatewayService:
                 if self.is_divergent:
                     log.warning("divergence_detected", roots=merkle_roots)
 
-                # fetch full state from all reachable nodes and merge
+                # Fetch full state from all reachable nodes CONCURRENTLY and merge
                 merge_start = time.time()
 
-                for node_id in reachable_roots:
+                async def _fetch_state(node_id):
                     url = self.edge_nodes[node_id]["url"]
                     data = await self._get_json_with_retry(
                         session, node_id, f"{url}/state"
                     )
+                    return node_id, data
+
+                state_results = await asyncio.gather(
+                    *[_fetch_state(nid) for nid in reachable_roots],
+                    return_exceptions=True,
+                )
+
+                for result in state_results:
+                    if isinstance(result, Exception):
+                        continue
+                    node_id, data = result
                     if not data:
                         continue
                     try:

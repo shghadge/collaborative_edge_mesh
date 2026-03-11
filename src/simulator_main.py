@@ -9,17 +9,17 @@ import logging
 import random
 import os
 import signal
+import time
 import uuid
-from typing import Optional
+from typing import Optional, Any, Dict, Set
 
 import aiohttp
 import structlog
 import uvicorn
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-from typing import Any, Dict
 
 from src.config import config
 from src.services.docker_manager import DockerManager
@@ -38,8 +38,11 @@ structlog.configure(
     logger_factory=structlog.stdlib.LoggerFactory(),
 )
 
+from fastapi.openapi.docs import get_swagger_ui_html
+from fastapi.responses import HTMLResponse
+
 log = structlog.get_logger()
-app = FastAPI(title="Edge Mesh Simulator")
+app = FastAPI(title="Edge Mesh Simulator", docs_url=None)
 
 
 try:
@@ -47,6 +50,17 @@ try:
 except Exception as error:
     log.warning("docker_unavailable", error=str(error))
     docker_mgr = None
+
+USER_GATEWAY_ASSIGNMENTS = {}  # node_id -> gateway_name
+
+# --- WebSocket state ---
+_ws_clients: Set[WebSocket] = set()
+
+# --- Sync debounce ---
+_last_sync_time: float = 0.0
+_SYNC_DEBOUNCE_SECONDS = 5.0
+_sync_lock = asyncio.Lock() if False else None  # created at startup
+_last_sync_fingerprint: str = ""
 
 
 # --- Models ---
@@ -108,7 +122,128 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
     )
 
 
+@app.get("/docs", include_in_schema=False)
+async def custom_swagger_ui_html():
+    urls = [{"url": "/openapi.json", "name": "Simulator Engine"}]
+
+    if docker_mgr is not None:
+        try:
+            gateways = await _discover_gateways()
+            for gw in gateways:
+                gw_url = gw.get("external_url") or gw.get("url")
+                if gw_url:
+                    urls.append({
+                        "url": f"{gw_url}/openapi.json",
+                        "name": f"Gateway ({gw['name']})"
+                    })
+
+            nodes = await asyncio.to_thread(docker_mgr.list_nodes)
+            for node in nodes:
+                node_url = node.get("url")  # external facing URL
+                if node_url:
+                    urls.append({
+                        "url": f"{node_url}/openapi.json",
+                        "name": f"Node ({node['name']})"
+                    })
+        except Exception as e:
+            log.warning("swagger_discovery_failed", error=str(e))
+
+    # FastAPI's built-in get_swagger_ui_html does not include the standalone JS required for the topbar/URL dropdown.
+    # Therefore, we yield a custom HTMLResponse containing the required JS and CSS to render the Topbar.
+    html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+    <link type="text/css" rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css">
+    <title>Edge Mesh APIs</title>
+    </head>
+    <body>
+    <div id="swagger-ui"></div>
+    <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-standalone-preset.js"></script>
+    <script>
+    const ui = SwaggerUIBundle({{
+        urls: {json.dumps(urls)},
+        dom_id: '#swagger-ui',
+        deepLinking: true,
+        presets: [
+            SwaggerUIBundle.presets.apis,
+            SwaggerUIStandalonePreset
+        ],
+        plugins: [
+            SwaggerUIBundle.plugins.DownloadUrl
+        ],
+        layout: "StandaloneLayout"
+    }})
+    </script>
+    </body>
+    </html>
+    """
+    return HTMLResponse(html)
+
+
 # --- Docker / Gateway helpers ---
+
+
+def _normalize_node_id(node_id: str) -> str:
+    if node_id.startswith("edge-node-"):
+        suffix = node_id.replace("edge-node-", "", 1)
+        return f"node-{suffix}"
+    return node_id
+
+
+def _candidate_urls(*urls: Optional[str]) -> list[str]:
+    ordered: list[str] = []
+    for url in urls:
+        if not url:
+            continue
+        if url not in ordered:
+            ordered.append(url)
+    return ordered
+
+
+def _build_node_gateway_map(
+    valid_nodes: list[dict],
+    gateways: list[dict],
+    *,
+    persist_auto_assignments: bool,
+) -> dict[str, str]:
+    """Resolve each node to a gateway using sticky assignments + RR fallback."""
+    if not gateways:
+        return {}
+
+    gw_names = [gw["name"] for gw in gateways]
+    node_to_gw: dict[str, str] = {}
+    unassigned_nodes: list[dict] = []
+
+    for node in valid_nodes:
+        node_id = node.get("node_id")
+        if not node_id:
+            continue
+
+        assigned_gw = USER_GATEWAY_ASSIGNMENTS.get(node_id)
+        if assigned_gw and assigned_gw in gw_names:
+            node_to_gw[node_id] = assigned_gw
+        else:
+            unassigned_nodes.append(node)
+
+    for i, node in enumerate(unassigned_nodes):
+        node_id = node.get("node_id")
+        if not node_id:
+            continue
+        gw_name = gateways[i % len(gateways)]["name"]
+        node_to_gw[node_id] = gw_name
+
+    if persist_auto_assignments:
+        valid_node_ids = {
+            node.get("node_id") for node in valid_nodes if node.get("node_id")
+        }
+        for node_id in list(USER_GATEWAY_ASSIGNMENTS.keys()):
+            if node_id not in valid_node_ids:
+                USER_GATEWAY_ASSIGNMENTS.pop(node_id, None)
+        USER_GATEWAY_ASSIGNMENTS.update(node_to_gw)
+
+    return node_to_gw
 
 
 def _require_docker():
@@ -124,46 +259,116 @@ async def _discover_gateways():
     return gateways
 
 
-async def _sync_gateways_with_nodes():
+async def _sync_gateways_with_nodes(force: bool = False):
+    """Sync gateway-node assignments. Debounced to avoid hammering."""
+    global _last_sync_time, _last_sync_fingerprint, _sync_lock
     _require_docker()
-    nodes = await asyncio.to_thread(docker_mgr.list_nodes)
-    payload = {
-        "nodes": [
-            {
-                "node_id": node.get("node_id"),
-                "url": node.get("internal_url") or node.get("url"),
-            }
-            for node in nodes
+
+    if _sync_lock is None:
+        _sync_lock = asyncio.Lock()
+
+    # Debounce: skip if recently synced and not forced
+    now = time.time()
+    if not force and (now - _last_sync_time) < _SYNC_DEBOUNCE_SECONDS:
+        return
+
+    async with _sync_lock:
+        # Double-check after acquiring lock
+        if not force and (time.time() - _last_sync_time) < _SYNC_DEBOUNCE_SECONDS:
+            return
+
+        nodes = await asyncio.to_thread(docker_mgr.list_nodes)
+        valid_nodes = [
+            node for node in nodes
             if node.get("node_id") and (node.get("internal_url") or node.get("url"))
         ]
-    }
+        valid_nodes.sort(key=lambda x: x["name"])
 
-    gateways = await _discover_gateways()
+        try:
+            gateways = await _discover_gateways()
+        except Exception:
+            gateways = []
 
-    timeout = aiohttp.ClientTimeout(total=6)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        for gateway in gateways:
-            url = f"{gateway['url']}/gateway/nodes/sync"
-            try:
-                async with session.post(url, json=payload) as response:
-                    if response.status >= 400:
-                        body = await response.text()
-                        log.warning(
-                            "gateway_sync_failed",
-                            gateway=gateway["name"],
-                            status=response.status,
-                            body=body,
-                        )
-            except Exception as error:
-                log.warning(
-                    "gateway_sync_exception",
-                    gateway=gateway["name"],
-                    error=str(error),
+        if not gateways:
+            return
+
+        # Build fingerprint to skip if nothing changed
+        fp_parts = sorted(f"{n.get('node_id')}:{USER_GATEWAY_ASSIGNMENTS.get(n.get('node_id'), '')}" for n in valid_nodes)
+        fingerprint = "|".join(fp_parts) + "||" + "|".join(g["name"] for g in gateways)
+        if not force and fingerprint == _last_sync_fingerprint:
+            _last_sync_time = time.time()
+            return
+
+        assignments = {gw["name"]: [] for gw in gateways}
+        node_to_gw = _build_node_gateway_map(
+            valid_nodes,
+            gateways,
+            persist_auto_assignments=True,
+        )
+
+        for node in valid_nodes:
+            gw_name = node_to_gw.get(node.get("node_id"))
+            if not gw_name:
+                continue
+            assignments[gw_name].append({
+                "node_id": node.get("node_id"),
+                "url": node.get("internal_url") or node.get("url"),
+                "internal_url": node.get("internal_url"),
+                "external_url": node.get("url"),
+            })
+
+        timeout = aiohttp.ClientTimeout(total=6)
+        connector = aiohttp.TCPConnector(limit=50)
+        async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
+            # Sync gateways in parallel
+            async def _sync_gateway(gateway):
+                payload = {"nodes": assignments[gateway["name"]]}
+                for base_url in _candidate_urls(gateway.get("url"), gateway.get("external_url")):
+                    url = f"{base_url}/gateway/nodes/sync"
+                    try:
+                        async with session.post(url, json=payload) as response:
+                            if response.status < 400:
+                                return
+                    except Exception:
+                        pass
+                log.debug("gateway_sync_unreachable", gateway=gateway["name"])
+
+            await asyncio.gather(*[_sync_gateway(gw) for gw in gateways], return_exceptions=True)
+
+            # Notify all nodes in parallel
+            async def _notify_node(node_info, gw_name):
+                node_urls = _candidate_urls(
+                    node_info.get("internal_url"),
+                    node_info.get("external_url"),
+                    node_info.get("url"),
                 )
+                
+                # Try all candidate URLs, with robust retries for newly booted nodes
+                for _ in range(15):
+                    for base_url in node_urls:
+                        try:
+                            async with session.post(
+                                f"{base_url}/config/gateway",
+                                json={"assigned_gateway": gw_name}
+                            ) as response:
+                                if response.status < 400:
+                                    return
+                        except Exception:
+                            pass
+                    await asyncio.sleep(1)
+                log.warning("node_config_sync_failed", node=node_info.get("node_id"))
 
+            tasks = []
+            for gw_name, nodes_in_gw in assignments.items():
+                for node_info in nodes_in_gw:
+                    tasks.append(_notify_node(node_info, gw_name))
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+        _last_sync_time = time.time()
+        _last_sync_fingerprint = fingerprint
 
 async def _proxy_gateway_request(method: str, path: str, params: Optional[dict] = None):
-    await _sync_gateways_with_nodes()
+    # Don't sync on every proxy call — sync is debounced and triggered by topology changes
     gateways = await _discover_gateways()
     primary = gateways[0]
 
@@ -195,42 +400,132 @@ async def _proxy_gateway_request(method: str, path: str, params: Optional[dict] 
             )
 
 
+# --- Gateway Management ---
+
+@app.get("/gateways")
+async def list_gateways():
+    _require_docker()
+    try:
+        gateways = await _discover_gateways()
+    except Exception:
+        gateways = []
+        
+    nodes = await asyncio.to_thread(docker_mgr.list_nodes)
+    valid_nodes = [n for n in nodes if n.get("node_id")]
+    valid_nodes.sort(key=lambda x: x["name"])
+    
+    node_to_gw = _build_node_gateway_map(
+        valid_nodes,
+        gateways,
+        persist_auto_assignments=False,
+    )
+            
+    for node in valid_nodes:
+        node["assigned_gateway"] = node_to_gw.get(node.get("node_id"))
+
+    for gw in gateways:
+        gw["assigned_nodes"] = [
+            n["name"] for n in valid_nodes if n.get("assigned_gateway") == gw["name"]
+        ]
+        
+    return gateways
+
+
+@app.post("/gateways")
+async def create_gateway(gateway_id: Optional[str] = None):
+    _require_docker()
+    try:
+        result = await asyncio.to_thread(docker_mgr.create_gateway, gateway_id)
+        # Give gateway container a moment to spin up the HTTP server before syncing
+        await asyncio.sleep(2)
+        await _sync_gateways_with_nodes(force=True)
+        return result
+    except Exception as error:
+        raise _api_error(500, "GATEWAY_CREATE_FAILED", "Failed to create gateway", str(error))
+
+
+@app.delete("/gateways/{gateway_id}")
+async def remove_gateway(gateway_id: str):
+    _require_docker()
+    if gateway_id == "gateway":
+        # Block deleting the primary gateway so the system always has at least one
+        raise _api_error(400, "INVALID_ACTION", "Cannot delete the primary 'gateway'")
+    result = await asyncio.to_thread(docker_mgr.remove_gateway, gateway_id)
+    await _sync_gateways_with_nodes(force=True)
+    return result
+
+
 # --- Node Management ---
 
 
 @app.get("/nodes")
 async def list_nodes():
     _require_docker()
-    return await asyncio.to_thread(docker_mgr.list_nodes)
+    nodes = await asyncio.to_thread(docker_mgr.list_nodes)
+    valid_nodes = [n for n in nodes if n.get("node_id")]
+    valid_nodes.sort(key=lambda x: x["name"])
+    
+    try:
+        gateways = await _discover_gateways()
+    except Exception:
+        gateways = []
+
+    # Map assigned gateways
+    assigned_nodes = []
+    node_to_gw = _build_node_gateway_map(
+        valid_nodes,
+        gateways,
+        persist_auto_assignments=False,
+    )
+            
+    for node in valid_nodes:
+        node["assigned_gateway"] = node_to_gw.get(node.get("node_id"))
+        assigned_nodes.append(node)
+        
+    # Append any isolated/broken nodes not in valid_nodes
+    valid_ids = {n["name"] for n in valid_nodes}
+    for node in nodes:
+        if node["name"] not in valid_ids:
+            node["assigned_gateway"] = None
+            assigned_nodes.append(node)
+
+    return assigned_nodes
 
 
 @app.post("/nodes")
-async def create_node(node_id: Optional[str] = None):
+async def create_node(node_id: Optional[str] = None, assigned_gateway: Optional[str] = None):
     _require_docker()
     try:
-        result = await asyncio.to_thread(docker_mgr.create_node, node_id)
-        await _sync_gateways_with_nodes()
+        result = await asyncio.to_thread(docker_mgr.create_node, node_id, assigned_gateway=assigned_gateway or "")
+        if assigned_gateway and result.get("node_id"):
+            USER_GATEWAY_ASSIGNMENTS[result.get("node_id")] = assigned_gateway
+        await _sync_gateways_with_nodes(force=True)
         return result
     except Exception as error:
         raise _api_error(500, "NODE_CREATE_FAILED", "Failed to create node", str(error))
 
 
 @app.post("/nodes/batch")
-async def create_nodes_batch(count: int = 1):
+async def create_nodes_batch(count: int = 1, assigned_gateway: Optional[str] = None):
     _require_docker()
-    if count < 1 or count > 20:
-        raise _api_error(400, "INVALID_COUNT", "count must be between 1 and 20")
+    if count < 1:
+        raise _api_error(400, "INVALID_COUNT", "count must be at least 1")
 
-    created = []
-    failed = []
-    for _ in range(count):
+    async def _create_one():
         try:
-            result = await asyncio.to_thread(docker_mgr.create_node)
-            created.append(result)
+            result = await asyncio.to_thread(docker_mgr.create_node, assigned_gateway=assigned_gateway or "")
+            if assigned_gateway and result.get("node_id"):
+                USER_GATEWAY_ASSIGNMENTS[result.get("node_id")] = assigned_gateway
+            return {"success": True, "result": result}
         except Exception as error:
-            failed.append(str(error))
+            return {"success": False, "error": str(error)}
 
-    await _sync_gateways_with_nodes()
+    results = await asyncio.gather(*[_create_one() for _ in range(count)])
+    
+    created = [r["result"] for r in results if r["success"]]
+    failed = [r["error"] for r in results if not r["success"]]
+
+    await _sync_gateways_with_nodes(force=True)
 
     status = "completed" if not failed else "partial"
     return {
@@ -243,12 +538,28 @@ async def create_nodes_batch(count: int = 1):
         "failures": failed,
     }
 
+class NodeGatewayUpdate(BaseModel):
+    assigned_gateway: Optional[str]
+
+@app.put("/nodes/{node_id}/gateway")
+async def update_node_gateway(node_id: str, request: NodeGatewayUpdate):
+    _require_docker()
+    node_id = _normalize_node_id(node_id)
+    if request.assigned_gateway:
+        USER_GATEWAY_ASSIGNMENTS[node_id] = request.assigned_gateway
+    else:
+        USER_GATEWAY_ASSIGNMENTS.pop(node_id, None)
+    await _sync_gateways_with_nodes(force=True)
+    return {"status": "success", "node_id": node_id, "assigned_gateway": request.assigned_gateway}
+
 
 @app.delete("/nodes/{node_id}")
 async def remove_node(node_id: str):
     _require_docker()
+    node_id = _normalize_node_id(node_id)
+    USER_GATEWAY_ASSIGNMENTS.pop(node_id, None)
     result = await asyncio.to_thread(docker_mgr.remove_node, node_id)
-    await _sync_gateways_with_nodes()
+    await _sync_gateways_with_nodes(force=True)
     return result
 
 
@@ -377,11 +688,38 @@ async def live_metrics():
     """Aggregate all 5 report metrics from gateway + nodes."""
     _require_docker()
 
-    # Get gateway runtime metrics
-    gateway_data = await _proxy_gateway_request("GET", "/gateway/runtime-metrics")
-    runtime = gateway_data.get("runtime_metrics", {})
+    # Fetch runtime metrics from all gateways concurrently
+    gateways = await _discover_gateways()
+    overall_divergent = False
+    max_divergence_duration = 0.0
+    max_convergence_time = 0.0
+    total_polls_completed = 0
 
-    # Get per-node gossip stats
+    timeout = aiohttp.ClientTimeout(total=3)
+    connector = aiohttp.TCPConnector(limit=50)
+    async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
+        async def _fetch_gw_metrics(gw):
+            try:
+                async with session.get(f"{gw['url']}/gateway/runtime-metrics") as resp:
+                    return await resp.json()
+            except Exception:
+                return None
+
+        gw_results = await asyncio.gather(
+            *[_fetch_gw_metrics(gw) for gw in gateways],
+            return_exceptions=True
+        )
+        for gw_data in gw_results:
+            if gw_data is None or isinstance(gw_data, Exception):
+                continue
+            rt = gw_data.get("runtime_metrics", {})
+            if gw_data.get("is_divergent"):
+                overall_divergent = True
+            max_divergence_duration = max(max_divergence_duration, rt.get("divergence_duration_seconds", 0.0))
+            max_convergence_time = max(max_convergence_time, rt.get("last_convergence_seconds", 0.0) or 0.0)
+            total_polls_completed += rt.get("polls_completed", 0)
+
+    # Get per-node stats concurrently
     nodes = await asyncio.to_thread(docker_mgr.list_nodes)
     per_node_stats = []
     total_gossip_sent = 0
@@ -389,79 +727,123 @@ async def live_metrics():
     total_state_size = 0
 
     timeout = aiohttp.ClientTimeout(total=3)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        for node in nodes:
+    connector = aiohttp.TCPConnector(limit=50)
+    async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
+
+        async def _fetch_node_stats(node):
+            """Fetch gossip + state + merkle for one node concurrently."""
             node_url = node.get("internal_url") or node.get("url")
             if not node_url:
-                continue
+                return None
 
             node_info = {
                 "node_id": node.get("node_id"),
                 "name": node.get("name"),
                 "isolated": node.get("isolated", False),
+                "assigned_gateway": USER_GATEWAY_ASSIGNMENTS.get(node.get("node_id"), "unknown"),
             }
 
-            try:
-                async with session.get(f"{node_url}/gossip/stats") as resp:
-                    gossip_data = await resp.json()
-                    stats = gossip_data.get("stats", {})
-                    node_info["gossip_sent"] = stats.get("sent", 0)
-                    node_info["gossip_received"] = stats.get("received", 0)
-                    node_info["gossip_merged"] = stats.get("merged", 0)
-                    node_info["peers_discovered"] = stats.get("peers_discovered", 0)
-                    node_info["sent_bytes"] = stats.get("sent_bytes", 0)
-                    node_info["received_bytes"] = stats.get("received_bytes", 0)
-                    node_info["avg_merge_ms"] = stats.get("avg_merge_ms", 0)
-                    total_gossip_sent += stats.get("sent", 0)
-                    total_gossip_received += stats.get("received", 0)
-            except Exception:
+            # Fetch gossip, state, and merkle in parallel for this single node
+            async def _get_gossip():
+                try:
+                    async with session.get(f"{node_url}/gossip/stats") as resp:
+                        return await resp.json()
+                except Exception:
+                    return None
+
+            async def _get_state():
+                try:
+                    async with session.get(f"{node_url}/state") as resp:
+                        return await resp.json()
+                except Exception:
+                    return None
+
+            async def _get_merkle():
+                try:
+                    async with session.get(f"{node_url}/state/merkle") as resp:
+                        return await resp.json()
+                except Exception:
+                    return None
+
+            gossip_data, state_data, merkle_data = await asyncio.gather(
+                _get_gossip(), _get_state(), _get_merkle()
+            )
+
+            if gossip_data:
+                stats = gossip_data.get("stats", {})
+                node_info["gossip_sent"] = stats.get("sent", 0)
+                node_info["gossip_received"] = stats.get("received", 0)
+                node_info["gossip_merged"] = stats.get("merged", 0)
+                node_info["peers_discovered"] = stats.get("peers_discovered", 0)
+                node_info["sent_bytes"] = stats.get("sent_bytes", 0)
+                node_info["received_bytes"] = stats.get("received_bytes", 0)
+                node_info["avg_merge_ms"] = stats.get("avg_merge_ms", 0)
+            else:
                 node_info["gossip_error"] = True
 
-            try:
-                async with session.get(f"{node_url}/state") as resp:
-                    state_data = await resp.json()
-                    size = len(json.dumps(state_data))
-                    node_info["state_size_bytes"] = size
-                    summary = state_data.get("state_summary", {})
-                    ev_count = summary.get("total_events", 0)
-                    if ev_count == 0:
-                        ev_ids = state_data.get("event_ids", [])
-                        ev_count = len(ev_ids) if isinstance(ev_ids, list) else 0
-                    node_info["event_count"] = ev_count
-                    total_state_size += size
-            except Exception:
-                pass
+            if state_data:
+                size = len(json.dumps(state_data))
+                node_info["state_size_bytes"] = size
+                summary = state_data.get("state_summary", {})
+                ev_count = summary.get("total_events", 0)
+                if ev_count == 0:
+                    ev_ids = state_data.get("event_ids", [])
+                    ev_count = len(ev_ids) if isinstance(ev_ids, list) else 0
+                node_info["event_count"] = ev_count
+            else:
+                node_info["state_size_bytes"] = 0
+                node_info["event_count"] = 0
 
-            try:
-                async with session.get(f"{node_url}/state/merkle") as resp:
-                    merkle_data = await resp.json()
-                    node_info["merkle_root"] = merkle_data.get("merkle_root", "")[:12]
-                    node_info["version"] = merkle_data.get("version", 0)
-            except Exception:
-                pass
+            if merkle_data:
+                node_info["merkle_root"] = merkle_data.get("merkle_root", "")[:12]
+                node_info["version"] = merkle_data.get("version", 0)
 
+            return node_info
+
+        # Fetch ALL node stats concurrently
+        results = await asyncio.gather(
+            *[_fetch_node_stats(node) for node in nodes],
+            return_exceptions=True
+        )
+        for node_info in results:
+            if node_info is None or isinstance(node_info, Exception):
+                continue
             per_node_stats.append(node_info)
+            total_gossip_sent += node_info.get("gossip_sent", 0)
+            total_gossip_received += node_info.get("gossip_received", 0)
+            total_state_size += node_info.get("state_size_bytes", 0)
 
-    # Compute data loss metric
-    # Total events submitted = sum of event_counts across nodes (each node counts its own events)
-    # Since CRDTs merge, after convergence all nodes should have the same total
-    event_counts = [n.get("event_count", 0) for n in per_node_stats if "event_count" in n]
-    max_events = max(event_counts) if event_counts else 0
-    min_events = min(event_counts) if event_counts else 0
-    data_loss_percent = 0.0
-    if max_events > 0 and len(event_counts) > 1:
-        data_loss_percent = round((1 - min_events / max_events) * 100, 2) if not runtime.get("is_divergent") else None
+    # Compute data loss metric per gateway
+    gateway_data_loss = []
+
+    # Group nodes by gateway
+    node_by_gw = {}
+    for n in per_node_stats:
+        gw = n.get("assigned_gateway", "unknown")
+        if gw not in node_by_gw:
+            node_by_gw[gw] = []
+        node_by_gw[gw].append(n)
+
+    for gw, gw_nodes in node_by_gw.items():
+        event_counts = [n.get("event_count", 0) for n in gw_nodes if "event_count" in n]
+        if len(event_counts) > 1:
+            max_events = max(event_counts)
+            min_events = min(event_counts)
+            if max_events > 0:
+                gateway_data_loss.append(round((1 - min_events / max_events) * 100, 2))
+
+    data_loss_percent = max(gateway_data_loss) if gateway_data_loss and not overall_divergent else (None if overall_divergent else 0.0)
 
     return {
-        "convergence_time_seconds": runtime.get("last_convergence_seconds"),
-        "is_divergent": gateway_data.get("is_divergent", False),
-        "divergence_duration_seconds": runtime.get("divergence_duration_seconds", 0),
+        "convergence_time_seconds": max_convergence_time if max_convergence_time > 0 else None,
+        "is_divergent": overall_divergent,
+        "divergence_duration_seconds": max_divergence_duration,
         "data_loss_percent": data_loss_percent,
         "total_gossip_messages_sent": total_gossip_sent,
         "total_gossip_messages_received": total_gossip_received,
         "total_state_size_bytes": total_state_size,
         "node_count": len(per_node_stats),
-        "polls_completed": runtime.get("polls_completed", 0),
+        "polls_completed": total_polls_completed,
         "per_node": per_node_stats,
     }
 
@@ -561,16 +943,44 @@ async def _eval_send_events(session, nodes, count, category="sensor"):
     return tracking_ids
 
 
-async def _eval_collect_metrics(session, nodes, gateway_url):
+async def _eval_poll_all_gateways(session, gateways):
+    """Trigger a poll on each gateway once, using URL fallback per gateway."""
+    for gw in gateways:
+        polled = False
+        for base_url in _candidate_urls(gw.get("url"), gw.get("external_url")):
+            try:
+                async with session.post(f"{base_url}/gateway/poll") as resp:
+                    if resp.status < 400:
+                        await resp.json()
+                        polled = True
+                        break
+            except Exception:
+                continue
+        if not polled:
+            log.warning("evaluation_gateway_poll_failed", gateway=gw.get("name"))
+
+
+async def _eval_collect_metrics(session, nodes, gateways):
     """Collect all 5 report metrics from current state."""
-    # Gateway runtime metrics
-    gw_metrics = {}
-    try:
-        async with session.get(f"{gateway_url}/gateway/runtime-metrics") as resp:
-            gw_data = await resp.json()
-            gw_metrics = gw_data.get("runtime_metrics", {})
-    except Exception:
-        pass
+    # Gateway runtime metrics (aggregate across all gateways)
+    last_convergence = None
+    for gw in gateways:
+        gw_metrics = {}
+        for base_url in _candidate_urls(gw.get("url"), gw.get("external_url")):
+            try:
+                async with session.get(f"{base_url}/gateway/runtime-metrics") as resp:
+                    if resp.status >= 400:
+                        continue
+                    gw_data = await resp.json()
+                    gw_metrics = gw_data.get("runtime_metrics", {})
+                    break
+            except Exception:
+                continue
+
+        convergence_value = gw_metrics.get("last_convergence_seconds")
+        if convergence_value is not None:
+            if last_convergence is None or convergence_value > last_convergence:
+                last_convergence = convergence_value
 
     # Per-node stats
     total_gossip = 0
@@ -616,7 +1026,7 @@ async def _eval_collect_metrics(session, nodes, gateway_url):
     is_converged = unique_roots <= 1
 
     return {
-        "convergence_time_s": gw_metrics.get("last_convergence_seconds"),
+        "convergence_time_s": last_convergence,
         "data_loss_pct": data_loss,
         "gossip_messages_sent": total_gossip,
         "total_state_size_bytes": total_state_size,
@@ -667,12 +1077,11 @@ async def _run_evaluation(cfg: EvalScenarioConfig):
                     created_nodes.append(result)
                 except Exception as e:
                     log.warning("eval_node_create_failed", error=str(e))
-            await _sync_gateways_with_nodes()
+            await _sync_gateways_with_nodes(force=True)
             await asyncio.sleep(3)  # Let gossip settle
 
             nodes = await asyncio.to_thread(docker_mgr.list_nodes)
             gateways = await _discover_gateways()
-            gw_url = gateways[0]["url"]
 
             # ─── Scenario 1: Baseline Convergence ───
             _eval_state["current_step"] = f"[{node_count}N] Scenario 1: Baseline convergence"
@@ -683,14 +1092,10 @@ async def _run_evaluation(cfg: EvalScenarioConfig):
 
                 # Wait for gossip convergence
                 for _ in range(int(cfg.convergence_wait_seconds / cfg.poll_interval_seconds)):
-                    try:
-                        async with session.post(f"{gw_url}/gateway/poll") as resp:
-                            await resp.json()
-                    except Exception:
-                        pass
+                    await _eval_poll_all_gateways(session, gateways)
                     await asyncio.sleep(cfg.poll_interval_seconds)
 
-                metrics = await _eval_collect_metrics(session, nodes, gw_url)
+                metrics = await _eval_collect_metrics(session, nodes, gateways)
                 _eval_state["results"].append({
                     "scenario": "baseline_convergence",
                     "node_count": node_count,
@@ -709,11 +1114,7 @@ async def _run_evaluation(cfg: EvalScenarioConfig):
                 await asyncio.sleep(2)
 
                 # Trigger a poll so gateway has baseline
-                try:
-                    async with session.post(f"{gw_url}/gateway/poll") as resp:
-                        await resp.json()
-                except Exception:
-                    pass
+                await _eval_poll_all_gateways(session, gateways)
 
                 # Create partition (split-brain)
                 _eval_state["current_step"] = f"[{node_count}N] Scenario 2: Partitioned — sending events..."
@@ -737,14 +1138,10 @@ async def _run_evaluation(cfg: EvalScenarioConfig):
 
                 # Wait for convergence
                 for _ in range(int(cfg.convergence_wait_seconds / cfg.poll_interval_seconds)):
-                    try:
-                        async with session.post(f"{gw_url}/gateway/poll") as resp:
-                            await resp.json()
-                    except Exception:
-                        pass
+                    await _eval_poll_all_gateways(session, gateways)
                     await asyncio.sleep(cfg.poll_interval_seconds)
 
-                metrics = await _eval_collect_metrics(session, nodes, gw_url)
+                metrics = await _eval_collect_metrics(session, nodes, gateways)
                 _eval_state["results"].append({
                     "scenario": "partition_heal",
                     "node_count": node_count,
@@ -762,14 +1159,10 @@ async def _run_evaluation(cfg: EvalScenarioConfig):
                     session, nodes, cfg.events_per_node * 3, category="resource",
                 )
                 for _ in range(int(cfg.convergence_wait_seconds / cfg.poll_interval_seconds)):
-                    try:
-                        async with session.post(f"{gw_url}/gateway/poll") as resp:
-                            await resp.json()
-                    except Exception:
-                        pass
+                    await _eval_poll_all_gateways(session, gateways)
                     await asyncio.sleep(cfg.poll_interval_seconds)
 
-                metrics = await _eval_collect_metrics(session, nodes, gw_url)
+                metrics = await _eval_collect_metrics(session, nodes, gateways)
                 _eval_state["results"].append({
                     "scenario": "scaling_events",
                     "node_count": node_count,
@@ -859,6 +1252,75 @@ async def evaluation_results():
         "has_csv": _eval_state["csv_data"] is not None,
     }
 
+# --- WebSocket ---
+
+@app.websocket("/ws")
+async def websocket_endpoint(ws: WebSocket):
+    await ws.accept()
+    _ws_clients.add(ws)
+    log.info("ws_client_connected", total=len(_ws_clients))
+    try:
+        while True:
+            # Keep connection alive; ignore client messages
+            await ws.receive_text()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        _ws_clients.discard(ws)
+        log.info("ws_client_disconnected", total=len(_ws_clients))
+
+
+async def _ws_broadcast(data: dict):
+    """Broadcast JSON data to all connected WebSocket clients."""
+    if not _ws_clients:
+        return
+    msg = json.dumps(data)
+    dead = []
+    for ws in _ws_clients:
+        try:
+            await ws.send_text(msg)
+        except Exception:
+            dead.append(ws)
+    for ws in dead:
+        _ws_clients.discard(ws)
+
+
+async def _ws_broadcast_loop():
+    """Background loop: push metrics to WebSocket clients periodically."""
+    while True:
+        await asyncio.sleep(3)
+        if not _ws_clients:
+            continue
+        try:
+            # Gather lightweight data for push
+            payload = {}
+
+            if docker_mgr:
+                try:
+                    nodes_data = await list_nodes()
+                    payload["nodes"] = nodes_data
+                except Exception:
+                    pass
+
+                try:
+                    gateways_data = await list_gateways()
+                    payload["gateways"] = gateways_data
+                except Exception:
+                    pass
+
+                try:
+                    metrics = await live_metrics()
+                    payload["metrics"] = metrics
+                except Exception:
+                    pass
+
+            if payload:
+                payload["type"] = "update"
+                await _ws_broadcast(payload)
+        except Exception as e:
+            log.debug("ws_broadcast_error", error=str(e))
+
+
 static_dir = os.path.join(os.path.dirname(__file__), "static")
 app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")
 
@@ -882,7 +1344,7 @@ async def main():
         raise asyncio.CancelledError()
 
     try:
-        await asyncio.gather(server.serve(), wait_shutdown())
+        await asyncio.gather(server.serve(), _ws_broadcast_loop(), wait_shutdown())
     except asyncio.CancelledError:
         pass
     finally:

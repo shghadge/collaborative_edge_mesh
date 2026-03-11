@@ -73,7 +73,10 @@ class GossipService:
             self.sock.close()
 
     async def _broadcast_loop(self):
-        """Send our state to all peers periodically."""
+        """Send our state to a random subset of peers periodically."""
+        import random
+        MAX_GOSSIP_TARGETS = 3  # Standard gossip fan-out
+
         while self.running:
             await asyncio.sleep(self.config.gossip_interval)
             try:
@@ -107,7 +110,14 @@ class GossipService:
                 loop = asyncio.get_event_loop()
                 peers = self.peer_discovery.get_peers() if self.peer_discovery else []
                 self.stats["peers_discovered"] = len(peers)
-                for peer in peers:
+
+                # Fan-out to a random subset of peers (standard gossip protocol)
+                if len(peers) > MAX_GOSSIP_TARGETS:
+                    targets = random.sample(peers, MAX_GOSSIP_TARGETS)
+                else:
+                    targets = peers
+
+                for peer in targets:
                     host, port = self._parse_peer(peer)
                     try:
                         await loop.run_in_executor(

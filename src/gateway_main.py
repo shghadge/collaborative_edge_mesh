@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from src.config import config
 from src.storage import SQLiteStore
 from src.services.gateway import GatewayService
+from src.services.peer_discovery import PeerDiscovery
 
 logging.basicConfig(
     format="%(message)s", level=getattr(logging, config.log_level, logging.INFO)
@@ -32,12 +33,27 @@ structlog.configure(
     logger_factory=structlog.stdlib.LoggerFactory(),
 )
 
+from fastapi.middleware.cors import CORSMiddleware
+
 log = structlog.get_logger()
 
 app = FastAPI(title="Edge Mesh Gateway")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 store = SQLiteStore(f"{config.data_dir}/gateway.db")
 gateway = GatewayService(config, store)
+discovery = PeerDiscovery(
+    config.node_id,
+    config.http_port,
+    assigned_gateway="gateway",
+    role="gateway",
+)
 
 
 class GatewayNode(BaseModel):
@@ -140,6 +156,16 @@ async def merged_state():
         return {"status": "no data yet, trigger a poll first"}
     return snapshot
 
+@app.get("/gateway/peers")
+async def discovered_peers():
+    return {
+        "node_id": config.node_id,
+        "discovery": "mdns",
+        "peers": discovery.get_peers(),
+        "peer_count": len(discovery.get_peers()),
+        "stats": discovery.stats,
+    }
+
 
 @app.get("/gateway/history")
 async def snapshot_history(limit: int = 20):
@@ -211,6 +237,7 @@ async def main():
         raise asyncio.CancelledError()
 
     try:
+        await discovery.start()
         await asyncio.gather(
             server.serve(),
             gateway.start_polling(interval=poll_interval),
@@ -219,6 +246,7 @@ async def main():
     except asyncio.CancelledError:
         pass
     finally:
+        await discovery.stop()
         log.info("gateway_stopped")
 
 

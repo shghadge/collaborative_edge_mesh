@@ -12,6 +12,7 @@ from src.config import config
 from src.crdt import NodeState
 from src.hash_chain import HashChainLog
 from src.services import IntakeService, GossipService, PeerDiscovery
+from fastapi import Request
 
 logging.basicConfig(
     format="%(message)s", level=getattr(logging, config.log_level, logging.INFO)
@@ -36,8 +37,21 @@ async def main():
     intake = IntakeService(config, state, chain)
 
     # mDNS peer discovery
-    discovery = PeerDiscovery(config.node_id, config.gossip_port)
+    discovery = PeerDiscovery(
+        config.node_id,
+        config.gossip_port,
+        assigned_gateway=config.assigned_gateway,
+        role="edge-node",
+    )
     gossip = GossipService(config, state, peer_discovery=discovery)
+
+    @intake.app.post("/config/gateway")
+    async def config_gateway(request: Request):
+        data = await request.json()
+        gw = data.get("assigned_gateway", "")
+        config.assigned_gateway = gw
+        await discovery.update_gateway(gw)
+        return {"status": "ok", "assigned_gateway": gw}
 
     @intake.app.get("/gossip/stats")
     async def gossip_stats():

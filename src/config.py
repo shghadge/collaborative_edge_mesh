@@ -12,6 +12,7 @@ class Config:
         self.gateway_poll_interval = float(os.getenv("GATEWAY_POLL_INTERVAL", "10"))
         self.data_dir = os.getenv("DATA_DIR", "/data")
         self.log_level = os.getenv("LOG_LEVEL", "INFO")
+        self.assigned_gateway = os.getenv("ASSIGNED_GATEWAY", "")
 
         self.gateway_http_retries = max(int(os.getenv("GATEWAY_HTTP_RETRIES", "2")), 1)
         self.gateway_http_retry_backoff_ms = max(

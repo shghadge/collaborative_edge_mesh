@@ -9,6 +9,7 @@ Service type: _edge-mesh._udp.local.
 """
 
 import asyncio
+import hashlib
 import socket
 import structlog
 
@@ -28,9 +29,17 @@ class PeerDiscovery:
     get_peers() returns the current set of discovered peers as ["ip:port", ...].
     """
 
-    def __init__(self, node_id: str, gossip_port: int):
+    def __init__(
+        self,
+        node_id: str,
+        gossip_port: int,
+        assigned_gateway: str = "",
+        role: str = "edge-node",
+    ):
         self.node_id = node_id
         self.gossip_port = gossip_port
+        self.assigned_gateway = assigned_gateway
+        self.role = role
         self._peers: dict[str, str] = {}  # {service_name: "ip:port"}
         self._zeroconf: AsyncZeroconf | None = None
         self._browser: AsyncServiceBrowser | None = None
@@ -40,6 +49,18 @@ class PeerDiscovery:
             "peers_removed": 0,
             "total_discovered": 0,
         }
+        self._update_service_type()
+
+    def _update_service_type(self):
+        if not self.assigned_gateway:
+            self.service_type = "_em._udp.local."
+            return
+
+        # Use a stable hash to avoid collisions from truncated Docker container names.
+        gateway_scope = hashlib.sha1(
+            self.assigned_gateway.encode("utf-8")
+        ).hexdigest()[:10]
+        self.service_type = f"_em-{gateway_scope}._udp.local."
 
     async def start(self):
         """Register this node and start browsing for peers."""
@@ -48,14 +69,15 @@ class PeerDiscovery:
         # Determine our IP address on the network
         local_ip = self._get_local_ip()
 
-        service_name = f"{self.node_id}.{SERVICE_TYPE}"
+        service_name = f"{self.node_id}.{self.service_type}"
         self._service_info = AsyncServiceInfo(
-            SERVICE_TYPE,
+            self.service_type,
             service_name,
             addresses=[socket.inet_aton(local_ip)],
             port=self.gossip_port,
             properties={
                 b"node_id": self.node_id.encode(),
+                b"role": self.role.encode(),
             },
         )
 
@@ -71,16 +93,16 @@ class PeerDiscovery:
         # Browse for other edge-mesh services
         self._browser = AsyncServiceBrowser(
             self._zeroconf.zeroconf,
-            SERVICE_TYPE,
+            self.service_type,
             handlers=[self._on_service_state_change],
         )
 
-        log.info("mdns_browsing_started", service_type=SERVICE_TYPE)
+        log.info("mdns_browsing_started", service_type=self.service_type)
 
     async def stop(self):
         """Unregister and close."""
         if self._browser:
-            self._browser.cancel()
+            await self._browser.async_cancel()
             self._browser = None
 
         if self._service_info and self._zeroconf:
@@ -91,6 +113,19 @@ class PeerDiscovery:
             self._zeroconf = None
 
         log.info("mdns_stopped", node_id=self.node_id)
+        
+    async def update_gateway(self, assigned_gateway: str):
+        """Update gateway and restart discovery under the new semantic network."""
+        if self.assigned_gateway == assigned_gateway:
+            return
+        self.assigned_gateway = assigned_gateway
+        self._update_service_type()
+        log.info("mdns_updating_gateway", new_gateway=assigned_gateway, service_type=self.service_type)
+        
+        await self.stop()
+        self._peers.clear()
+        self.stats["peers_discovered"] = 0
+        await self.start()
 
     def get_peers(self) -> list[str]:
         """Return currently discovered peers as ["ip:port", ...], excluding self."""
@@ -121,9 +156,14 @@ class PeerDiscovery:
         # Extract node_id from properties to filter self
         props = info.properties or {}
         peer_node_id = props.get(b"node_id", b"").decode()
+        peer_role = props.get(b"role", b"").decode()
 
         if peer_node_id == self.node_id:
             return  # skip self
+
+        # Only include peers from the same role/class (edge nodes discover edge nodes).
+        if peer_role and peer_role != self.role:
+            return
 
         ip = socket.inet_ntoa(info.addresses[0])
         port = info.port

@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict
 
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 
 from ..config import Config
 from ..models import Event, NodeStatus
@@ -23,9 +24,15 @@ class IntakeService:
         self.chain = chain
         self.start_time = datetime.utcnow()
         self.app = self._build_app()
-
     def _build_app(self):
         app = FastAPI(title=f"Edge Node {self.config.node_id}")
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=["*"],
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
 
         @app.get("/")
         async def root():

@@ -32,23 +32,11 @@ make docker-rebuild  # clean + rebuild + start simulator/gateway
 - Use dashboard batch create or API: `POST /nodes/batch?count=<n>` on simulator
 - First created node starts as `node-1`, then increments
 
-## Testing
-
-```bash
-make test            # run all unit tests
-make test-crdt       # run CRDT-focused unit tests
-make test-services   # run service-focused unit tests
-
-# equivalent direct command
-uv run pytest -q
-```
-
 ## Notes
 
 The project follows a minimal command policy:
-- Keep Makefile targets limited to essential build and test commands
+- Keep Makefile targets limited to essential build and runtime commands
 - Use `uv` for all Python-related workflows
-- Add/update unit tests for every feature change and run them after implementation
 
 Core components:
 - **FastAPI** HTTP server for event ingestion and state queries

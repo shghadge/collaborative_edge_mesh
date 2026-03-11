@@ -2,6 +2,7 @@ from datetime import datetime
 import structlog
 import docker
 import uuid
+import threading
 
 log = structlog.get_logger()
 
@@ -20,6 +21,17 @@ class DockerManager:
         self._next_ip_suffix = 20  # start dynamic nodes at .20
         self._next_host_port = 8010  # fallback for non-numeric node IDs
         self.isolated_nodes = set()  # track container names of isolated nodes
+        # TTL cache for list operations
+        self._nodes_cache = None
+        self._nodes_cache_time = 0.0
+        self._gateways_cache = None
+        self._gateways_cache_time = 0.0
+        self._CACHE_TTL = 2.0  # seconds
+        
+        # Concurrency safety 
+        self._creation_lock = threading.Lock()
+        self._reserved_nodes = set()
+        self._reserved_ports = set()
 
     def _next_ip(self):
         ip = f"{SUBNET}.{self._next_ip_suffix}"
@@ -80,6 +92,7 @@ class DockerManager:
             if number is not None:
                 numbers.add(number)
 
+        numbers.update(self._reserved_nodes)
         return numbers
 
     def _existing_published_ports(self):
@@ -96,6 +109,8 @@ class DockerManager:
                     host_port = binding.get("HostPort")
                     if host_port and str(host_port).isdigit():
                         ports.add(int(host_port))
+                        
+        ports.update(self._reserved_ports)
         return ports
 
     def _select_host_port(self, node_id):
@@ -142,8 +157,18 @@ class DockerManager:
                     return tag
         return IMAGE_NAME
 
+    def invalidate_cache(self):
+        """Invalidate cached node/gateway lists (call after mutations)."""
+        self._nodes_cache = None
+        self._gateways_cache = None
+
     def list_nodes(self):
         """List all running edge node containers (both static and dynamic)."""
+        import time as _time
+        now = _time.time()
+        if self._nodes_cache is not None and (now - self._nodes_cache_time) < self._CACHE_TTL:
+            return self._nodes_cache
+
         nodes = []
         for container in self.client.containers.list():
             if "edge-node" in container.name:
@@ -152,6 +177,22 @@ class DockerManager:
                 host_port = managed_info.get("host_port")
                 if host_port is None:
                     host_port = self._host_port_for_node_name(container.name)
+
+                # Use IP address directly to avoid Docker DNS issues at scale
+                internal_url = self._internal_url_for_container_name(container.name)
+                container_ip = managed_info.get("ip")
+                if not container_ip:
+                    try:
+                        container.reload()
+                        networks = container.attrs.get("NetworkSettings", {}).get("Networks", {})
+                        for net_name, net_info in networks.items():
+                            if "mesh" in net_name and net_info.get("IPAddress"):
+                                container_ip = net_info["IPAddress"]
+                                break
+                    except Exception:
+                        pass
+                if container_ip:
+                    internal_url = f"http://{container_ip}:8000"
 
                 nodes.append(
                     {
@@ -163,69 +204,229 @@ class DockerManager:
                         "isolated": container.name in self.isolated_nodes,
                         "host_port": host_port,
                         "url": f"http://localhost:{host_port}" if host_port else None,
-                        "internal_url": self._internal_url_for_container_name(
-                            container.name
-                        ),
+                        "internal_url": internal_url,
                     }
                 )
+        self._nodes_cache = nodes
+        self._nodes_cache_time = now
         return nodes
 
     def list_gateways(self):
         """List all running gateway containers with internal service URLs."""
+        import time as _time
+        now = _time.time()
+        if self._gateways_cache is not None and (now - self._gateways_cache_time) < self._CACHE_TTL:
+            return self._gateways_cache
+
         gateways = []
         for container in self.client.containers.list():
             if "gateway" not in container.name or "simulator" in container.name:
                 continue
 
+            host_port = None
+            host_config = container.attrs.get("HostConfig") or {}
+            bindings = host_config.get("PortBindings") or {}
+            
+            # Find the port binding for 8000/tcp
+            port_8000 = bindings.get("8000/tcp")
+            if port_8000:
+                host_port = int(port_8000[0].get("HostPort", 0))
+
+            # Use IP address directly to avoid Docker DNS issues at scale
+            internal_url = f"http://{container.name}:8000"
+            try:
+                container.reload()
+                networks = container.attrs.get("NetworkSettings", {}).get("Networks", {})
+                for net_name, net_info in networks.items():
+                    if "mesh" in net_name and net_info.get("IPAddress"):
+                        internal_url = f"http://{net_info['IPAddress']}:8000"
+                        break
+            except Exception:
+                pass
+
             gateways.append(
                 {
                     "name": container.name,
                     "status": container.status,
-                    "url": f"http://{container.name}:8000",
+                    "id": container.short_id,
+                    "url": internal_url,
+                    "host_port": host_port,
+                    "external_url": f"http://localhost:{host_port}" if host_port else None
                 }
             )
 
         gateways.sort(key=lambda item: item["name"])
+        self._gateways_cache = gateways
+        self._gateways_cache_time = now
         return gateways
 
-    def create_node(self, node_id=None):
-        """Spin up a new edge node container and register it with the gateway."""
-        if node_id is None:
-            node_id = self._next_available_node_id()
+    def _existing_gateway_numbers(self):
+        numbers = set()
+        for container in self._list_all_containers():
+            if "gateway" in container.name and "simulator" not in container.name:
+                num_str = container.name.replace("gateway-", "").replace("gateway", "")
+                if num_str == "":
+                    numbers.add(1)
+                elif num_str.isdigit():
+                    numbers.add(int(num_str))
+        return numbers
 
-        container_name = f"edge-node-{node_id.replace('node-', '')}"
+    def _next_available_gateway_id(self):
+        used = self._existing_gateway_numbers()
+        candidate = 1
+        while candidate in used:
+            candidate += 1
+        return f"gateway-{candidate}"
 
-        # if container name exists, resolve before creating to avoid Docker 409 conflict
+    def _select_gateway_host_port(self, gateway_id):
+        gw_num = gateway_id.replace("gateway-", "").replace("gateway", "")
+        if gw_num == "":
+            gw_num = "1"
+        try:
+            preferred = 7000 + int(gw_num) - 1 # e.g. gateway -> 7000, gateway-2 -> 7001
+        except ValueError:
+            preferred = None
+
+        used_ports = self._existing_published_ports()
+        if preferred is not None and preferred not in used_ports:
+            return preferred
+
+        candidate = 7000
+        while candidate in used_ports:
+            candidate += 1
+        return candidate
+
+    def create_gateway(self, gateway_id=None):
+        """Spin up a new gateway container."""
+        if gateway_id is None:
+            gateway_id = self._next_available_gateway_id()
+            
+        container_name = gateway_id
+
         try:
             existing_container = self.client.containers.get(container_name)
             if existing_container.status == "running":
-                host_port = self._host_port_for_node_name(container_name)
+                host_port = self._select_gateway_host_port(gateway_id)
                 return self._action_response(
-                    action="create_node",
+                    action="create_gateway",
                     target=container_name,
                     status="already_exists",
                     message=f"{container_name} already exists",
-                    node_id=node_id,
-                    container=container_name,
+                    gateway_id=gateway_id,
                     host_port=host_port,
                     url=f"http://localhost:{host_port}" if host_port else None,
                 )
-
-            # stale stopped container with same name: remove and continue
             existing_container.remove(force=True)
-            self.managed_nodes.pop(container_name, None)
-            self.isolated_nodes.discard(container_name)
         except docker.errors.NotFound:
             pass
 
-        ip = self._next_ip()
         http_port = 8000
-
-        host_port = self._select_host_port(node_id)
-
+        host_port = self._select_gateway_host_port(gateway_id)
         image = self._get_image_name()
         network = self._get_network()
 
+        container = self.client.containers.run(
+            image,
+            detach=True,
+            name=container_name,
+            command="python -m src.gateway_main",
+            environment={
+                "NODE_ID": gateway_id,
+                "HTTP_PORT": str(http_port),
+                "GATEWAY_POLL_INTERVAL": "10",
+                "DATA_DIR": "/data",
+            },
+            ports={f"{http_port}/tcp": host_port},
+            network=network.name,
+        )
+
+        log.info("gateway_created", gateway_id=gateway_id, host_port=host_port)
+
+        result = self._action_response(
+            action="create_gateway",
+            target=container_name,
+            status="created",
+            message=f"Created {container_name}",
+            gateway_id=gateway_id,
+            host_port=host_port,
+            url=f"http://localhost:{host_port}",
+            internal_url=f"http://{container_name}:{http_port}",
+        )
+        self.invalidate_cache()
+        return result
+
+    def remove_gateway(self, gateway_id):
+        """Stop and remove a gateway container."""
+        self.invalidate_cache()
+        try:
+            container = self.client.containers.get(gateway_id)
+            container.stop(timeout=5)
+            container.remove()
+            container.stop(timeout=5)
+            container.remove()
+        except docker.errors.NotFound:
+            return self._action_response(
+                action="remove_gateway",
+                target=gateway_id,
+                status="not_found",
+                message=f"{gateway_id} not found",
+            )
+
+        log.info("gateway_removed", gateway_id=gateway_id)
+        return self._action_response(
+            action="remove_gateway",
+            target=gateway_id,
+            status="removed",
+            message=f"Removed {gateway_id}"
+        )
+
+    def create_node(self, node_id=None, assigned_gateway=""):
+        """Spin up a new edge node container and register it with the gateway."""
+        with self._creation_lock:
+            if node_id is None:
+                node_id = self._next_available_node_id()
+
+            container_name = f"edge-node-{node_id.replace('node-', '')}"
+
+            # if container name exists, resolve before creating to avoid Docker 409 conflict
+            try:
+                existing_container = self.client.containers.get(container_name)
+                if existing_container.status == "running":
+                    host_port = self._host_port_for_node_name(container_name)
+                    return self._action_response(
+                        action="create_node",
+                        target=container_name,
+                        status="already_exists",
+                        message=f"{container_name} already exists",
+                        node_id=node_id,
+                        container=container_name,
+                        host_port=host_port,
+                        url=f"http://localhost:{host_port}" if host_port else None,
+                    )
+
+                # stale stopped container with same name: remove and continue
+                existing_container.remove(force=True)
+                self.managed_nodes.pop(container_name, None)
+                self.isolated_nodes.discard(container_name)
+            except docker.errors.NotFound:
+                pass
+
+            ip = self._next_ip()
+            http_port = 8000
+            
+            host_port = self._select_host_port(node_id)
+            
+            # reservation tracking
+            node_num_str = node_id.replace("node-", "")
+            if node_num_str.isdigit():
+                self._reserved_nodes.add(int(node_num_str))
+            if host_port:
+                self._reserved_ports.add(host_port)
+
+            image = self._get_image_name()
+            network = self._get_network()
+
+        # Execute docker.run OUTSIDE the lock to allow concurrent image fetches & daemon processing
         container = self.client.containers.run(
             image,
             detach=True,
@@ -235,6 +436,7 @@ class DockerManager:
                 "HTTP_PORT": str(http_port),
                 "GOSSIP_PORT": "9000",
                 "GOSSIP_INTERVAL": "5",
+                "ASSIGNED_GATEWAY": assigned_gateway,
             },
             ports={f"{http_port}/tcp": host_port},
             network=network.name,
@@ -256,6 +458,7 @@ class DockerManager:
             "http_port": http_port,
             "host_port": host_port,
         }
+        self.invalidate_cache()
 
         # register with gateway for polling
         if self.gateway is not None:
@@ -285,6 +488,7 @@ class DockerManager:
     def remove_node(self, node_id):
         """Stop and remove a node container."""
         container_name = f"edge-node-{node_id.replace('node-', '')}"
+        self.invalidate_cache()
 
         try:
             container = self.client.containers.get(container_name)

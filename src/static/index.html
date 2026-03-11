@@ -10,6 +10,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="/style.css" />
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
 </head>
 <body>
     <!-- Header / Stats Bar -->
@@ -28,6 +29,13 @@
                     <line x1="6" y1="12" x2="9.5" y2="12"/>
                 </svg>
                 <h1>Edge Mesh Observatory</h1>
+                <a href="/docs" target="_blank" class="badge" style="margin-left: 12px; text-decoration: none; color: inherit; border: 1px solid var(--border-color);">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align: -2px; margin-right: 4px;">
+                        <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"></path>
+                        <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"></path>
+                    </svg>
+                    API Docs
+                </a>
             </div>
         </div>
         <div class="header-stats">
@@ -52,292 +60,350 @@
         </div>
     </header>
 
-    <main>
-        <!-- Row 1: Topology + Event Sender -->
-        <div class="grid-row grid-cols-2">
-            <section class="panel" id="topology-panel">
+    <!-- SPA Layout: Fixed Left Topology + Scrollable Right Panels -->
+    <div class="app-layout">
+        <!-- LEFT: Network Topology (sticky) -->
+        <aside class="topology-side" id="topology-side">
+            <section class="panel topology-panel-full" id="topology-panel">
                 <div class="panel-header">
                     <h2>Network Topology</h2>
                     <div class="panel-actions">
+                        <button class="btn btn-icon" onclick="toggleFullscreen()" title="Fullscreen" id="btn-fullscreen">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"></path>
+                            </svg>
+                        </button>
                         <button class="btn btn-icon" onclick="refreshAll()" title="Refresh" id="btn-refresh">
                             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2v6h-6M3 12a9 9 0 0115.36-6.36L21 8M3 22v-6h6M21 12a9 9 0 01-15.36 6.36L3 16"/></svg>
                         </button>
                     </div>
                 </div>
                 <div class="topology-container">
-                    <canvas id="topology-canvas"></canvas>
+                    <svg id="topology-canvas"></svg>
+                </div>
+            </section>
+        </aside>
+
+        <!-- RIGHT: Scrollable Accordion Panels -->
+        <main class="panels-side" id="panels-side">
+
+            <!-- Gateway Management -->
+            <section class="accordion-panel open" id="gateway-management-panel" data-panel-id="gateway-management">
+                <div class="accordion-header" onclick="toggleAccordion(this)">
+                    <div class="accordion-title">
+                        <svg class="accordion-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+                        <h2>Gateway Management</h2>
+                    </div>
+                    <div class="panel-actions" onclick="event.stopPropagation()">
+                        <button class="btn btn-sm" onclick="createGateway()" id="btn-add-gateway">+ Add Gateway</button>
+                    </div>
+                </div>
+                <div class="accordion-body">
+                    <div class="node-list" id="gateway-list">
+                        <div class="empty-state">No gateways running</div>
+                    </div>
                 </div>
             </section>
 
-            <section class="panel" id="event-sender-panel">
-                <div class="panel-header">
-                    <h2>Send Event</h2>
-                </div>
-                <form id="event-form" class="event-form" onsubmit="sendEvent(event)">
-                    <div class="form-row">
-                        <div class="form-group">
-                            <label for="event-type">Type</label>
-                            <input type="text" id="event-type" placeholder="e.g. water_level" value="temperature" required />
-                        </div>
-                        <div class="form-group">
-                            <label for="event-value">Value</label>
-                            <input type="text" id="event-value" placeholder="e.g. 3.2" value="25.0" required />
-                        </div>
+            <!-- Node Management -->
+            <section class="accordion-panel open" id="node-management-panel" data-panel-id="node-management">
+                <div class="accordion-header" onclick="toggleAccordion(this)">
+                    <div class="accordion-title">
+                        <svg class="accordion-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+                        <h2>Node Management</h2>
                     </div>
-                    <div class="form-row">
-                        <div class="form-group">
-                            <label for="event-category">Category</label>
-                            <select id="event-category">
-                                <option value="sensor">Sensor</option>
-                                <option value="resource">Resource</option>
-                                <option value="infrastructure">Infrastructure</option>
-                                <option value="general" selected>General</option>
-                            </select>
-                        </div>
-                        <div class="form-group">
-                            <label for="event-target">Target Node</label>
-                            <select id="event-target">
-                                <option value="">Any node</option>
-                            </select>
-                        </div>
-                    </div>
-                    <div class="form-row">
-                        <div class="form-group">
-                            <label for="event-location">Location</label>
-                            <input type="text" id="event-location" placeholder="e.g. bridge_north" value="sensor_a" />
-                        </div>
-                        <div class="form-group">
-                            <label for="event-operation">Operation</label>
-                            <select id="event-operation">
-                                <option value="" selected>Default</option>
-                                <option value="increment">Increment</option>
-                                <option value="decrement">Decrement</option>
-                            </select>
-                        </div>
-                    </div>
-                    <button type="submit" class="btn btn-primary btn-block" id="send-event-btn">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg>
-                        Send Event
-                    </button>
-                </form>
-                <div id="event-result" class="event-result hidden"></div>
-            </section>
-        </div>
-
-        <!-- Row 2: Node Management + Live Metrics -->
-        <div class="grid-row grid-cols-2">
-            <section class="panel" id="node-management-panel">
-                <div class="panel-header">
-                    <h2>Node Management</h2>
-                    <div class="panel-actions">
+                    <div class="panel-actions" onclick="event.stopPropagation()" style="display: flex; gap: 8px; align-items: center;">
+                        <select id="gateway-selector" class="gateway-selector" style="font-size: 12px; padding: 4px; border-radius: 4px; border: 1px solid var(--border-color); background: var(--surface); color: var(--text-primary);">
+                            <option value="">Auto (Round-Robin)</option>
+                        </select>
                         <button class="btn btn-sm" onclick="createNode()" id="btn-add-node">+ Add Node</button>
-                        <button class="btn btn-sm btn-outline" onclick="createNodesBatch(3)" id="btn-add-3-nodes">+ 3 Nodes</button>
+                        <input type="number" id="batch-node-count" min="1" value="3" style="width: 48px; font-size: 11px; padding: 3px 4px; border-radius: 4px; border: 1px solid var(--border-color); background: var(--bg-input); color: var(--text-primary); text-align: center;" />
+                        <button class="btn btn-sm btn-outline" onclick="createNodesBatch(document.getElementById('batch-node-count').value)" id="btn-add-batch-nodes">+ Add Batch</button>
                     </div>
                 </div>
-                <div class="node-list" id="node-list">
-                    <div class="empty-state">No nodes running</div>
-                </div>
-                <div class="partition-controls">
-                    <button class="btn btn-warning" onclick="splitBrain()" id="btn-split-brain">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 3h5v5M4 20L21 3M21 16v5h-5M15 15l6 6M4 4l5 5"/></svg>
-                        Split Brain
-                    </button>
-                    <button class="btn btn-success" onclick="healAll()" id="btn-heal-all">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 11-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
-                        Heal All
-                    </button>
-                    <button class="btn btn-outline" onclick="triggerPoll()" id="btn-trigger-poll">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-                        Trigger Poll
-                    </button>
+                <div class="accordion-body">
+                    <div class="node-list" id="node-list">
+                        <div class="empty-state">No nodes running</div>
+                    </div>
+                    <div class="partition-controls">
+                        <button class="btn btn-warning" onclick="splitBrain()" id="btn-split-brain">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 3h5v5M4 20L21 3M21 16v5h-5M15 15l6 6M4 4l5 5"/></svg>
+                            Split Brain
+                        </button>
+                        <button class="btn btn-success" onclick="healAll()" id="btn-heal-all">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 11-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+                            Heal All
+                        </button>
+                        <button class="btn btn-outline" onclick="triggerPoll()" id="btn-trigger-poll">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                            Trigger Poll
+                        </button>
+                    </div>
                 </div>
             </section>
 
-            <section class="panel" id="live-metrics-panel">
-                <div class="panel-header">
-                    <h2>Live Metrics</h2>
+            <!-- Send Event -->
+            <section class="accordion-panel open" id="event-sender-panel" data-panel-id="event-sender">
+                <div class="accordion-header" onclick="toggleAccordion(this)">
+                    <div class="accordion-title">
+                        <svg class="accordion-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+                        <h2>Send Event</h2>
+                    </div>
+                </div>
+                <div class="accordion-body">
+                    <form id="event-form" class="event-form" onsubmit="sendEvent(event)">
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="event-type">Type</label>
+                                <input type="text" id="event-type" placeholder="e.g. water_level" value="temperature" required />
+                            </div>
+                            <div class="form-group">
+                                <label for="event-value">Value</label>
+                                <input type="text" id="event-value" placeholder="e.g. 3.2" value="25.0" required />
+                            </div>
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="event-category">Category</label>
+                                <select id="event-category">
+                                    <option value="sensor">Sensor</option>
+                                    <option value="resource">Resource</option>
+                                    <option value="infrastructure">Infrastructure</option>
+                                    <option value="general" selected>General</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="event-target">Target Node</label>
+                                <select id="event-target">
+                                    <option value="">Any node</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="event-location">Location</label>
+                                <input type="text" id="event-location" placeholder="e.g. bridge_north" value="sensor_a" />
+                            </div>
+                            <div class="form-group">
+                                <label for="event-operation">Operation</label>
+                                <select id="event-operation">
+                                    <option value="" selected>Default</option>
+                                    <option value="increment">Increment</option>
+                                    <option value="decrement">Decrement</option>
+                                </select>
+                            </div>
+                        </div>
+                        <button type="submit" class="btn btn-primary btn-block" id="send-event-btn">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg>
+                            Send Event
+                        </button>
+                    </form>
+                    <div id="event-result" class="event-result hidden"></div>
+                </div>
+            </section>
+
+            <!-- Live Metrics -->
+            <section class="accordion-panel open" id="live-metrics-panel" data-panel-id="live-metrics">
+                <div class="accordion-header" onclick="toggleAccordion(this)">
+                    <div class="accordion-title">
+                        <svg class="accordion-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+                        <h2>Live Metrics</h2>
+                    </div>
                     <span class="badge" id="metrics-update-badge">Polling&hellip;</span>
                 </div>
-                <div class="metrics-grid">
-                    <div class="metric-card" id="mc-convergence">
-                        <div class="metric-icon">⏱</div>
-                        <div class="metric-body">
-                            <span class="metric-label">Convergence Time</span>
-                            <span class="metric-value" id="mv-convergence">&mdash;</span>
-                            <span class="metric-unit">seconds</span>
+                <div class="accordion-body">
+                    <div class="metrics-grid">
+                        <div class="metric-card" id="mc-convergence">
+                            <div class="metric-icon">⏱</div>
+                            <div class="metric-body">
+                                <span class="metric-label">Convergence Time</span>
+                                <span class="metric-value" id="mv-convergence">&mdash;</span>
+                                <span class="metric-unit">seconds</span>
+                            </div>
                         </div>
-                    </div>
-                    <div class="metric-card" id="mc-data-loss">
-                        <div class="metric-icon">📉</div>
-                        <div class="metric-body">
-                            <span class="metric-label">Data Loss</span>
-                            <span class="metric-value" id="mv-data-loss">0%</span>
-                            <span class="metric-unit">of events</span>
+                        <div class="metric-card" id="mc-data-loss">
+                            <div class="metric-icon">📉</div>
+                            <div class="metric-body">
+                                <span class="metric-label">Data Loss</span>
+                                <span class="metric-value" id="mv-data-loss">0%</span>
+                                <span class="metric-unit">of events</span>
+                            </div>
                         </div>
-                    </div>
-                    <div class="metric-card" id="mc-gossip">
-                        <div class="metric-icon">💬</div>
-                        <div class="metric-body">
-                            <span class="metric-label">Gossip Messages</span>
-                            <span class="metric-value" id="mv-gossip">0</span>
-                            <span class="metric-unit">sent total</span>
+                        <div class="metric-card" id="mc-gossip">
+                            <div class="metric-icon">💬</div>
+                            <div class="metric-body">
+                                <span class="metric-label">Gossip Messages</span>
+                                <span class="metric-value" id="mv-gossip">0</span>
+                                <span class="metric-unit">sent total</span>
+                            </div>
                         </div>
-                    </div>
-                    <div class="metric-card" id="mc-state-size">
-                        <div class="metric-icon">📦</div>
-                        <div class="metric-body">
-                            <span class="metric-label">State Size</span>
-                            <span class="metric-value" id="mv-state-size">0 B</span>
-                            <span class="metric-unit">bytes total</span>
+                        <div class="metric-card" id="mc-state-size">
+                            <div class="metric-icon">📦</div>
+                            <div class="metric-body">
+                                <span class="metric-label">State Size</span>
+                                <span class="metric-value" id="mv-state-size">0 B</span>
+                                <span class="metric-unit">bytes total</span>
+                            </div>
                         </div>
-                    </div>
-                    <div class="metric-card wide" id="mc-divergence">
-                        <div class="metric-icon">🔀</div>
-                        <div class="metric-body">
-                            <span class="metric-label">Network Status</span>
-                            <span class="metric-value" id="mv-divergence">Converged</span>
-                            <span class="metric-unit" id="mv-divergence-detail">All Merkle roots match</span>
+                        <div class="metric-card wide" id="mc-divergence">
+                            <div class="metric-icon">🔀</div>
+                            <div class="metric-body">
+                                <span class="metric-label">Network Status</span>
+                                <span class="metric-value" id="mv-divergence">Converged</span>
+                                <span class="metric-unit" id="mv-divergence-detail">All Merkle roots match</span>
+                            </div>
                         </div>
                     </div>
                 </div>
             </section>
-        </div>
 
-        <!-- Row 3: Charts -->
-        <div class="grid-row grid-cols-3">
-            <section class="panel chart-panel" id="chart-convergence-panel">
-                <div class="panel-header">
-                    <h2>Convergence Time</h2>
+            <!-- Charts -->
+            <section class="accordion-panel" id="charts-panel" data-panel-id="charts">
+                <div class="accordion-header" onclick="toggleAccordion(this)">
+                    <div class="accordion-title">
+                        <svg class="accordion-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+                        <h2>Charts</h2>
+                    </div>
                 </div>
-                <div class="chart-container">
-                    <canvas id="chart-convergence"></canvas>
+                <div class="accordion-body">
+                    <div class="charts-grid">
+                        <div class="chart-container">
+                            <h3 class="chart-title">Convergence Time</h3>
+                            <canvas id="chart-convergence"></canvas>
+                        </div>
+                        <div class="chart-container">
+                            <h3 class="chart-title">State Size Growth</h3>
+                            <canvas id="chart-state-size"></canvas>
+                        </div>
+                        <div class="chart-container">
+                            <h3 class="chart-title">Node Count</h3>
+                            <canvas id="chart-node-count"></canvas>
+                        </div>
+                    </div>
                 </div>
             </section>
-            <section class="panel chart-panel" id="chart-state-size-panel">
-                <div class="panel-header">
-                    <h2>State Size Growth</h2>
-                </div>
-                <div class="chart-container">
-                    <canvas id="chart-state-size"></canvas>
-                </div>
-            </section>
-            <section class="panel chart-panel" id="chart-node-count-panel">
-                <div class="panel-header">
-                    <h2>Node Count</h2>
-                </div>
-                <div class="chart-container">
-                    <canvas id="chart-node-count"></canvas>
-                </div>
-            </section>
-        </div>
 
-        <!-- Row 3.5: Evaluation -->
-        <div class="grid-row grid-cols-1">
-            <section class="panel" id="evaluation-panel">
-                <div class="panel-header">
-                    <h2>📊 Evaluation Suite</h2>
+            <!-- Evaluation Suite -->
+            <section class="accordion-panel" id="evaluation-panel" data-panel-id="evaluation">
+                <div class="accordion-header" onclick="toggleAccordion(this)">
+                    <div class="accordion-title">
+                        <svg class="accordion-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+                        <h2>📊 Evaluation Suite</h2>
+                    </div>
                     <span class="badge" id="eval-status-badge">Idle</span>
                 </div>
-                <div class="eval-controls">
-                    <div class="eval-config">
-                        <div class="form-group">
-                            <label for="eval-node-counts">Node Counts</label>
-                            <input type="text" id="eval-node-counts" value="5" placeholder="e.g. 3, 5, 7" />
+                <div class="accordion-body">
+                    <div class="eval-controls">
+                        <div class="eval-config">
+                            <div class="form-group">
+                                <label for="eval-node-counts">Node Counts</label>
+                                <input type="text" id="eval-node-counts" value="5" placeholder="e.g. 3, 5, 7" />
+                            </div>
+                            <div class="form-group">
+                                <label for="eval-events-per-node">Events / Node</label>
+                                <input type="number" id="eval-events-per-node" value="5" min="1" max="50" />
+                            </div>
+                            <div class="form-group eval-actions">
+                                <button class="btn btn-primary" onclick="runEvaluation()" id="btn-run-eval">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                                    Run Evaluation
+                                </button>
+                                <button class="btn btn-outline" onclick="downloadEvaluation()" id="btn-download-eval" disabled>
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                                    Download CSV
+                                </button>
+                            </div>
                         </div>
-                        <div class="form-group">
-                            <label for="eval-events-per-node">Events / Node</label>
-                            <input type="number" id="eval-events-per-node" value="5" min="1" max="50" />
-                        </div>
-                        <div class="form-group eval-actions">
-                            <button class="btn btn-primary" onclick="runEvaluation()" id="btn-run-eval">
-                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-                                Run Evaluation
-                            </button>
-                            <button class="btn btn-outline" onclick="downloadEvaluation()" id="btn-download-eval" disabled>
-                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                                Download CSV
-                            </button>
+                        <div class="eval-progress-wrap hidden" id="eval-progress-wrap">
+                            <div class="eval-progress-bar">
+                                <div class="eval-progress-fill" id="eval-progress-fill" style="width: 0%"></div>
+                            </div>
+                            <div class="eval-step-label" id="eval-step-label">Starting...</div>
                         </div>
                     </div>
-                    <div class="eval-progress-wrap hidden" id="eval-progress-wrap">
-                        <div class="eval-progress-bar">
-                            <div class="eval-progress-fill" id="eval-progress-fill" style="width: 0%"></div>
-                        </div>
-                        <div class="eval-step-label" id="eval-step-label">Starting...</div>
+                    <div class="table-wrap" id="eval-results-wrap">
+                        <table id="eval-results-table">
+                            <thead>
+                                <tr>
+                                    <th>Scenario</th>
+                                    <th>Nodes</th>
+                                    <th>Events</th>
+                                    <th>Conv. Time</th>
+                                    <th>Data Loss</th>
+                                    <th>Gossip Msgs</th>
+                                    <th>State Size</th>
+                                    <th>Converged</th>
+                                </tr>
+                            </thead>
+                            <tbody id="eval-results-tbody">
+                                <tr><td colspan="8" class="empty-cell">No evaluation data — click Run Evaluation to start</td></tr>
+                            </tbody>
+                        </table>
                     </div>
-                </div>
-                <div class="table-wrap" id="eval-results-wrap">
-                    <table id="eval-results-table">
-                        <thead>
-                            <tr>
-                                <th>Scenario</th>
-                                <th>Nodes</th>
-                                <th>Events</th>
-                                <th>Conv. Time</th>
-                                <th>Data Loss</th>
-                                <th>Gossip Msgs</th>
-                                <th>State Size</th>
-                                <th>Converged</th>
-                            </tr>
-                        </thead>
-                        <tbody id="eval-results-tbody">
-                            <tr><td colspan="8" class="empty-cell">No evaluation data — click Run Evaluation to start</td></tr>
-                        </tbody>
-                    </table>
-                </div>
-            </section>
-        </div>
-
-        <!-- Row 4: Per-Node Stats + Event Log -->
-        <div class="grid-row grid-cols-2">
-            <section class="panel" id="per-node-panel">
-                <div class="panel-header">
-                    <h2>Per-Node Stats</h2>
-                </div>
-                <div class="table-wrap">
-                    <table id="per-node-table">
-                        <thead>
-                            <tr>
-                                <th>Node</th>
-                                <th>Events</th>
-                                <th>Gossip Sent</th>
-                                <th>Peers</th>
-                                <th>State Size</th>
-                                <th>Merkle</th>
-                            </tr>
-                        </thead>
-                        <tbody id="per-node-tbody">
-                            <tr><td colspan="6" class="empty-cell">Waiting for data&hellip;</td></tr>
-                        </tbody>
-                    </table>
                 </div>
             </section>
 
-            <section class="panel" id="event-log-panel">
-                <div class="panel-header">
-                    <h2>Event Log</h2>
+            <!-- Per-Node Stats -->
+            <section class="accordion-panel" id="per-node-panel" data-panel-id="per-node">
+                <div class="accordion-header" onclick="toggleAccordion(this)">
+                    <div class="accordion-title">
+                        <svg class="accordion-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+                        <h2>Per-Node Stats</h2>
+                    </div>
+                </div>
+                <div class="accordion-body">
+                    <div class="table-wrap">
+                        <table id="per-node-table">
+                            <thead>
+                                <tr>
+                                    <th>Node</th>
+                                    <th>Events</th>
+                                    <th>Gossip Sent</th>
+                                    <th>Peers</th>
+                                    <th>State Size</th>
+                                    <th>Merkle</th>
+                                </tr>
+                            </thead>
+                            <tbody id="per-node-tbody">
+                                <tr><td colspan="6" class="empty-cell">Waiting for data&hellip;</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Event Log -->
+            <section class="accordion-panel" id="event-log-panel" data-panel-id="event-log">
+                <div class="accordion-header" onclick="toggleAccordion(this)">
+                    <div class="accordion-title">
+                        <svg class="accordion-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+                        <h2>Event Log</h2>
+                    </div>
                     <span class="badge" id="event-log-count">0 events</span>
                 </div>
-                <div class="table-wrap">
-                    <table id="event-log-table">
-                        <thead>
-                            <tr>
-                                <th>Time</th>
-                                <th>Node</th>
-                                <th>Type</th>
-                                <th>Category</th>
-                                <th>State Size</th>
-                                <th>Merkle</th>
-                            </tr>
-                        </thead>
-                        <tbody id="event-log-tbody">
-                            <tr><td colspan="6" class="empty-cell">No events sent yet</td></tr>
-                        </tbody>
-                    </table>
+                <div class="accordion-body">
+                    <div class="table-wrap">
+                        <table id="event-log-table">
+                            <thead>
+                                <tr>
+                                    <th>Time</th>
+                                    <th>Node</th>
+                                    <th>Type</th>
+                                    <th>Category</th>
+                                    <th>State Size</th>
+                                    <th>Merkle</th>
+                                </tr>
+                            </thead>
+                            <tbody id="event-log-tbody">
+                                <tr><td colspan="6" class="empty-cell">No events sent yet</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
                 </div>
             </section>
-        </div>
-    </main>
+
+        </main>
+    </div>
 
     <!-- Toast container -->
     <div id="toast-container"></div>
