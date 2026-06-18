@@ -11,6 +11,7 @@ import uvicorn
 from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -32,8 +33,6 @@ structlog.configure(
     wrapper_class=structlog.stdlib.BoundLogger,
     logger_factory=structlog.stdlib.LoggerFactory(),
 )
-
-from fastapi.middleware.cors import CORSMiddleware
 
 log = structlog.get_logger()
 
@@ -63,6 +62,20 @@ class GatewayNode(BaseModel):
 
 class GatewayNodeSyncRequest(BaseModel):
     nodes: List[GatewayNode]
+
+
+class RelayObservationItem(BaseModel):
+    node_id: str
+    merkle_root: Optional[str] = None
+    state_version: Optional[int] = None
+    last_seen_at: Optional[str] = None
+    reachable_via: Optional[str] = "relayed"
+    hops: Optional[int] = 1
+
+
+class RelayObservationRequest(BaseModel):
+    source_node: str
+    observations: List[RelayObservationItem]
 
 
 def _api_error(
@@ -105,9 +118,6 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 # --- Gateway status & state ---
 
 
-# --- Gateway status & state ---
-
-
 @app.get("/gateway/status")
 async def gateway_status():
     return gateway.get_status()
@@ -142,6 +152,14 @@ async def sync_gateway_nodes(payload: GatewayNodeSyncRequest):
     }
 
 
+@app.post("/gateway/relay-observations")
+async def relay_observations(payload: RelayObservationRequest):
+    return gateway.ingest_relay_observations(
+        source_node=payload.source_node,
+        observations=[item.model_dump() for item in payload.observations],
+    )
+
+
 @app.post("/gateway/poll")
 async def trigger_poll():
     """Manually trigger a poll cycle."""
@@ -155,6 +173,7 @@ async def merged_state():
     if not snapshot:
         return {"status": "no data yet, trigger a poll first"}
     return snapshot
+
 
 @app.get("/gateway/peers")
 async def discovered_peers():
@@ -174,8 +193,11 @@ async def snapshot_history(limit: int = 20):
 
 @app.get("/gateway/divergence")
 async def divergence():
+    visibility = gateway.get_runtime_metrics().get("visibility", {})
     return {
         "is_divergent": gateway.is_divergent,
+        "known_status": visibility.get("known_status", "unknown_partial"),
+        "coverage": visibility.get("coverage", 0.0),
         "log": store.get_divergence_log(20),
     }
 

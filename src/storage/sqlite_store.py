@@ -146,8 +146,14 @@ class SQLiteStore:
     # --- Event Tracking ---
 
     def save_event_tracking(
-        self, tracking_id, node_id, event_type, category,
-        state_size_bytes=None, merkle_root_after=None, metadata=None,
+        self,
+        tracking_id,
+        node_id,
+        event_type,
+        category,
+        state_size_bytes=None,
+        merkle_root_after=None,
+        metadata=None,
     ):
         self.conn.execute(
             "INSERT INTO event_tracking (timestamp, tracking_id, node_id, event_type, category, state_size_bytes, merkle_root_after, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",

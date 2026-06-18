@@ -1,3 +1,3 @@
 """Storage layer."""
 
-from .sqlite_store import SQLiteStore
+from .sqlite_store import SQLiteStore as SQLiteStore

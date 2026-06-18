@@ -5,6 +5,8 @@ import structlog
 import time
 from typing import TYPE_CHECKING
 
+import aiohttp
+
 from ..config import Config
 from ..crdt import NodeState
 
@@ -14,24 +16,30 @@ if TYPE_CHECKING:
     from .peer_discovery import PeerDiscovery
 
 MAX_PACKET = 60000
+MAX_GOSSIP_TARGETS = 3
+MAX_RELAY_OBSERVATIONS = 24
+REPAIR_PULL_COOLDOWN_SECONDS = 8.0
 
 
 class GossipService:
     """
-    UDP gossip protocol. Every few seconds, broadcast our state to all peers.
-    Listen for incoming state and merge it.
-
-    Messages include semantic context:
-      - state_sync:  full state with summary of what's inside
-      - merkle_only: compact fingerprint with event count for quick comparison
+    UDP gossip protocol. Periodic messages are summary-first and compact.
+    When a digest mismatch is detected, pull full state over HTTP on demand.
     """
 
-    def __init__(self, config: Config, state: NodeState, peer_discovery: "PeerDiscovery | None" = None):
+    def __init__(
+        self,
+        config: Config,
+        state: NodeState,
+        peer_discovery: "PeerDiscovery | None" = None,
+    ):
         self.config = config
         self.state = state
         self.peer_discovery = peer_discovery
         self.running = False
         self.sock = None
+        self.peer_observations = {}
+        self._last_repair_pull_at = {}
         self.stats = {
             "sent": 0,
             "received": 0,
@@ -40,8 +48,15 @@ class GossipService:
             "sent_bytes": 0,
             "received_bytes": 0,
             "broadcast_cycles": 0,
+            "summary_sent": 0,
+            "summary_received": 0,
             "state_sync_sent": 0,
             "merkle_only_sent": 0,
+            "state_sync_received": 0,
+            "merkle_only_received": 0,
+            "repair_pulls_started": 0,
+            "repair_pulls_success": 0,
+            "repair_pulls_failed": 0,
             "merkle_mismatches": 0,
             "merge_time_ms_total": 0.0,
             "last_merge_ms": 0.0,
@@ -59,7 +74,9 @@ class GossipService:
         self.sock.setblocking(False)
 
         log.info(
-            "gossip_started", port=self.config.gossip_port, discovery="mdns" if self.peer_discovery else "none"
+            "gossip_started",
+            port=self.config.gossip_port,
+            discovery="mdns" if self.peer_discovery else "none",
         )
 
         await asyncio.gather(
@@ -73,39 +90,14 @@ class GossipService:
             self.sock.close()
 
     async def _broadcast_loop(self):
-        """Send our state to a random subset of peers periodically."""
+        """Send compact summaries to a random subset of peers periodically."""
         import random
-        MAX_GOSSIP_TARGETS = 3  # Standard gossip fan-out
 
         while self.running:
             await asyncio.sleep(self.config.gossip_interval)
             try:
                 self.stats["broadcast_cycles"] += 1
-                state_summary = self.state.summary()
-                message_type = "state_sync"
-                msg = json.dumps(
-                    {
-                        "type": "state_sync",
-                        "reason": "periodic_sync",
-                        "sender": self.config.node_id,
-                        "state": self.state.to_dict(),
-                        "state_summary": state_summary,
-                    }
-                ).encode()
-
-                if len(msg) > MAX_PACKET:
-                    # if state is too big, send a compact digest
-                    message_type = "merkle_only"
-                    msg = json.dumps(
-                        {
-                            "type": "merkle_only",
-                            "reason": "state_too_large_for_udp",
-                            "sender": self.config.node_id,
-                            "merkle_root": self.state.merkle_root(),
-                            "event_count": self.state.get_event_count(),
-                            "state_summary": state_summary,
-                        }
-                    ).encode()
+                msg = self._build_summary_message()
 
                 loop = asyncio.get_event_loop()
                 peers = self.peer_discovery.get_peers() if self.peer_discovery else []
@@ -125,10 +117,7 @@ class GossipService:
                         )
                         self.stats["sent"] += 1
                         self.stats["sent_bytes"] += len(msg)
-                        if message_type == "state_sync":
-                            self.stats["state_sync_sent"] += 1
-                        else:
-                            self.stats["merkle_only_sent"] += 1
+                        self.stats["summary_sent"] += 1
                     except Exception as e:
                         self.stats["errors"] += 1
                         log.debug("gossip_send_failed", peer=peer, error=str(e))
@@ -137,7 +126,7 @@ class GossipService:
                 log.error("broadcast_error", error=str(e))
 
     async def _receive_loop(self):
-        """Listen for incoming gossip messages and merge them."""
+        """Listen for incoming gossip messages and trigger repair when needed."""
         loop = asyncio.get_event_loop()
         while self.running:
             try:
@@ -149,11 +138,49 @@ class GossipService:
                 message = json.loads(data.decode())
                 self.stats["last_message_type"] = message.get("type")
                 self.stats["last_message_at"] = time.time()
-                self._handle(message)
+                await self._handle(message, addr)
             except Exception as e:
                 if self.running:
                     self.stats["errors"] += 1
                     log.debug("receive_error", error=str(e))
+
+    def _build_summary_message(self) -> bytes:
+        observed_peers = self.get_peer_observations(limit=MAX_RELAY_OBSERVATIONS)
+        payload = {
+            "type": "state_summary",
+            "reason": "periodic_summary_sync",
+            "sender": self.config.node_id,
+            "source_http_port": self.config.http_port,
+            "merkle_root": self.state.merkle_root(),
+            "state_version": self.state.version,
+            "event_count": self.state.get_event_count(),
+            "state_summary": self.state.summary(),
+            "peer_observations": observed_peers,
+        }
+        message = json.dumps(payload).encode()
+
+        if len(message) > MAX_PACKET:
+            payload["peer_observations"] = []
+            message = json.dumps(payload).encode()
+        return message
+
+    def _record_peer_observation(
+        self,
+        sender: str,
+        merkle_root: str,
+        state_version: int | None,
+        hop_count: int = 1,
+    ):
+        if not sender or sender == self.config.node_id:
+            return
+        self.peer_observations[sender] = {
+            "node_id": sender,
+            "merkle_root": merkle_root or "",
+            "state_version": state_version,
+            "last_seen_at": time.time(),
+            "reachable_via": "relayed" if hop_count > 1 else "direct",
+            "hops": hop_count,
+        }
 
     def _recv(self):
         """Blocking recv with timeout so we can check self.running."""
@@ -163,14 +190,55 @@ class GossipService:
         except socket.timeout:
             return None, None
 
-    def _handle(self, message):
+    async def _handle(self, message, addr):
         sender = message.get("sender", "unknown")
 
         if sender == self.config.node_id:
             return  # ignore our own messages
 
-        if message["type"] == "state_sync":
+        mtype = message.get("type")
+
+        if mtype == "state_summary":
+            self.stats["summary_received"] += 1
+            remote_root = message.get("merkle_root")
+            remote_version = message.get("state_version")
+            self._record_peer_observation(
+                sender=sender,
+                merkle_root=remote_root,
+                state_version=remote_version,
+                hop_count=1,
+            )
+
+            for observed in message.get("peer_observations", []):
+                if not isinstance(observed, dict):
+                    continue
+                observed_node = observed.get("node_id")
+                if not observed_node or observed_node == self.config.node_id:
+                    continue
+                self.peer_observations[observed_node] = {
+                    "node_id": observed_node,
+                    "merkle_root": observed.get("merkle_root", ""),
+                    "state_version": observed.get("state_version"),
+                    "last_seen_at": observed.get("last_seen_at", time.time()),
+                    "reachable_via": "relayed",
+                    "hops": int(observed.get("hops", 1) or 1) + 1,
+                }
+
+            if remote_root != self.state.merkle_root():
+                self.stats["merkle_mismatches"] += 1
+                await self._maybe_pull_state_from_sender(addr, message)
+
+            return
+
+        if mtype == "state_sync":
+            self.stats["state_sync_received"] += 1
             incoming = NodeState.from_dict(message["state"])
+            self._record_peer_observation(
+                sender=sender,
+                merkle_root=incoming.merkle_root(),
+                state_version=getattr(incoming, "version", None),
+                hop_count=1,
+            )
             old_root = self.state.merkle_root()
             started = time.time()
             self.state.merge(incoming)
@@ -190,8 +258,15 @@ class GossipService:
                     new_root=new_root[:12],
                 )
 
-        elif message["type"] == "merkle_only":
+        elif mtype == "merkle_only":
+            self.stats["merkle_only_received"] += 1
             remote_root = message.get("merkle_root")
+            self._record_peer_observation(
+                sender=sender,
+                merkle_root=remote_root,
+                state_version=message.get("state_version"),
+                hop_count=1,
+            )
             if remote_root != self.state.merkle_root():
                 self.stats["merkle_mismatches"] += 1
                 log.info(
@@ -202,6 +277,55 @@ class GossipService:
                     theirs=remote_root[:12],
                     their_event_count=message.get("event_count"),
                 )
+                await self._maybe_pull_state_from_sender(addr, message)
+
+    async def _maybe_pull_state_from_sender(self, addr, message):
+        host = addr[0] if addr else None
+        if not host:
+            self.stats["repair_pulls_failed"] += 1
+            return
+
+        now = time.time()
+        last_pull = self._last_repair_pull_at.get(host, 0.0)
+        if (now - last_pull) < REPAIR_PULL_COOLDOWN_SECONDS:
+            return
+
+        self._last_repair_pull_at[host] = now
+        self.stats["repair_pulls_started"] += 1
+
+        http_port = message.get("source_http_port")
+        try:
+            http_port = int(http_port) if http_port is not None else 8000
+        except Exception:
+            http_port = 8000
+
+        url = f"http://{host}:{http_port}/state"
+        timeout = aiohttp.ClientTimeout(total=4)
+
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(url) as response:
+                    data = await response.json()
+            incoming = NodeState.from_dict(data)
+            old_root = self.state.merkle_root()
+            started = time.time()
+            self.state.merge(incoming)
+            elapsed_ms = (time.time() - started) * 1000
+            self.stats["last_merge_ms"] = round(elapsed_ms, 3)
+            self.stats["merge_time_ms_total"] += elapsed_ms
+            if self.state.merkle_root() != old_root:
+                self.stats["merged"] += 1
+                self.stats["last_successful_merge_at"] = time.time()
+            self.stats["repair_pulls_success"] += 1
+            self._record_peer_observation(
+                sender=message.get("sender", host),
+                merkle_root=incoming.merkle_root(),
+                state_version=getattr(incoming, "version", None),
+                hop_count=1,
+            )
+        except Exception as error:
+            self.stats["repair_pulls_failed"] += 1
+            log.debug("repair_pull_failed", peer=host, error=str(error))
 
     def _parse_peer(self, peer):
         parts = peer.rsplit(":", 1)
@@ -213,3 +337,11 @@ class GossipService:
         total_merge_ms = stats.get("merge_time_ms_total", 0.0)
         stats["avg_merge_ms"] = round(total_merge_ms / merged, 3) if merged else 0.0
         return stats
+
+    def get_peer_observations(self, limit: int = 200):
+        observations = sorted(
+            self.peer_observations.values(),
+            key=lambda item: item.get("last_seen_at", 0),
+            reverse=True,
+        )
+        return observations[: max(limit, 0)]

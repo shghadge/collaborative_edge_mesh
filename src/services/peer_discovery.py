@@ -57,9 +57,9 @@ class PeerDiscovery:
             return
 
         # Use a stable hash to avoid collisions from truncated Docker container names.
-        gateway_scope = hashlib.sha1(
-            self.assigned_gateway.encode("utf-8")
-        ).hexdigest()[:10]
+        gateway_scope = hashlib.sha1(self.assigned_gateway.encode("utf-8")).hexdigest()[
+            :10
+        ]
         self.service_type = f"_em-{gateway_scope}._udp.local."
 
     async def start(self):
@@ -113,15 +113,19 @@ class PeerDiscovery:
             self._zeroconf = None
 
         log.info("mdns_stopped", node_id=self.node_id)
-        
+
     async def update_gateway(self, assigned_gateway: str):
         """Update gateway and restart discovery under the new semantic network."""
         if self.assigned_gateway == assigned_gateway:
             return
         self.assigned_gateway = assigned_gateway
         self._update_service_type()
-        log.info("mdns_updating_gateway", new_gateway=assigned_gateway, service_type=self.service_type)
-        
+        log.info(
+            "mdns_updating_gateway",
+            new_gateway=assigned_gateway,
+            service_type=self.service_type,
+        )
+
         await self.stop()
         self._peers.clear()
         self.stats["peers_discovered"] = 0

@@ -5,6 +5,7 @@ Edge node entry point. Starts the HTTP intake, UDP gossip, and mDNS discovery se
 import asyncio
 import logging
 import signal
+import time
 import structlog
 import uvicorn
 
@@ -68,6 +69,23 @@ async def main():
             "peers": discovery.get_peers(),
             "peer_count": len(discovery.get_peers()),
             "stats": discovery.stats,
+        }
+
+    @intake.app.get("/relay/observations")
+    async def relay_observations(limit: int = 200):
+        own = {
+            "node_id": config.node_id,
+            "merkle_root": state.merkle_root(),
+            "state_version": state.version,
+            "last_seen_at": time.time(),
+            "reachable_via": "direct",
+            "hops": 0,
+        }
+        observed = gossip.get_peer_observations(limit=max(limit - 1, 0))
+        return {
+            "source_node": config.node_id,
+            "observations": [own, *observed],
+            "observation_count": len(observed) + 1,
         }
 
     shutdown = asyncio.Event()

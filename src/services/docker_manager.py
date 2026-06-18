@@ -7,7 +7,7 @@ import threading
 log = structlog.get_logger()
 
 NETWORK_NAME = "collaborative_edge_mesh_mesh"
-IMAGE_NAME = "collaborative_edge_mesh-edge-node-1"  # built by docker compose
+IMAGE_NAME = "collaborative_edge_mesh-simulator:latest"  # built by docker compose
 SUBNET = "172.28.0"
 
 
@@ -27,8 +27,8 @@ class DockerManager:
         self._gateways_cache = None
         self._gateways_cache_time = 0.0
         self._CACHE_TTL = 2.0  # seconds
-        
-        # Concurrency safety 
+
+        # Concurrency safety
         self._creation_lock = threading.Lock()
         self._reserved_nodes = set()
         self._reserved_ports = set()
@@ -42,7 +42,7 @@ class DockerManager:
         try:
             return self.client.containers.list(all=True)
         except TypeError:
-            # test doubles may not support keyword args
+            # Some lightweight Docker client fakes may not support keyword args.
             return self.client.containers.list()
 
     def _action_response(self, action, target, status, message, **extra):
@@ -109,7 +109,7 @@ class DockerManager:
                     host_port = binding.get("HostPort")
                     if host_port and str(host_port).isdigit():
                         ports.add(int(host_port))
-                        
+
         ports.update(self._reserved_ports)
         return ports
 
@@ -150,11 +150,7 @@ class DockerManager:
             raise RuntimeError("mesh network not found, is docker compose up?")
 
     def _get_image_name(self):
-        """Find the built image."""
-        for img in self.client.images.list():
-            for tag in img.tags:
-                if "edge-mesh" in tag or "collaborative_edge_mesh" in tag:
-                    return tag
+        """Return the exact image name built by this project's docker-compose."""
         return IMAGE_NAME
 
     def invalidate_cache(self):
@@ -165,8 +161,12 @@ class DockerManager:
     def list_nodes(self):
         """List all running edge node containers (both static and dynamic)."""
         import time as _time
+
         now = _time.time()
-        if self._nodes_cache is not None and (now - self._nodes_cache_time) < self._CACHE_TTL:
+        if (
+            self._nodes_cache is not None
+            and (now - self._nodes_cache_time) < self._CACHE_TTL
+        ):
             return self._nodes_cache
 
         nodes = []
@@ -184,7 +184,9 @@ class DockerManager:
                 if not container_ip:
                     try:
                         container.reload()
-                        networks = container.attrs.get("NetworkSettings", {}).get("Networks", {})
+                        networks = container.attrs.get("NetworkSettings", {}).get(
+                            "Networks", {}
+                        )
                         for net_name, net_info in networks.items():
                             if "mesh" in net_name and net_info.get("IPAddress"):
                                 container_ip = net_info["IPAddress"]
@@ -214,8 +216,12 @@ class DockerManager:
     def list_gateways(self):
         """List all running gateway containers with internal service URLs."""
         import time as _time
+
         now = _time.time()
-        if self._gateways_cache is not None and (now - self._gateways_cache_time) < self._CACHE_TTL:
+        if (
+            self._gateways_cache is not None
+            and (now - self._gateways_cache_time) < self._CACHE_TTL
+        ):
             return self._gateways_cache
 
         gateways = []
@@ -226,7 +232,7 @@ class DockerManager:
             host_port = None
             host_config = container.attrs.get("HostConfig") or {}
             bindings = host_config.get("PortBindings") or {}
-            
+
             # Find the port binding for 8000/tcp
             port_8000 = bindings.get("8000/tcp")
             if port_8000:
@@ -236,7 +242,9 @@ class DockerManager:
             internal_url = f"http://{container.name}:8000"
             try:
                 container.reload()
-                networks = container.attrs.get("NetworkSettings", {}).get("Networks", {})
+                networks = container.attrs.get("NetworkSettings", {}).get(
+                    "Networks", {}
+                )
                 for net_name, net_info in networks.items():
                     if "mesh" in net_name and net_info.get("IPAddress"):
                         internal_url = f"http://{net_info['IPAddress']}:8000"
@@ -251,7 +259,9 @@ class DockerManager:
                     "id": container.short_id,
                     "url": internal_url,
                     "host_port": host_port,
-                    "external_url": f"http://localhost:{host_port}" if host_port else None
+                    "external_url": f"http://localhost:{host_port}"
+                    if host_port
+                    else None,
                 }
             )
 
@@ -283,7 +293,9 @@ class DockerManager:
         if gw_num == "":
             gw_num = "1"
         try:
-            preferred = 7000 + int(gw_num) - 1 # e.g. gateway -> 7000, gateway-2 -> 7001
+            preferred = (
+                7000 + int(gw_num) - 1
+            )  # e.g. gateway -> 7000, gateway-2 -> 7001
         except ValueError:
             preferred = None
 
@@ -300,7 +312,7 @@ class DockerManager:
         """Spin up a new gateway container."""
         if gateway_id is None:
             gateway_id = self._next_available_gateway_id()
-            
+
         container_name = gateway_id
 
         try:
@@ -325,7 +337,7 @@ class DockerManager:
         image = self._get_image_name()
         network = self._get_network()
 
-        container = self.client.containers.run(
+        self.client.containers.run(
             image,
             detach=True,
             name=container_name,
@@ -377,7 +389,7 @@ class DockerManager:
             action="remove_gateway",
             target=gateway_id,
             status="removed",
-            message=f"Removed {gateway_id}"
+            message=f"Removed {gateway_id}",
         )
 
     def create_node(self, node_id=None, assigned_gateway=""):
@@ -413,9 +425,9 @@ class DockerManager:
 
             ip = self._next_ip()
             http_port = 8000
-            
+
             host_port = self._select_host_port(node_id)
-            
+
             # reservation tracking
             node_num_str = node_id.replace("node-", "")
             if node_num_str.isdigit():
@@ -462,7 +474,9 @@ class DockerManager:
 
         # register with gateway for polling
         if self.gateway is not None:
-            self.gateway.register_node(container_name, f"http://{actual_ip}:{http_port}")
+            self.gateway.register_node(
+                container_name, f"http://{actual_ip}:{http_port}"
+            )
 
         log.info(
             "node_created",
@@ -517,7 +531,7 @@ class DockerManager:
         )
 
     def isolate_node(self, node_id):
-        """Drop all UDP traffic to/from a node (partition it from gossip)."""
+        """Isolate gossip and gateway connectivity while keeping simulator control access."""
         container_name = f"edge-node-{node_id.replace('node-', '')}"
 
         if container_name in self.isolated_nodes:
@@ -530,15 +544,34 @@ class DockerManager:
 
         try:
             container = self.client.containers.get(container_name)
+
+            # 1) Cut gossip traffic entirely (UDP mesh traffic).
             container.exec_run("iptables -A INPUT -p udp -j DROP")
             container.exec_run("iptables -A OUTPUT -p udp -j DROP")
+
+            # 2) Cut TCP only between this node and gateway container IPs.
+            for gateway in self.list_gateways():
+                gateway_url = gateway.get("url") or ""
+                gateway_ip = ""
+                if gateway_url.startswith("http://"):
+                    gateway_ip = gateway_url.replace("http://", "").split(":")[0]
+
+                if gateway_ip:
+                    container.exec_run(
+                        f"iptables -A INPUT -p tcp -s {gateway_ip} -j DROP"
+                    )
+                    container.exec_run(
+                        f"iptables -A OUTPUT -p tcp -d {gateway_ip} -j DROP"
+                    )
+
             self.isolated_nodes.add(container_name)
+            self.invalidate_cache()
             log.info("node_isolated", node_id=node_id)
             return self._action_response(
                 action="isolate_node",
                 target=container_name,
                 status="isolated",
-                message=f"Isolated {container_name}",
+                message=f"Isolated {container_name} (UDP blocked + TCP to/from gateway blocked)",
                 node=container_name,
             )
         except docker.errors.NotFound:
@@ -566,6 +599,7 @@ class DockerManager:
             container.exec_run("iptables -F INPUT")
             container.exec_run("iptables -F OUTPUT")
             self.isolated_nodes.discard(container_name)
+            self.invalidate_cache()
             log.info("node_healed", node_id=node_id)
             return self._action_response(
                 action="heal_node",
@@ -592,6 +626,7 @@ class DockerManager:
                 results.append(container.name)
 
         self.isolated_nodes.clear()
+        self.invalidate_cache()
         log.info("all_healed", nodes=results)
         return self._action_response(
             action="heal_all",

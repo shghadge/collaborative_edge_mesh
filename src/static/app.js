@@ -12,15 +12,19 @@ let pollInterval = null;
 let ws = null;
 let wsConnected = false;
 const POLL_MS = 10000; // Fallback poll (slower since WS handles real-time)
+let lastTimeseriesFetchMs = 0;
 
 // --- Init ---
 document.addEventListener('DOMContentLoaded', () => {
     initCharts();
     refreshAll();
     connectWebSocket();
-    // Fallback polling in case WebSocket is unavailable
+    // Keep live metrics fresh even with WebSocket; use full polling only as fallback.
     pollInterval = setInterval(() => {
-        if (!wsConnected) pollData();
+        fetchLiveMetrics();
+        if (!wsConnected) {
+            pollData();
+        }
     }, POLL_MS);
 });
 
@@ -419,52 +423,118 @@ async function fetchLiveMetrics() {
     }
 }
 
+function renderMetrics() {
+    renderLiveMetrics();
+    renderPerNodeStats();
+}
+
 function renderLiveMetrics() {
     const m = liveMetrics;
 
     // Convergence time
     const convTime = m.convergence_time_seconds;
-    document.getElementById('mv-convergence').textContent =
-        convTime !== null && convTime !== undefined ? `${convTime}s` : '—';
-    document.getElementById('stat-convergence-time').textContent =
-        convTime !== null && convTime !== undefined ? `${convTime}s` : '—';
+    const convergenceEl = document.getElementById('mv-convergence');
+    const headerConvergenceEl = document.getElementById('stat-convergence-time');
+    if (convergenceEl) {
+        convergenceEl.textContent =
+            convTime !== null && convTime !== undefined ? `${convTime}s` : '—';
+    }
+    if (headerConvergenceEl) {
+        headerConvergenceEl.textContent =
+            convTime !== null && convTime !== undefined ? `${convTime}s` : '—';
+    }
 
     // Data loss
     const dl = m.data_loss_percent;
-    document.getElementById('mv-data-loss').textContent =
-        dl !== null && dl !== undefined ? `${dl}%` : '—';
+    const dataLossEl = document.getElementById('mv-data-loss');
+    if (dataLossEl) {
+        dataLossEl.textContent = dl !== null && dl !== undefined ? `${dl}%` : '—';
+    }
 
     // Gossip
-    document.getElementById('mv-gossip').textContent =
-        (m.total_gossip_messages_sent || 0).toLocaleString();
-    document.getElementById('stat-gossip-count').textContent =
-        m.total_gossip_messages_sent || 0;
+    const gossipEl = document.getElementById('mv-gossip');
+    const headerGossipEl = document.getElementById('stat-gossip-count');
+    if (gossipEl) {
+        gossipEl.textContent = (m.total_gossip_messages_sent || 0).toLocaleString();
+    }
+    if (headerGossipEl) {
+        headerGossipEl.textContent = m.total_gossip_messages_sent || 0;
+    }
 
     // State size
     const totalSize = m.total_state_size_bytes || 0;
-    document.getElementById('mv-state-size').textContent = formatBytes(totalSize);
+    const stateSizeEl = document.getElementById('mv-state-size');
+    if (stateSizeEl) {
+        stateSizeEl.textContent = formatBytes(totalSize);
+    }
+
+    // Confidence-aware status and coverage
+    const knownStatusRaw = (m.known_status || 'unknown_partial').toLowerCase();
+    const knownStatusText =
+        knownStatusRaw === 'known_converged' ? 'Known Converged' :
+        knownStatusRaw === 'known_diverged' ? 'Known Diverged' :
+        'Insufficient Coverage';
+    const coveragePct = m.coverage_percent !== null && m.coverage_percent !== undefined
+        ? Number(m.coverage_percent)
+        : 0;
+    const knownStatusEl = document.getElementById('mv-known-status');
+    const coverageEl = document.getElementById('mv-coverage');
+    if (knownStatusEl) {
+        knownStatusEl.textContent = knownStatusText;
+    }
+    if (coverageEl) {
+        coverageEl.textContent = `${coveragePct.toFixed(1)}%`;
+    }
 
     // Network status
-    const isDivergent = m.is_divergent;
+    const knownStatus = knownStatusRaw;
+    const isDivergent = knownStatus === 'known_diverged';
     const statusEl = document.getElementById('mv-divergence');
     const detailEl = document.getElementById('mv-divergence-detail');
     const headerStatusEl = document.getElementById('stat-network-status');
+    const coverageText = `${coveragePct.toFixed(1)}% coverage`;
 
-    if (isDivergent) {
+    if (!statusEl || !detailEl || !headerStatusEl) {
+        return;
+    }
+
+    const divergenceCard = document.getElementById('mc-divergence');
+    const knownStatusCard = document.getElementById('mc-known-status');
+    if (divergenceCard) {
+        divergenceCard.classList.remove('status-converged', 'status-diverged', 'status-partial');
+    }
+    if (knownStatusCard) {
+        knownStatusCard.classList.remove('status-converged', 'status-diverged', 'status-partial');
+    }
+
+    if (knownStatus === 'unknown_partial') {
+        statusEl.textContent = 'Insufficient Coverage';
+        statusEl.style.color = '#d69e2e';
+        detailEl.textContent = coverageText;
+        headerStatusEl.innerHTML = '<span class="status-dot partial"></span> Partial';
+        if (divergenceCard) divergenceCard.classList.add('status-partial');
+        if (knownStatusCard) knownStatusCard.classList.add('status-partial');
+    } else if (isDivergent) {
         statusEl.textContent = 'Divergent';
         statusEl.style.color = 'var(--accent-red)';
-        detailEl.textContent = `Diverged for ${m.divergence_duration_seconds || 0}s`;
+        detailEl.textContent = `Diverged for ${m.divergence_duration_seconds || 0}s · ${coverageText}`;
         headerStatusEl.innerHTML = '<span class="status-dot divergent"></span> Divergent';
+        if (divergenceCard) divergenceCard.classList.add('status-diverged');
+        if (knownStatusCard) knownStatusCard.classList.add('status-diverged');
     } else {
         statusEl.textContent = 'Converged';
         statusEl.style.color = 'var(--accent-green)';
-        detailEl.textContent = 'All Merkle roots match';
+        detailEl.textContent = `Known converged · ${coverageText}`;
         headerStatusEl.innerHTML = '<span class="status-dot converged"></span> OK';
+        if (divergenceCard) divergenceCard.classList.add('status-converged');
+        if (knownStatusCard) knownStatusCard.classList.add('status-converged');
     }
 
     // Update badge
-    document.getElementById('metrics-update-badge').textContent =
-        `Poll #${m.polls_completed || 0}`;
+    const updateBadge = document.getElementById('metrics-update-badge');
+    if (updateBadge) {
+        updateBadge.textContent = `Poll #${m.polls_completed || 0}`;
+    }
 }
 
 function renderPerNodeStats() {
@@ -633,6 +703,20 @@ function updateChart(chart, data) {
     chart.data.labels = reversed.map(d => formatTime(d.timestamp));
     chart.data.datasets[0].data = reversed.map(d => d.value);
     chart.update('none');
+}
+
+function updateCharts() {
+    const mode = (liveMetrics.observability_mode || '').toLowerCase();
+    const minIntervalMs =
+        mode === 'off' ? 60000 :
+        mode === 'light' ? 20000 :
+        5000;
+    const now = Date.now();
+    if (now - lastTimeseriesFetchMs < minIntervalMs) {
+        return;
+    }
+    lastTimeseriesFetchMs = now;
+    fetchTimeseries();
 }
 
 // --- D3 Topology Canvas ---
@@ -893,6 +977,15 @@ function toggleAccordion(headerEl) {
     const panel = headerEl.closest('.accordion-panel');
     if (panel) {
         panel.classList.toggle('open');
+        if (panel.classList.contains('open') && panel.id === 'charts-panel') {
+            setTimeout(() => {
+                Object.values(charts).forEach((chart) => {
+                    if (chart && typeof chart.resize === 'function') {
+                        chart.resize();
+                    }
+                });
+            }, 10);
+        }
     }
 }
 
@@ -1018,7 +1111,7 @@ async function fetchEvalResults() {
 function renderEvalResults(results) {
     const tbody = document.getElementById('eval-results-tbody');
     if (!results.length) {
-        tbody.innerHTML = '<tr><td colspan="8" class="empty-cell">No evaluation data — click Run Evaluation to start</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="9" class="empty-cell">No evaluation data — click Run Evaluation to start</td></tr>';
         return;
     }
 
@@ -1030,10 +1123,22 @@ function renderEvalResults(results) {
 
     tbody.innerHTML = results.map(r => {
         const s = scenarioLabels[r.scenario] || { label: r.scenario, cls: '' };
-        const rowCls = r.is_converged ? 'eval-row-converged' : 'eval-row-diverged';
+        const status = (r.known_status || '').toLowerCase();
+        const rowCls =
+            status === 'known_converged' ? 'eval-row-converged' :
+            status === 'known_diverged' ? 'eval-row-diverged' :
+            '';
         const convTime = r.convergence_time_s != null ? `${r.convergence_time_s.toFixed(3)}s` : '—';
         const dataLoss = r.data_loss_pct != null ? `${r.data_loss_pct}%` : '—';
-        const convergedIcon = r.is_converged ? '✅' : '❌';
+        const statusLabel =
+            status === 'known_converged' ? 'Known Converged' :
+            status === 'known_diverged' ? 'Known Diverged' :
+            'Insufficient Coverage';
+        const coverage = r.coverage_percent != null ? `${Number(r.coverage_percent).toFixed(1)}%` : '—';
+        const statusCls =
+            status === 'known_converged' ? 'eval-status-converged' :
+            status === 'known_diverged' ? 'eval-status-diverged' :
+            'eval-status-partial';
 
         return `
             <tr class="${rowCls}">
@@ -1044,7 +1149,8 @@ function renderEvalResults(results) {
                 <td>${dataLoss}</td>
                 <td>${r.gossip_messages_sent}</td>
                 <td>${formatBytes(r.total_state_size_bytes)}</td>
-                <td>${convergedIcon}</td>
+                <td><span class="eval-status-tag ${statusCls}">${statusLabel}</span></td>
+                <td>${coverage}</td>
             </tr>
         `;
     }).join('');

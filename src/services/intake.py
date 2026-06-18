@@ -24,6 +24,7 @@ class IntakeService:
         self.chain = chain
         self.start_time = datetime.utcnow()
         self.app = self._build_app()
+
     def _build_app(self):
         app = FastAPI(title=f"Edge Node {self.config.node_id}")
         app.add_middleware(
@@ -51,7 +52,7 @@ class IntakeService:
             Also returns tracking metadata for per-message observability.
             """
             try:
-                tracking_id = str(uuid.uuid4())
+                tracking_id = str(event.metadata.get("tracking_id") or uuid.uuid4())
                 recorded_at = datetime.now(timezone.utc).isoformat()
 
                 entry = self.chain.append(
@@ -167,9 +168,10 @@ class IntakeService:
             """Node-level metric snapshot for dashboard per-node stats."""
             state_dict = self.state.to_dict()
             state_size = len(json.dumps(state_dict))
-            uptime = (datetime.now(timezone.utc) - self.start_time.replace(
-                tzinfo=timezone.utc
-            )).total_seconds()
+            uptime = (
+                datetime.now(timezone.utc)
+                - self.start_time.replace(tzinfo=timezone.utc)
+            ).total_seconds()
             return {
                 "node_id": self.config.node_id,
                 "event_count": self.state.get_event_count(),
