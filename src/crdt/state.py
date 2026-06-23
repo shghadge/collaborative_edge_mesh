@@ -31,7 +31,7 @@ class NodeState:
       GENERAL events       → G-Counter + LWW-Register (backward compatible)
     """
 
-    def __init__(self, node_id):
+    def __init__(self, node_id, event_id_retention_limit=100):
         self.node_id = node_id
         self.version = 0
         self.updated_at = datetime.utcnow()
@@ -39,7 +39,11 @@ class NodeState:
         self.registers = {}  # key -> LWWRegister
         self.pn_counters = {}  # key -> PNCounter
         self.sets = {}  # key -> ORSet
+        self.event_id_retention_limit = event_id_retention_limit
         self.event_ids = []
+        self.delta_seq = 0
+        self.delta_log = []
+        self.delta_log_limit = 1000
 
     def record_event(
         self, event_id, event_type, data, category="general", operation=None
@@ -61,13 +65,44 @@ class NodeState:
         else:
             stored_in = self._record_general(event_id, event_type, data)
 
-        # track event id
+        # track recent event ids for local/debug visibility without unbounded state growth
         if event_id not in self.event_ids:
             self.event_ids.append(event_id)
+            if len(self.event_ids) > self.event_id_retention_limit:
+                self.event_ids = self.event_ids[-self.event_id_retention_limit :]
+
+        delta_state = self._build_delta_state(stored_in, event_id)
+        self.record_delta(delta_state)
 
         self.version += 1
         self.updated_at = datetime.utcnow()
         return stored_in
+
+    def _build_delta_state(self, stored_in, event_id):
+        delta_state = NodeState(self.node_id, self.event_id_retention_limit)
+        counter_key = stored_in.get("counter_key")
+        if counter_key and counter_key in self.counters:
+            delta_state.counters[counter_key] = self.counters[counter_key]
+        register_key = stored_in.get("register_key")
+        if register_key and register_key in self.registers:
+            delta_state.registers[register_key] = self.registers[register_key]
+        pn_counter_key = stored_in.get("pn_counter_key")
+        if pn_counter_key and pn_counter_key in self.pn_counters:
+            delta_state.pn_counters[pn_counter_key] = self.pn_counters[pn_counter_key]
+        set_key = stored_in.get("set_key")
+        if set_key and set_key in self.sets:
+            delta_state.sets[set_key] = self.sets[set_key]
+        delta_state.event_ids = [event_id]
+        return delta_state
+
+    def record_delta(self, delta_state: "NodeState") -> int:
+        self.delta_seq += 1
+        self.delta_log.append(
+            {"seq": self.delta_seq, "state": delta_state.to_dict(include_deltas=False)}
+        )
+        if len(self.delta_log) > self.delta_log_limit:
+            self.delta_log = self.delta_log[-self.delta_log_limit :]
+        return self.delta_seq
 
     def _record_sensor(self, event_id, event_type, data):
         """Sensor data: count the event, store latest reading in register.
@@ -245,6 +280,17 @@ class NodeState:
             "resource_trackers": len(resource_keys),
             "active_hazard_sets": len(infra_keys),
             "total_events": self.get_event_count(),
+            "event_id_count": len(self.event_ids),
+            "counter_node_slots": sum(len(c.counts) for c in self.counters.values()),
+            "pn_counter_node_slots": sum(
+                len(pnc._p.counts) + len(pnc._n.counts)
+                for pnc in self.pn_counters.values()
+            ),
+            "orset_tag_count": sum(
+                len(tags)
+                for orset in self.sets.values()
+                for tags in orset._elements.values()
+            ),
             "crdt_counts": {
                 "g_counters": len(self.counters),
                 "lww_registers": len(self.registers),
@@ -291,11 +337,12 @@ class NodeState:
                 self.sets[key] = ORSet(self.node_id, description=orset.description)
             self.sets[key].merge(orset)
 
-        # merge event_ids
+        # merge recent event_ids without letting serialized state grow unbounded
         for eid in other.event_ids:
             if eid not in self.event_ids:
                 self.event_ids.append(eid)
-
+        if len(self.event_ids) > self.event_id_retention_limit:
+            self.event_ids = self.event_ids[-self.event_id_retention_limit :]
         if self.merkle_root() != old_root:
             self.version += 1
             self.updated_at = datetime.utcnow()
@@ -336,15 +383,15 @@ class NodeState:
             next_level = []
             for i in range(0, len(leaves), 2):
                 left = leaves[i]
-                right = leaves[i + 1] if i + 1 < len(leaves) else left
+                right = leaves[i + 1] if len(leaves) > i + 1 else left
                 combined = hashlib.sha256((left + right).encode()).hexdigest()
                 next_level.append(combined)
             leaves = next_level
 
         return leaves[0]
 
-    def to_dict(self):
-        return {
+    def to_dict(self, include_deltas=False):
+        data = {
             "node_id": self.node_id,
             "version": self.version,
             "updated_at": self.updated_at.isoformat(),
@@ -352,16 +399,65 @@ class NodeState:
             "registers": {k: v.to_dict() for k, v in self.registers.items()},
             "pn_counters": {k: v.to_dict() for k, v in self.pn_counters.items()},
             "sets": {k: v.to_dict() for k, v in self.sets.items()},
-            "event_ids": list(self.event_ids),
+            "event_id_count": len(self.event_ids),
+            "recent_event_ids": list(self.event_ids[-self.event_id_retention_limit :]),
+            "delta_seq": self.delta_seq,
             "merkle_root": self.merkle_root(),
             "state_summary": self.summary(),
         }
+        if include_deltas:
+            data["delta_log"] = list(self.delta_log)
+        return data
+
+    def get_deltas_since(self, since_seq: int) -> dict:
+        since_seq = max(int(since_seq or 0), 0)
+        if not self.delta_log:
+            return {
+                "node_id": self.node_id,
+                "from_seq": since_seq,
+                "to_seq": self.delta_seq,
+                "has_gap": False,
+                "deltas": [],
+            }
+
+        first_seq = self.delta_log[0]["seq"]
+        if since_seq < first_seq - 1:
+            return {
+                "node_id": self.node_id,
+                "from_seq": since_seq,
+                "to_seq": self.delta_seq,
+                "has_gap": True,
+                "deltas": [],
+            }
+
+        return {
+            "node_id": self.node_id,
+            "from_seq": since_seq,
+            "to_seq": self.delta_seq,
+            "has_gap": False,
+            "deltas": [item for item in self.delta_log if item["seq"] > since_seq],
+        }
+
+    def apply_delta_payload(self, payload: dict) -> int:
+        if payload.get("has_gap"):
+            return 0
+
+        applied = 0
+        for item in payload.get("deltas", []):
+            state_data = item.get("state")
+            if not isinstance(state_data, dict):
+                continue
+            self.merge(NodeState.from_dict(state_data))
+            applied += 1
+        return applied
 
     @classmethod
     def from_dict(cls, data):
         s = cls(data["node_id"])
-        s.version = data["version"]
-        s.updated_at = datetime.fromisoformat(data["updated_at"])
+        s.version = data.get("version", 0)
+        s.updated_at = datetime.fromisoformat(
+            data.get("updated_at", datetime.utcnow().isoformat())
+        )
         s.counters = {
             k: GCounter.from_dict(v) for k, v in data.get("counters", {}).items()
         }
@@ -372,5 +468,7 @@ class NodeState:
             k: PNCounter.from_dict(v) for k, v in data.get("pn_counters", {}).items()
         }
         s.sets = {k: ORSet.from_dict(v) for k, v in data.get("sets", {}).items()}
-        s.event_ids = list(data.get("event_ids", []))
+        ids = data.get("recent_event_ids", data.get("event_ids", []))
+        s.event_ids = list(ids)[-s.event_id_retention_limit :]
+        s.delta_seq = int(data.get("delta_seq", 0) or 0)
         return s

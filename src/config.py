@@ -56,6 +56,9 @@ class Config:
             max(float(os.getenv("GATEWAY_COVERAGE_CONFIDENCE_THRESHOLD", "0.6")), 0.0),
             1.0,
         )
+        self.gateway_snapshot_retention_limit = max(
+            int(os.getenv("GATEWAY_SNAPSHOT_RETENTION_LIMIT", "50")), 1
+        )
 
         # comma-separated list like "edge-node-1:8000,edge-node-2:8000"
         raw_edge_nodes = os.getenv("EDGE_NODES", "")

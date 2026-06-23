@@ -358,7 +358,7 @@ class GatewayService:
                         observation={
                             "node_id": node_id,
                             "merkle_root": root,
-                            "state_version": self.edge_nodes[node_id].get(
+                            "state_version": self.edge_nodes.get(node_id, {}).get(
                                 "last_version"
                             ),
                             "last_seen_at": time.time(),
@@ -382,7 +382,10 @@ class GatewayService:
                     nodes_to_fetch = [nodes_to_fetch[0]]
 
                 async def _fetch_state(node_id):
-                    url = self.edge_nodes[node_id]["url"]
+                    node_info = self.edge_nodes.get(node_id)
+                    if not node_info:
+                        return node_id, None
+                    url = node_info["url"]
                     data = await self._get_json_with_retry(
                         session, node_id, f"{url}/state"
                     )
@@ -394,7 +397,10 @@ class GatewayService:
                 )
 
                 async def _fetch_relay(node_id):
-                    url = self.edge_nodes[node_id]["url"]
+                    node_info = self.edge_nodes.get(node_id)
+                    if not node_info:
+                        return node_id, None
+                    url = node_info["url"]
                     data = await self._get_json_with_retry(
                         session, node_id, f"{url}/relay/observations"
                     )
@@ -431,7 +437,7 @@ class GatewayService:
                         )
                         continue
 
-                    last_version = self.edge_nodes[node_id].get("last_version")
+                    last_version = self.edge_nodes.get(node_id, {}).get("last_version")
                     incoming_version = getattr(incoming, "version", None)
                     if (
                         last_version is not None
@@ -454,7 +460,8 @@ class GatewayService:
                     before = self.merged_state.merkle_root()
                     self.merged_state.merge(incoming)
                     after = self.merged_state.merkle_root()
-                    self.edge_nodes[node_id]["last_version"] = incoming_version
+                    if node_id in self.edge_nodes:
+                        self.edge_nodes[node_id]["last_version"] = incoming_version
                     if before != after:
                         self.runtime_metrics["state_merges_successful"] += 1
 
@@ -475,6 +482,7 @@ class GatewayService:
                         node_count=len(reachable_roots),
                         source_nodes=list(reachable_roots.keys()),
                         state_dict=state_dict,
+                        retention_limit=self.config.gateway_snapshot_retention_limit,
                     )
                     self.store.save_metric("merge_time_ms", merge_time * 1000)
                     self.store.save_metric("node_count", len(reachable_roots))

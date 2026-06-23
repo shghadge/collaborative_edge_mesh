@@ -684,7 +684,10 @@ async def send_event(req: SendEventRequest, target_node: Optional[str] = None):
 async def live_metrics():
     """Aggregate dashboard metrics with mode-aware observability cost."""
     _require_docker()
-    return await _get_observability().get_live_metrics()
+    force_refresh = False
+    if not _eval_state.get("running", False):
+        force_refresh = False
+    return await _get_observability().get_live_metrics(force_refresh=force_refresh)
 
 
 @app.get("/metrics/timeseries")
@@ -749,9 +752,12 @@ class EvalScenarioConfig(BaseModel):
     partition_wait_seconds: float = Field(default=8.0)
     convergence_wait_seconds: float = Field(default=15.0)
     poll_interval_seconds: float = Field(default=2.0)
-    implementation_label: str = "current"
+    implementation_label: str = "current_full_state_repair"
     sync_mode: str = "full_state_repair"
     state_growth_fix: bool = False
+    network_profile: str = "hard_partition"
+    scenario_seed: int | None = None
+    dashboard_observability: str = "light"
 
 
 async def _eval_send_events(session, nodes, count, category="sensor"):
@@ -876,6 +882,11 @@ async def _eval_collect_metrics(session, nodes, gateways, accepted_events=None):
     total_state_size = 0
     sync_bytes_total = 0
     repair_pull_count = 0
+    delta_pulls_started = 0
+    delta_pulls_success = 0
+    delta_pulls_gap = 0
+    delta_deltas_applied = 0
+    delta_bytes_received = 0
     event_counts = []
     merkle_roots = []
 
@@ -888,12 +899,19 @@ async def _eval_collect_metrics(session, nodes, gateways, accepted_events=None):
                 gdata = await resp.json()
                 stats = gdata.get("stats", {})
                 total_gossip += stats.get("sent", 0)
+                node_delta_bytes = stats.get("delta_bytes_received", 0)
                 sync_bytes_total += (
                     stats.get("sent_bytes", 0)
                     + stats.get("received_bytes", 0)
                     + stats.get("repair_bytes_received", 0)
+                    + node_delta_bytes
                 )
                 repair_pull_count += stats.get("repair_pulls_started", 0)
+                delta_pulls_started += stats.get("delta_pulls_started", 0)
+                delta_pulls_success += stats.get("delta_pulls_success", 0)
+                delta_pulls_gap += stats.get("delta_pulls_gap", 0)
+                delta_deltas_applied += stats.get("delta_deltas_applied", 0)
+                delta_bytes_received += node_delta_bytes
         except Exception:
             pass
         try:
@@ -904,7 +922,7 @@ async def _eval_collect_metrics(session, nodes, gateways, accepted_events=None):
                 summary = sdata.get("state_summary", {})
                 ev_count = summary.get("total_events", 0)
                 if ev_count == 0:
-                    ev_ids = sdata.get("event_ids", [])
+                    ev_ids = sdata.get("recent_event_ids", sdata.get("event_ids", []))
                     ev_count = len(ev_ids) if isinstance(ev_ids, list) else 0
                 event_counts.append(ev_count)
         except Exception:
@@ -919,19 +937,20 @@ async def _eval_collect_metrics(session, nodes, gateways, accepted_events=None):
     max_ev = max(event_counts) if event_counts else 0
     min_ev = min(event_counts) if event_counts else 0
     expected_events = accepted_events if accepted_events is not None else max_ev
-    data_loss_count = max(expected_events - min_ev, 0)
-    data_loss_pct = (
-        round((data_loss_count / expected_events) * 100, 2)
+    missing_at_cutoff_count = max(expected_events - min_ev, 0)
+    missing_at_cutoff_pct = (
+        round((missing_at_cutoff_count / expected_events) * 100, 2)
         if expected_events > 0
         else 0.0
     )
     unique_roots = len(set(r for r in merkle_roots if r))
     is_converged = known_status == "known_converged" and unique_roots == 1
+    avg_state_size_bytes = round(total_state_size / len(nodes), 0) if nodes else 0
 
     return {
         "convergence_time_s": last_convergence,
-        "data_loss_count": data_loss_count,
-        "data_loss_pct": data_loss_pct,
+        "missing_at_cutoff_count": missing_at_cutoff_count,
+        "missing_at_cutoff_pct": missing_at_cutoff_pct,
         "gateway_staleness_seconds": max(gateway_staleness_values)
         if gateway_staleness_values
         else None,
@@ -939,7 +958,10 @@ async def _eval_collect_metrics(session, nodes, gateways, accepted_events=None):
         "repair_pull_count": repair_pull_count,
         "gossip_messages_sent": total_gossip,
         "total_state_size_bytes": total_state_size,
-        "avg_state_size_bytes": round(total_state_size / len(nodes), 0) if nodes else 0,
+        "avg_state_size_bytes": avg_state_size_bytes,
+        "avg_state_bytes_per_known_event": round(avg_state_size_bytes / max_ev, 2)
+        if max_ev > 0
+        else "",
         "known_status": known_status,
         "coverage_percent": coverage_percent,
         "is_converged": is_converged,
@@ -947,6 +969,11 @@ async def _eval_collect_metrics(session, nodes, gateways, accepted_events=None):
         "node_count": len(nodes),
         "max_events": max_ev,
         "min_events": min_ev,
+        "delta_pulls_started": delta_pulls_started,
+        "delta_pulls_success": delta_pulls_success,
+        "delta_pulls_gap": delta_pulls_gap,
+        "delta_deltas_applied": delta_deltas_applied,
+        "delta_bytes_received": delta_bytes_received,
     }
 
 
@@ -964,19 +991,50 @@ async def _eval_wait_for_metrics(session, nodes, gateways, cfg, accepted_events)
             gateways,
             accepted_events=accepted_events,
         )
-        if metrics["is_converged"] and metrics["data_loss_count"] == 0:
+        if metrics["is_converged"] and metrics["missing_at_cutoff_count"] == 0:
             metrics["convergence_time_s"] = round(time.time() - started, 3)
+            metrics["converged_within_timeout"] = True
+            metrics["convergence_wait_seconds"] = cfg.convergence_wait_seconds
             return metrics
         if time.time() >= deadline:
             metrics["convergence_time_s"] = None
+            metrics["converged_within_timeout"] = False
+            metrics["convergence_wait_seconds"] = cfg.convergence_wait_seconds
             return metrics
         await asyncio.sleep(cfg.poll_interval_seconds)
+
+
+async def _eval_reset_nodes(node_count: int):
+    _require_docker()
+    if hasattr(docker_mgr, "clear_netem"):
+        try:
+            await asyncio.to_thread(docker_mgr.clear_netem)
+        except Exception:
+            pass
+    existing = await asyncio.to_thread(docker_mgr.list_nodes)
+    for n in existing:
+        try:
+            await asyncio.to_thread(docker_mgr.remove_node, n["node_id"])
+        except Exception:
+            pass
+    await asyncio.sleep(2)
+    for _ in range(node_count):
+        try:
+            await asyncio.to_thread(docker_mgr.create_node)
+        except Exception as e:
+            log.warning("eval_node_create_failed", error=str(e))
+    await _sync_gateways_with_nodes(force=True)
+    await asyncio.sleep(3)
+    return await asyncio.to_thread(docker_mgr.list_nodes), await _discover_gateways()
 
 
 async def _run_evaluation(cfg: EvalScenarioConfig):
     """Run a repeatable evaluation matrix."""
     global _eval_state
     run_id = f"eval-{uuid.uuid4().hex[:8]}"
+    if cfg.scenario_seed is not None:
+        random.seed(cfg.scenario_seed)
+
     _eval_state["running"] = True
     _eval_state["run_id"] = run_id
     _eval_state["started_at"] = time.time()
@@ -984,7 +1042,10 @@ async def _run_evaluation(cfg: EvalScenarioConfig):
     _eval_state["error"] = None
     _eval_state["csv_data"] = None
 
-    steps_per_node_count = 2 + len(cfg.partition_splits)
+    partition_splits = (
+        cfg.partition_splits if cfg.network_profile == "hard_partition" else []
+    )
+    steps_per_node_count = 2 + len(partition_splits)
     _eval_state["total_steps"] = len(cfg.node_counts) * steps_per_node_count
     step = 0
 
@@ -996,6 +1057,8 @@ async def _run_evaluation(cfg: EvalScenarioConfig):
             "implementation": cfg.implementation_label,
             "sync_mode": cfg.sync_mode,
             "state_growth_fix": cfg.state_growth_fix,
+            "network_profile": cfg.network_profile,
+            "dashboard_observability": cfg.dashboard_observability,
             "scenario": scenario,
             "node_count": node_count,
             "partition_split": partition_split,
@@ -1004,73 +1067,72 @@ async def _run_evaluation(cfg: EvalScenarioConfig):
             "write_success_rate": round(accepted / attempted, 4) if attempted else 0.0,
         }
 
+    def _append_result(row, metrics):
+        combined = {**row, **metrics}
+        accepted = combined.get("accepted_events", 0)
+        sync_bytes = combined.get("sync_bytes_total", 0)
+        combined["bytes_per_accepted_event"] = (
+            round(sync_bytes / accepted, 2) if accepted else ""
+        )
+        _eval_state["results"].append(combined)
+
+    async def _prepare_scenario(node_count: int):
+        nodes, gateways = await _eval_reset_nodes(node_count)
+        if hasattr(docker_mgr, "clear_netem"):
+            await asyncio.to_thread(docker_mgr.clear_netem)
+        if cfg.network_profile != "hard_partition" and hasattr(
+            docker_mgr, "apply_netem_profile"
+        ):
+            await asyncio.to_thread(docker_mgr.apply_netem_profile, cfg.network_profile)
+        return nodes, gateways
+
+    async def _finish_scenario():
+        try:
+            await asyncio.to_thread(docker_mgr.heal_all)
+        except Exception:
+            pass
+        if hasattr(docker_mgr, "clear_netem"):
+            try:
+                await asyncio.to_thread(docker_mgr.clear_netem)
+            except Exception:
+                pass
+
     try:
         timeout = aiohttp.ClientTimeout(total=30)
 
         for node_count in cfg.node_counts:
-            _eval_state["current_step"] = f"Creating {node_count} nodes..."
-            _eval_state["progress"] = step
-
-            _require_docker()
-            existing = await asyncio.to_thread(docker_mgr.list_nodes)
-            for n in existing:
-                try:
-                    await asyncio.to_thread(docker_mgr.remove_node, n["node_id"])
-                except Exception:
-                    pass
-            await asyncio.sleep(2)
-
-            for _ in range(node_count):
-                try:
-                    await asyncio.to_thread(docker_mgr.create_node)
-                except Exception as e:
-                    log.warning("eval_node_create_failed", error=str(e))
-            await _sync_gateways_with_nodes(force=True)
-            await asyncio.sleep(3)
-
-            nodes = await asyncio.to_thread(docker_mgr.list_nodes)
-            gateways = await _discover_gateways()
-            cumulative_accepted = 0
-
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 _eval_state["current_step"] = f"[{node_count}N] Baseline"
                 _eval_state["progress"] = step
+                nodes, gateways = await _prepare_scenario(node_count)
                 baseline_events = await _eval_send_events(
                     session, nodes, cfg.events_per_node
                 )
-                cumulative_accepted += baseline_events["accepted"]
                 metrics = await _eval_wait_for_metrics(
                     session,
                     nodes,
                     gateways,
                     cfg,
-                    cumulative_accepted,
+                    baseline_events["accepted"],
                 )
-                _eval_state["results"].append(
-                    {
-                        **_row_base("baseline", node_count, baseline_events),
-                        **metrics,
-                    }
+                _append_result(
+                    _row_base("baseline", node_count, baseline_events),
+                    metrics,
                 )
+                await _finish_scenario()
                 step += 1
 
-                for split in cfg.partition_splits:
+                for split in partition_splits:
                     split_label = f"{round(split * 100)}/{round((1 - split) * 100)}"
                     _eval_state["current_step"] = (
                         f"[{node_count}N] Partition {split_label}"
                     )
                     _eval_state["progress"] = step
-
-                    try:
-                        await asyncio.to_thread(docker_mgr.heal_all)
-                    except Exception:
-                        pass
-                    await asyncio.sleep(1)
+                    nodes, gateways = await _prepare_scenario(node_count)
 
                     pre_events = await _eval_send_events(
                         session, nodes, cfg.events_per_node
                     )
-                    cumulative_accepted += pre_events["accepted"]
                     await _eval_poll_all_gateways(session, gateways)
 
                     try:
@@ -1080,7 +1142,6 @@ async def _run_evaluation(cfg: EvalScenarioConfig):
                     await asyncio.sleep(1)
 
                     partition_events = await _eval_send_events(session, nodes, 3)
-                    cumulative_accepted += partition_events["accepted"]
                     await asyncio.sleep(cfg.partition_wait_seconds)
 
                     try:
@@ -1095,48 +1156,49 @@ async def _run_evaluation(cfg: EvalScenarioConfig):
                         "accepted": pre_events["accepted"]
                         + partition_events["accepted"],
                     }
+                    expected_events = (
+                        pre_events["accepted"] + partition_events["accepted"]
+                    )
                     metrics = await _eval_wait_for_metrics(
                         session,
                         nodes,
                         gateways,
                         cfg,
-                        cumulative_accepted,
+                        expected_events,
                     )
-                    _eval_state["results"].append(
-                        {
-                            **_row_base(
-                                "partition_heal",
-                                node_count,
-                                combined_events,
-                                partition_split=split_label,
-                            ),
-                            **metrics,
-                        }
+                    _append_result(
+                        _row_base(
+                            "partition_heal",
+                            node_count,
+                            combined_events,
+                            partition_split=split_label,
+                        ),
+                        metrics,
                     )
+                    await _finish_scenario()
                     step += 1
 
                 _eval_state["current_step"] = f"[{node_count}N] High load"
                 _eval_state["progress"] = step
+                nodes, gateways = await _prepare_scenario(node_count)
                 heavy_events = await _eval_send_events(
                     session,
                     nodes,
                     cfg.events_per_node * 3,
                     category="resource",
                 )
-                cumulative_accepted += heavy_events["accepted"]
                 metrics = await _eval_wait_for_metrics(
                     session,
                     nodes,
                     gateways,
                     cfg,
-                    cumulative_accepted,
+                    heavy_events["accepted"],
                 )
-                _eval_state["results"].append(
-                    {
-                        **_row_base("high_load", node_count, heavy_events),
-                        **metrics,
-                    }
+                _append_result(
+                    _row_base("high_load", node_count, heavy_events),
+                    metrics,
                 )
+                await _finish_scenario()
                 step += 1
 
         _eval_state["current_step"] = "Generating CSV..."
@@ -1147,6 +1209,8 @@ async def _run_evaluation(cfg: EvalScenarioConfig):
             "implementation",
             "sync_mode",
             "state_growth_fix",
+            "network_profile",
+            "dashboard_observability",
             "scenario",
             "node_count",
             "partition_split",
@@ -1154,10 +1218,14 @@ async def _run_evaluation(cfg: EvalScenarioConfig):
             "accepted_events",
             "write_success_rate",
             "convergence_time_s",
-            "data_loss_count",
-            "data_loss_pct",
+            "converged_within_timeout",
+            "convergence_wait_seconds",
+            "missing_at_cutoff_count",
+            "missing_at_cutoff_pct",
             "gateway_staleness_seconds",
             "sync_bytes_total",
+            "bytes_per_accepted_event",
+            "avg_state_bytes_per_known_event",
             "repair_pull_count",
             "gossip_messages_sent",
             "total_state_size_bytes",
@@ -1168,6 +1236,11 @@ async def _run_evaluation(cfg: EvalScenarioConfig):
             "unique_merkle_roots",
             "max_events",
             "min_events",
+            "delta_pulls_started",
+            "delta_pulls_success",
+            "delta_pulls_gap",
+            "delta_deltas_applied",
+            "delta_bytes_received",
         ]
         csv_lines = [",".join(csv_header)]
         for row in _eval_state["results"]:
@@ -1181,6 +1254,11 @@ async def _run_evaluation(cfg: EvalScenarioConfig):
         _eval_state["current_step"] = f"Error: {e}"
         log.error("evaluation_failed", error=str(e))
     finally:
+        try:
+            if hasattr(docker_mgr, "clear_netem"):
+                await asyncio.to_thread(docker_mgr.clear_netem)
+        except Exception:
+            pass
         _eval_state["running"] = False
 
 
@@ -1193,17 +1271,35 @@ async def run_evaluation(cfg: EvalScenarioConfig = None):
     if cfg is None:
         cfg = EvalScenarioConfig()
 
-    total_steps = len(cfg.node_counts) * (2 + len(cfg.partition_splits))
+    if cfg.dashboard_observability not in {"off", "light", "full"}:
+        raise _api_error(
+            400,
+            "INVALID_DASHBOARD_OBSERVABILITY",
+            "dashboard_observability must be off, light, or full",
+        )
+    if cfg.network_profile not in {"hard_partition", "degraded_300ms_10loss"}:
+        raise _api_error(
+            400,
+            "INVALID_NETWORK_PROFILE",
+            "network_profile must be hard_partition or degraded_300ms_10loss",
+        )
+
+    partition_splits = (
+        cfg.partition_splits if cfg.network_profile == "hard_partition" else []
+    )
+    total_steps = len(cfg.node_counts) * (2 + len(partition_splits))
     asyncio.create_task(_run_evaluation(cfg))
     return {
         "status": "started",
         "total_steps": total_steps,
         "node_counts": cfg.node_counts,
         "events_per_node": cfg.events_per_node,
-        "partition_splits": cfg.partition_splits,
+        "partition_splits": partition_splits,
         "implementation": cfg.implementation_label,
         "sync_mode": cfg.sync_mode,
         "state_growth_fix": cfg.state_growth_fix,
+        "network_profile": cfg.network_profile,
+        "dashboard_observability": cfg.dashboard_observability,
     }
 
 

@@ -700,3 +700,72 @@ class DockerManager:
             group_a=[c.name for c in group_a],
             group_b=[c.name for c in group_b],
         )
+
+    def apply_netem_profile(self, profile: str):
+        """Apply a supported tc/netem profile to all dynamic edge nodes."""
+        if profile == "hard_partition":
+            return self._action_response(
+                action="apply_netem_profile",
+                target="mesh",
+                status="noop",
+                message="hard_partition uses iptables partition controls",
+                profile=profile,
+            )
+        if profile != "degraded_300ms_10loss":
+            return self._action_response(
+                action="apply_netem_profile",
+                target="mesh",
+                status="failed",
+                message=f"Unsupported netem profile: {profile}",
+                profile=profile,
+            )
+
+        results = []
+        for container in self.client.containers.list():
+            if "edge-node" not in container.name:
+                continue
+            exit_code, output = container.exec_run(
+                "tc qdisc replace dev eth0 root netem delay 300ms 100ms loss 10%"
+            )
+            results.append(
+                {
+                    "node": container.name,
+                    "exit_code": exit_code,
+                    "output": output.decode(errors="replace")
+                    if isinstance(output, bytes)
+                    else str(output),
+                }
+            )
+
+        return self._action_response(
+            action="apply_netem_profile",
+            target="mesh",
+            status="applied",
+            message=f"Applied {profile}",
+            profile=profile,
+            results=results,
+        )
+
+    def clear_netem(self):
+        """Remove tc/netem qdisc from all dynamic edge nodes."""
+        results = []
+        for container in self.client.containers.list():
+            if "edge-node" not in container.name:
+                continue
+            exit_code, output = container.exec_run("tc qdisc del dev eth0 root")
+            results.append(
+                {
+                    "node": container.name,
+                    "exit_code": exit_code,
+                    "output": output.decode(errors="replace")
+                    if isinstance(output, bytes)
+                    else str(output),
+                }
+            )
+        return self._action_response(
+            action="clear_netem",
+            target="mesh",
+            status="cleared",
+            message="Cleared netem qdisc",
+            results=results,
+        )

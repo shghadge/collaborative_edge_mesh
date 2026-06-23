@@ -652,6 +652,57 @@
                                     class="mt-1 w-36 rounded border border-white/15 bg-slate-900 px-2 py-1 text-sm"
                                 />
                             </div>
+                            <div class="form-group">
+                                <label
+                                    for="eval-convergence-wait"
+                                    class="text-[11px] uppercase tracking-widest text-slate-500"
+                                    >Convergence Wait</label
+                                ><input
+                                    type="number"
+                                    id="eval-convergence-wait"
+                                    value="25"
+                                    min="1"
+                                    class="mt-1 w-28 rounded border border-white/15 bg-slate-900 px-2 py-1 text-sm"
+                                />
+                            </div>
+                            <div class="form-group">
+                                <label
+                                    for="eval-network-profile"
+                                    class="text-[11px] uppercase tracking-widest text-slate-500"
+                                    >Network Profile</label
+                                ><input
+                                    type="text"
+                                    id="eval-network-profile"
+                                    value="hard_partition"
+                                    class="mt-1 w-40 rounded border border-white/15 bg-slate-900 px-2 py-1 text-sm"
+                                />
+                            </div>
+                            <div class="form-group">
+                                <label
+                                    for="eval-implementation-label"
+                                    class="text-[11px] uppercase tracking-widest text-slate-500"
+                                    >Implementation</label
+                                ><input
+                                    type="text"
+                                    id="eval-implementation-label"
+                                    value="current_full_state_repair"
+                                    class="mt-1 w-56 rounded border border-white/15 bg-slate-900 px-2 py-1 text-sm"
+                                />
+                            </div>
+                            <div class="form-group">
+                                <label
+                                    for="eval-dashboard-observability"
+                                    class="text-[11px] uppercase tracking-widest text-slate-500"
+                                    >Dashboard Obs.</label
+                                ><select
+                                    id="eval-dashboard-observability"
+                                    class="mt-1 w-28 rounded border border-white/15 bg-slate-900 px-2 py-1 text-sm"
+                                >
+                                    <option value="light" selected>light</option>
+                                    <option value="full">full</option>
+                                    <option value="off">off</option>
+                                </select>
+                            </div>
                             <div
                                 class="eval-actions flex items-center gap-2 ml-auto"
                             >
@@ -672,6 +723,9 @@
                                 </button>
                             </div>
                         </div>
+                        <p class="text-xs text-slate-400">
+                            Live dashboard metrics are cached for demo display; downloaded evaluation CSV is the measurement source.
+                        </p>
                         <div
                             class="eval-progress-wrap hidden"
                             id="eval-progress-wrap"
@@ -695,14 +749,18 @@
                                 <thead>
                                     <tr>
                                         <th>Scenario</th>
+                                        <th>Stage</th>
+                                        <th>Mode</th>
                                         <th>Split</th>
                                         <th>Nodes</th>
                                         <th>Writes</th>
                                         <th>Success</th>
                                         <th>Conv.</th>
-                                        <th>Data Loss</th>
+                                        <th>Timeout</th>
+                                        <th>Missing @ Cutoff</th>
                                         <th>Staleness</th>
                                         <th>Sync Bytes</th>
+                                        <th>B/Event</th>
                                         <th>Repairs</th>
                                         <th>State Size</th>
                                         <th>Status</th>
@@ -710,7 +768,7 @@
                                 </thead>
                                 <tbody id="eval-results-tbody">
                                     <tr>
-                                        <td colspan="12" class="empty-cell">
+                                        <td colspan="16" class="empty-cell">
                                             No evaluation data - click Run
                                             Evaluation to start
                                         </td>

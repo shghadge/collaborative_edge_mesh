@@ -56,7 +56,9 @@ class SQLiteStore:
             );
         """)
 
-    def save_snapshot(self, merkle_root, node_count, source_nodes, state_dict):
+    def save_snapshot(
+        self, merkle_root, node_count, source_nodes, state_dict, retention_limit=None
+    ):
         self.conn.execute(
             "INSERT INTO snapshots (timestamp, merkle_root, node_count, source_nodes, state_json) VALUES (?, ?, ?, ?, ?)",
             (
@@ -67,6 +69,14 @@ class SQLiteStore:
                 json.dumps(state_dict),
             ),
         )
+        if retention_limit is not None:
+            self.conn.execute(
+                """
+                DELETE FROM snapshots
+                WHERE id NOT IN (SELECT id FROM snapshots ORDER BY id DESC LIMIT ?)
+                """,
+                (retention_limit,),
+            )
         self.conn.commit()
 
     def get_latest_snapshot(self):

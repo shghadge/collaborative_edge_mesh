@@ -61,6 +61,10 @@ async def main():
             "stats": gossip.get_stats(),
         }
 
+    @intake.app.get("/state/deltas")
+    async def state_deltas(since: int = 0):
+        return state.get_deltas_since(since)
+
     @intake.app.get("/peers")
     async def discovered_peers():
         return {

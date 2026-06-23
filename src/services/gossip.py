@@ -65,7 +65,13 @@ class GossipService:
             "last_successful_merge_at": None,
             "peers_discovered": 0,
             "repair_bytes_received": 0,
+            "delta_pulls_started": 0,
+            "delta_pulls_success": 0,
+            "delta_pulls_gap": 0,
+            "delta_bytes_received": 0,
+            "delta_deltas_applied": 0,
         }
+        self.peer_delta_seq = {}
 
     async def start(self):
         self.running = True
@@ -154,6 +160,7 @@ class GossipService:
             "source_http_port": self.config.http_port,
             "merkle_root": self.state.merkle_root(),
             "state_version": self.state.version,
+            "delta_seq": self.state.delta_seq,
             "event_count": self.state.get_event_count(),
             "state_summary": self.state.summary(),
             "peer_observations": observed_peers,
@@ -227,7 +234,7 @@ class GossipService:
 
             if remote_root != self.state.merkle_root():
                 self.stats["merkle_mismatches"] += 1
-                await self._maybe_pull_state_from_sender(addr, message)
+                await self._maybe_pull_delta_from_sender(addr, message)
 
             return
 
@@ -279,6 +286,63 @@ class GossipService:
                     their_event_count=message.get("event_count"),
                 )
                 await self._maybe_pull_state_from_sender(addr, message)
+
+    async def _maybe_pull_delta_from_sender(self, addr, message):
+        host = addr[0] if addr else None
+        if not host:
+            self.stats["repair_pulls_failed"] += 1
+            return
+
+        sender = message.get("sender", host)
+        http_port = message.get("source_http_port")
+        try:
+            http_port = int(http_port) if http_port is not None else 8000
+        except Exception:
+            http_port = 8000
+
+        since = self.peer_delta_seq.get(sender, 0)
+        url = f"http://{host}:{http_port}/state/deltas?since={since}"
+        timeout = aiohttp.ClientTimeout(total=4)
+        self.stats["delta_pulls_started"] += 1
+
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(url) as response:
+                    text = await response.text()
+                    self.stats["delta_bytes_received"] += len(text.encode())
+                    payload = json.loads(text)
+            if payload.get("has_gap"):
+                self.stats["delta_pulls_gap"] += 1
+                await self._maybe_pull_state_from_sender(addr, message)
+                return
+
+            old_root = self.state.merkle_root()
+            started = time.time()
+            applied = self.state.apply_delta_payload(payload)
+            elapsed_ms = (time.time() - started) * 1000
+            self.stats["last_merge_ms"] = round(elapsed_ms, 3)
+            self.stats["merge_time_ms_total"] += elapsed_ms
+            self.stats["delta_deltas_applied"] += applied
+            self.peer_delta_seq[sender] = int(payload.get("to_seq", since) or since)
+            if self.state.merkle_root() != old_root:
+                self.stats["merged"] += 1
+                self.stats["last_successful_merge_at"] = time.time()
+            self.stats["delta_pulls_success"] += 1
+            self._record_peer_observation(
+                sender=sender,
+                merkle_root=message.get("merkle_root", ""),
+                state_version=message.get("state_version"),
+                hop_count=1,
+            )
+            remote_delta_seq = int(message.get("delta_seq", 0) or 0)
+            if (
+                self.state.merkle_root() != message.get("merkle_root")
+                and self.peer_delta_seq[sender] >= remote_delta_seq
+            ):
+                await self._maybe_pull_state_from_sender(addr, message)
+        except Exception as error:
+            self.stats["repair_pulls_failed"] += 1
+            log.debug("delta_pull_failed", peer=host, error=str(error))
 
     async def _maybe_pull_state_from_sender(self, addr, message):
         host = addr[0] if addr else None

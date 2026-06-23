@@ -1016,15 +1016,15 @@ async function runEvaluation() {
     const nodeCountsRaw = document.getElementById('eval-node-counts').value;
     const eventsPerNode = parseInt(document.getElementById('eval-events-per-node').value) || 5;
     const partitionSplitsRaw = document.getElementById('eval-partition-splits').value;
+    const convergenceWait = parseFloat(document.getElementById('eval-convergence-wait').value) || 25;
+    const networkProfile = document.getElementById('eval-network-profile').value.trim() || 'hard_partition';
+    const implementationLabel = document.getElementById('eval-implementation-label').value.trim() || 'current_full_state_repair';
+    const dashboardObservability = document.getElementById('eval-dashboard-observability').value || 'light';
 
     const nodeCounts = nodeCountsRaw.split(',').map(s => parseInt(s.trim())).filter(n => n > 0);
     const partitionSplits = partitionSplitsRaw.split(',').map(s => parseFloat(s.trim())).filter(n => n > 0 && n < 1);
     if (!nodeCounts.length) {
         toast('Enter at least one node count', 'error');
-        return;
-    }
-    if (!partitionSplits.length) {
-        toast('Enter at least one partition split between 0 and 1', 'error');
         return;
     }
 
@@ -1041,6 +1041,10 @@ async function runEvaluation() {
             node_counts: nodeCounts,
             events_per_node: eventsPerNode,
             partition_splits: partitionSplits,
+            convergence_wait_seconds: convergenceWait,
+            network_profile: networkProfile,
+            implementation_label: implementationLabel,
+            dashboard_observability: dashboardObservability,
         });
         toast('Evaluation started', 'success');
         startEvalPolling();
@@ -1118,7 +1122,7 @@ async function fetchEvalResults() {
 function renderEvalResults(results) {
     const tbody = document.getElementById('eval-results-tbody');
     if (!results.length) {
-        tbody.innerHTML = '<tr><td colspan="12" class="empty-cell">No evaluation data — click Run Evaluation to start</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="16" class="empty-cell">No evaluation data — click Run Evaluation to start</td></tr>';
         return;
     }
 
@@ -1138,7 +1142,7 @@ function renderEvalResults(results) {
             status === 'known_diverged' ? 'eval-row-diverged' :
             '';
         const convTime = r.convergence_time_s != null ? `${Number(r.convergence_time_s).toFixed(3)}s` : '—';
-        const dataLoss = r.data_loss_count != null ? `${r.data_loss_count} (${r.data_loss_pct ?? 0}%)` : '—';
+        const missing = r.missing_at_cutoff_count != null ? `${r.missing_at_cutoff_count} (${r.missing_at_cutoff_pct ?? 0}%)` : '—';
         const staleness = r.gateway_staleness_seconds != null ? `${Number(r.gateway_staleness_seconds).toFixed(3)}s` : '—';
         const writeSuccess = r.write_success_rate != null ? `${(Number(r.write_success_rate) * 100).toFixed(1)}%` : '—';
         const writes = `${r.accepted_events ?? '—'}/${r.attempted_events ?? '—'}`;
@@ -1146,6 +1150,9 @@ function renderEvalResults(results) {
             status === 'known_converged' ? 'Known Converged' :
             status === 'known_diverged' ? 'Known Diverged' :
             'Insufficient Coverage';
+        const timeout = r.convergence_wait_seconds != null ? `${Number(r.convergence_wait_seconds).toFixed(0)}s` : '—';
+        const bytesPerEvent = r.bytes_per_accepted_event != null && r.bytes_per_accepted_event !== '' ? `${Number(r.bytes_per_accepted_event).toFixed(2)}` : '—';
+        const convergedWithinTimeout = r.converged_within_timeout === true ? 'Yes' : 'No';
         const statusCls =
             status === 'known_converged' ? 'eval-status-converged' :
             status === 'known_diverged' ? 'eval-status-diverged' :
@@ -1154,17 +1161,21 @@ function renderEvalResults(results) {
         return `
             <tr class="${rowCls}">
                 <td><span class="eval-scenario-tag ${s.cls}">${s.label}</span></td>
+                <td>${r.implementation || '—'}</td>
+                <td>${r.sync_mode || '—'}</td>
                 <td>${r.partition_split || '—'}</td>
                 <td>${r.node_count}</td>
                 <td>${writes}</td>
                 <td>${writeSuccess}</td>
                 <td>${convTime}</td>
-                <td>${dataLoss}</td>
+                <td>${timeout}</td>
+                <td>${missing}</td>
                 <td>${staleness}</td>
                 <td>${formatBytes(r.sync_bytes_total)}</td>
+                <td>${bytesPerEvent}</td>
                 <td>${r.repair_pull_count ?? '—'}</td>
                 <td>${formatBytes(r.total_state_size_bytes)}</td>
-                <td><span class="eval-status-tag ${statusCls}">${statusLabel}</span></td>
+                <td><span class="eval-status-tag ${statusCls}">${statusLabel}</span><br><span class="text-slate-500">Timeout: ${convergedWithinTimeout}</span></td>
             </tr>
         `;
     }).join('');
