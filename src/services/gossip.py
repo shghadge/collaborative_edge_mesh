@@ -64,6 +64,7 @@ class GossipService:
             "last_message_at": None,
             "last_successful_merge_at": None,
             "peers_discovered": 0,
+            "repair_bytes_received": 0,
         }
 
     async def start(self):
@@ -305,7 +306,9 @@ class GossipService:
         try:
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.get(url) as response:
-                    data = await response.json()
+                    text = await response.text()
+                    self.stats["repair_bytes_received"] += len(text.encode())
+                    data = json.loads(text)
             incoming = NodeState.from_dict(data)
             old_root = self.state.merkle_root()
             started = time.time()

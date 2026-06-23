@@ -1015,10 +1015,16 @@ async function runEvaluation() {
     const btn = document.getElementById('btn-run-eval');
     const nodeCountsRaw = document.getElementById('eval-node-counts').value;
     const eventsPerNode = parseInt(document.getElementById('eval-events-per-node').value) || 5;
+    const partitionSplitsRaw = document.getElementById('eval-partition-splits').value;
 
     const nodeCounts = nodeCountsRaw.split(',').map(s => parseInt(s.trim())).filter(n => n > 0);
+    const partitionSplits = partitionSplitsRaw.split(',').map(s => parseFloat(s.trim())).filter(n => n > 0 && n < 1);
     if (!nodeCounts.length) {
         toast('Enter at least one node count', 'error');
+        return;
+    }
+    if (!partitionSplits.length) {
+        toast('Enter at least one partition split between 0 and 1', 'error');
         return;
     }
 
@@ -1034,6 +1040,7 @@ async function runEvaluation() {
         await api('POST', '/evaluation/run', {
             node_counts: nodeCounts,
             events_per_node: eventsPerNode,
+            partition_splits: partitionSplits,
         });
         toast('Evaluation started', 'success');
         startEvalPolling();
@@ -1111,13 +1118,15 @@ async function fetchEvalResults() {
 function renderEvalResults(results) {
     const tbody = document.getElementById('eval-results-tbody');
     if (!results.length) {
-        tbody.innerHTML = '<tr><td colspan="9" class="empty-cell">No evaluation data — click Run Evaluation to start</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="12" class="empty-cell">No evaluation data — click Run Evaluation to start</td></tr>';
         return;
     }
 
     const scenarioLabels = {
+        baseline: { label: 'Baseline', cls: 'eval-tag-baseline' },
         baseline_convergence: { label: 'Baseline', cls: 'eval-tag-baseline' },
         partition_heal: { label: 'Partition', cls: 'eval-tag-partition' },
+        high_load: { label: 'High Load', cls: 'eval-tag-scaling' },
         scaling_events: { label: 'Scaling', cls: 'eval-tag-scaling' },
     };
 
@@ -1128,13 +1137,15 @@ function renderEvalResults(results) {
             status === 'known_converged' ? 'eval-row-converged' :
             status === 'known_diverged' ? 'eval-row-diverged' :
             '';
-        const convTime = r.convergence_time_s != null ? `${r.convergence_time_s.toFixed(3)}s` : '—';
-        const dataLoss = r.data_loss_pct != null ? `${r.data_loss_pct}%` : '—';
+        const convTime = r.convergence_time_s != null ? `${Number(r.convergence_time_s).toFixed(3)}s` : '—';
+        const dataLoss = r.data_loss_count != null ? `${r.data_loss_count} (${r.data_loss_pct ?? 0}%)` : '—';
+        const staleness = r.gateway_staleness_seconds != null ? `${Number(r.gateway_staleness_seconds).toFixed(3)}s` : '—';
+        const writeSuccess = r.write_success_rate != null ? `${(Number(r.write_success_rate) * 100).toFixed(1)}%` : '—';
+        const writes = `${r.accepted_events ?? '—'}/${r.attempted_events ?? '—'}`;
         const statusLabel =
             status === 'known_converged' ? 'Known Converged' :
             status === 'known_diverged' ? 'Known Diverged' :
             'Insufficient Coverage';
-        const coverage = r.coverage_percent != null ? `${Number(r.coverage_percent).toFixed(1)}%` : '—';
         const statusCls =
             status === 'known_converged' ? 'eval-status-converged' :
             status === 'known_diverged' ? 'eval-status-diverged' :
@@ -1143,14 +1154,17 @@ function renderEvalResults(results) {
         return `
             <tr class="${rowCls}">
                 <td><span class="eval-scenario-tag ${s.cls}">${s.label}</span></td>
+                <td>${r.partition_split || '—'}</td>
                 <td>${r.node_count}</td>
-                <td>${r.events_sent}</td>
+                <td>${writes}</td>
+                <td>${writeSuccess}</td>
                 <td>${convTime}</td>
                 <td>${dataLoss}</td>
-                <td>${r.gossip_messages_sent}</td>
+                <td>${staleness}</td>
+                <td>${formatBytes(r.sync_bytes_total)}</td>
+                <td>${r.repair_pull_count ?? '—'}</td>
                 <td>${formatBytes(r.total_state_size_bytes)}</td>
                 <td><span class="eval-status-tag ${statusCls}">${statusLabel}</span></td>
-                <td>${coverage}</td>
             </tr>
         `;
     }).join('');

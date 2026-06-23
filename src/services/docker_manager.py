@@ -636,9 +636,12 @@ class DockerManager:
             nodes=results,
         )
 
-    def create_split_brain(self):
-        """Partition the mesh into two groups."""
-        nodes = [c for c in self.client.containers.list() if "edge-node" in c.name]
+    def create_split_brain(self, majority_ratio=0.5):
+        """Partition the mesh into two groups using a configurable A/B split."""
+        nodes = sorted(
+            [c for c in self.client.containers.list() if "edge-node" in c.name],
+            key=lambda c: c.name,
+        )
         if len(nodes) < 2:
             return self._action_response(
                 action="split_brain",
@@ -647,9 +650,11 @@ class DockerManager:
                 message="Need at least 2 nodes",
             )
 
-        mid = len(nodes) // 2
-        group_a = nodes[:mid]
-        group_b = nodes[mid:]
+        ratio = max(0.0, min(float(majority_ratio), 1.0))
+        split_index = round(len(nodes) * ratio)
+        split_index = max(1, min(split_index, len(nodes) - 1))
+        group_a = nodes[:split_index]
+        group_b = nodes[split_index:]
 
         # get IPs for each group
         def get_ip(container):
@@ -691,6 +696,7 @@ class DockerManager:
             target="mesh",
             status="split_brain",
             message="Created split-brain partition",
+            partition_ratio=ratio,
             group_a=[c.name for c in group_a],
             group_b=[c.name for c in group_b],
         )

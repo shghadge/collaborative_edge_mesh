@@ -205,6 +205,7 @@ class GatewayService:
 
         incoming_last_seen = self._parse_observed_time(observation.get("last_seen_at"))
         incoming_observed_at = time.time()
+        observed_monotonic_at = time.monotonic()
         incoming_mode = (
             "direct" if direct else observation.get("reachable_via", "relayed")
         )
@@ -226,6 +227,7 @@ class GatewayService:
             "state_version": observation.get("state_version"),
             "last_seen_at": incoming_last_seen,
             "observed_at": incoming_observed_at,
+            "observed_monotonic_at": observed_monotonic_at,
             "source_node": source_node,
             "reachable_via": incoming_mode,
             "hops": 0 if direct else int(observation.get("hops", 1) or 1),
@@ -253,18 +255,23 @@ class GatewayService:
         }
 
     def _build_visibility_snapshot(self):
-        now = time.time()
+        now = time.monotonic()
         expected_nodes = len(self.edge_nodes)
         freshness = self.visibility_freshness_seconds
+
+        def observation_age(obs):
+            return max(0.0, now - obs.get("observed_monotonic_at", now))
+
         fresh = [
             obs
             for obs in self.relay_observations.values()
-            if (now - obs.get("observed_at", now)) <= freshness
+            if observation_age(obs) <= freshness
         ]
         fresh_roots = {
             obs.get("merkle_root") for obs in fresh if obs.get("merkle_root")
         }
         fresh_observed_nodes = len(fresh)
+        observation_ages = [observation_age(obs) for obs in fresh]
         if expected_nodes <= 0:
             # No registered edge nodes means there is no visibility basis yet.
             # Report 0 coverage to avoid a misleading "100% + insufficient" mix.
@@ -289,6 +296,9 @@ class GatewayService:
             "fresh_merkle_roots": len(fresh_roots),
             "confidence_threshold": self.coverage_confidence_threshold,
             "freshness_window_seconds": freshness,
+            "max_observation_age_seconds": round(max(observation_ages), 3)
+            if observation_ages
+            else None,
         }
 
     async def poll_once(self):

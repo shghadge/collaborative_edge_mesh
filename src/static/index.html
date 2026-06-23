@@ -640,6 +640,18 @@
                                     class="mt-1 w-28 rounded border border-white/15 bg-slate-900 px-2 py-1 text-sm"
                                 />
                             </div>
+                            <div class="form-group">
+                                <label
+                                    for="eval-partition-splits"
+                                    class="text-[11px] uppercase tracking-widest text-slate-500"
+                                    >Partition Splits</label
+                                ><input
+                                    type="text"
+                                    id="eval-partition-splits"
+                                    value="0.5,0.7,0.8"
+                                    class="mt-1 w-36 rounded border border-white/15 bg-slate-900 px-2 py-1 text-sm"
+                                />
+                            </div>
                             <div
                                 class="eval-actions flex items-center gap-2 ml-auto"
                             >
@@ -683,19 +695,22 @@
                                 <thead>
                                     <tr>
                                         <th>Scenario</th>
+                                        <th>Split</th>
                                         <th>Nodes</th>
-                                        <th>Events</th>
-                                        <th>Conv. Time</th>
+                                        <th>Writes</th>
+                                        <th>Success</th>
+                                        <th>Conv.</th>
                                         <th>Data Loss</th>
-                                        <th>Gossip Msgs</th>
+                                        <th>Staleness</th>
+                                        <th>Sync Bytes</th>
+                                        <th>Repairs</th>
                                         <th>State Size</th>
-                                        <th>Known Status</th>
-                                        <th>Coverage</th>
+                                        <th>Status</th>
                                     </tr>
                                 </thead>
                                 <tbody id="eval-results-tbody">
                                     <tr>
-                                        <td colspan="9" class="empty-cell">
+                                        <td colspan="12" class="empty-cell">
                                             No evaluation data - click Run
                                             Evaluation to start
                                         </td>
