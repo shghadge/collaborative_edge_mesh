@@ -753,17 +753,18 @@ class EvalScenarioConfig(BaseModel):
     convergence_wait_seconds: float = Field(default=15.0)
     poll_interval_seconds: float = Field(default=2.0)
     implementation_label: str = "current_full_state_repair"
-    sync_mode: str = "full_state_repair"
+    sync_mode: str = "full_state"
     state_growth_fix: bool = False
     network_profile: str = "hard_partition"
     scenario_seed: int | None = None
     dashboard_observability: str = "light"
+    event_concurrency: int = Field(default=25)
 
 
-async def _eval_send_events(session, nodes, count, category="sensor"):
+async def _eval_send_events(session, nodes, count, category="sensor", concurrency=25):
     """Send `count` events per node and return simple availability metrics."""
     result = {
-        "attempted": 0,
+        "attempted": count * len(nodes),
         "accepted": 0,
         "tracking_ids": [],
         "first_submitted_at": None,
@@ -777,15 +778,13 @@ async def _eval_send_events(session, nodes, count, category="sensor"):
         "wind_speed",
         "air_quality",
     ]
-    for i in range(count * len(nodes)):
-        target = nodes[i % len(nodes)]
+    semaphore = asyncio.Semaphore(max(1, int(concurrency or 1)))
+
+    async def _send_one(i, target):
         node_url = target.get("internal_url") or target.get("url")
         submitted_at = time.time()
-        result["attempted"] += 1
-        result["first_submitted_at"] = result["first_submitted_at"] or submitted_at
-        result["last_submitted_at"] = submitted_at
         if not node_url:
-            continue
+            return None
 
         etype = event_types[i % len(event_types)]
         tid = str(uuid.uuid4())
@@ -801,13 +800,34 @@ async def _eval_send_events(session, nodes, count, category="sensor"):
             },
         }
         try:
-            async with session.post(f"{node_url}/event", json=payload) as resp:
-                await resp.json()
-                if resp.status < 400:
-                    result["accepted"] += 1
-                    result["tracking_ids"].append(tid)
+            async with semaphore:
+                async with session.post(f"{node_url}/event", json=payload) as resp:
+                    await resp.json()
+                    if resp.status < 400:
+                        return tid, submitted_at
         except Exception:
-            pass
+            return None
+        return None
+
+    submissions = [
+        _send_one(i, nodes[i % len(nodes)]) for i in range(count * len(nodes))
+    ]
+    for item in await asyncio.gather(*submissions):
+        if item is None:
+            continue
+        tid, submitted_at = item
+        result["accepted"] += 1
+        result["tracking_ids"].append(tid)
+        if (
+            result["first_submitted_at"] is None
+            or submitted_at < result["first_submitted_at"]
+        ):
+            result["first_submitted_at"] = submitted_at
+        if (
+            result["last_submitted_at"] is None
+            or submitted_at > result["last_submitted_at"]
+        ):
+            result["last_submitted_at"] = submitted_at
     return result
 
 
@@ -944,7 +964,10 @@ async def _eval_collect_metrics(session, nodes, gateways, accepted_events=None):
         else 0.0
     )
     unique_roots = len(set(r for r in merkle_roots if r))
-    is_converged = known_status == "known_converged" and unique_roots == 1
+    direct_roots_converged = len(merkle_roots) == len(nodes) and unique_roots == 1
+    if direct_roots_converged:
+        known_status = "known_converged"
+    is_converged = direct_roots_converged
     avg_state_size_bytes = round(total_state_size / len(nodes), 0) if nodes else 0
 
     return {
@@ -1004,7 +1027,7 @@ async def _eval_wait_for_metrics(session, nodes, gateways, cfg, accepted_events)
         await asyncio.sleep(cfg.poll_interval_seconds)
 
 
-async def _eval_reset_nodes(node_count: int):
+async def _eval_recreate_nodes(node_count: int, cfg: EvalScenarioConfig):
     _require_docker()
     if hasattr(docker_mgr, "clear_netem"):
         try:
@@ -1018,14 +1041,55 @@ async def _eval_reset_nodes(node_count: int):
         except Exception:
             pass
     await asyncio.sleep(2)
+    event_id_retention_limit = 100 if cfg.state_growth_fix else 0
     for _ in range(node_count):
         try:
-            await asyncio.to_thread(docker_mgr.create_node)
+            await asyncio.to_thread(
+                docker_mgr.create_node,
+                sync_mode=cfg.sync_mode,
+                event_id_retention_limit=event_id_retention_limit,
+                observability_mode=cfg.dashboard_observability,
+            )
         except Exception as e:
             log.warning("eval_node_create_failed", error=str(e))
     await _sync_gateways_with_nodes(force=True)
     await asyncio.sleep(3)
     return await asyncio.to_thread(docker_mgr.list_nodes), await _discover_gateways()
+
+
+async def _eval_reset_runtime(session, nodes, gateways):
+    """Reset node/gateway scenario state without recreating containers."""
+
+    async def _post_first_available(urls, path):
+        for base_url in urls:
+            try:
+                async with session.post(f"{base_url}{path}") as resp:
+                    if resp.status < 400:
+                        await resp.json()
+                        return True
+            except Exception:
+                continue
+        return False
+
+    await _sync_gateways_with_nodes(force=True)
+
+    node_tasks = []
+    for node in nodes:
+        urls = _candidate_urls(
+            node.get("internal_url"),
+            node.get("external_url"),
+            node.get("url"),
+        )
+        node_tasks.append(_post_first_available(urls, "/evaluation/reset"))
+    if node_tasks:
+        await asyncio.gather(*node_tasks, return_exceptions=True)
+
+    gateway_tasks = []
+    for gateway in gateways:
+        urls = _candidate_urls(gateway.get("url"), gateway.get("external_url"))
+        gateway_tasks.append(_post_first_available(urls, "/gateway/evaluation/reset"))
+    if gateway_tasks:
+        await asyncio.gather(*gateway_tasks, return_exceptions=True)
 
 
 async def _run_evaluation(cfg: EvalScenarioConfig):
@@ -1076,10 +1140,17 @@ async def _run_evaluation(cfg: EvalScenarioConfig):
         )
         _eval_state["results"].append(combined)
 
-    async def _prepare_scenario(node_count: int):
-        nodes, gateways = await _eval_reset_nodes(node_count)
+    async def _prepare_scenario(session, nodes, gateways):
+        try:
+            await asyncio.to_thread(docker_mgr.heal_all)
+        except Exception:
+            pass
         if hasattr(docker_mgr, "clear_netem"):
-            await asyncio.to_thread(docker_mgr.clear_netem)
+            try:
+                await asyncio.to_thread(docker_mgr.clear_netem)
+            except Exception:
+                pass
+        await _eval_reset_runtime(session, nodes, gateways)
         if cfg.network_profile != "hard_partition" and hasattr(
             docker_mgr, "apply_netem_profile"
         ):
@@ -1102,11 +1173,15 @@ async def _run_evaluation(cfg: EvalScenarioConfig):
 
         for node_count in cfg.node_counts:
             async with aiohttp.ClientSession(timeout=timeout) as session:
+                nodes, gateways = await _eval_recreate_nodes(node_count, cfg)
                 _eval_state["current_step"] = f"[{node_count}N] Baseline"
                 _eval_state["progress"] = step
-                nodes, gateways = await _prepare_scenario(node_count)
+                nodes, gateways = await _prepare_scenario(session, nodes, gateways)
                 baseline_events = await _eval_send_events(
-                    session, nodes, cfg.events_per_node
+                    session,
+                    nodes,
+                    cfg.events_per_node,
+                    concurrency=cfg.event_concurrency,
                 )
                 metrics = await _eval_wait_for_metrics(
                     session,
@@ -1128,10 +1203,13 @@ async def _run_evaluation(cfg: EvalScenarioConfig):
                         f"[{node_count}N] Partition {split_label}"
                     )
                     _eval_state["progress"] = step
-                    nodes, gateways = await _prepare_scenario(node_count)
+                    nodes, gateways = await _prepare_scenario(session, nodes, gateways)
 
                     pre_events = await _eval_send_events(
-                        session, nodes, cfg.events_per_node
+                        session,
+                        nodes,
+                        cfg.events_per_node,
+                        concurrency=cfg.event_concurrency,
                     )
                     await _eval_poll_all_gateways(session, gateways)
 
@@ -1141,7 +1219,12 @@ async def _run_evaluation(cfg: EvalScenarioConfig):
                         pass
                     await asyncio.sleep(1)
 
-                    partition_events = await _eval_send_events(session, nodes, 3)
+                    partition_events = await _eval_send_events(
+                        session,
+                        nodes,
+                        3,
+                        concurrency=cfg.event_concurrency,
+                    )
                     await asyncio.sleep(cfg.partition_wait_seconds)
 
                     try:
@@ -1180,12 +1263,13 @@ async def _run_evaluation(cfg: EvalScenarioConfig):
 
                 _eval_state["current_step"] = f"[{node_count}N] High load"
                 _eval_state["progress"] = step
-                nodes, gateways = await _prepare_scenario(node_count)
+                nodes, gateways = await _prepare_scenario(session, nodes, gateways)
                 heavy_events = await _eval_send_events(
                     session,
                     nodes,
                     cfg.events_per_node * 3,
                     category="resource",
+                    concurrency=cfg.event_concurrency,
                 )
                 metrics = await _eval_wait_for_metrics(
                     session,
@@ -1276,6 +1360,12 @@ async def run_evaluation(cfg: EvalScenarioConfig = None):
             400,
             "INVALID_DASHBOARD_OBSERVABILITY",
             "dashboard_observability must be off, light, or full",
+        )
+    if cfg.sync_mode not in {"full_state", "true_delta"}:
+        raise _api_error(
+            400,
+            "INVALID_SYNC_MODE",
+            "sync_mode must be full_state or true_delta",
         )
     if cfg.network_profile not in {"hard_partition", "degraded_300ms_10loss"}:
         raise _api_error(

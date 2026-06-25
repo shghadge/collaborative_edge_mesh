@@ -392,7 +392,14 @@ class DockerManager:
             message=f"Removed {gateway_id}",
         )
 
-    def create_node(self, node_id=None, assigned_gateway=""):
+    def create_node(
+        self,
+        node_id=None,
+        assigned_gateway="",
+        sync_mode="full_state",
+        event_id_retention_limit=100,
+        observability_mode=None,
+    ):
         """Spin up a new edge node container and register it with the gateway."""
         with self._creation_lock:
             if node_id is None:
@@ -449,6 +456,13 @@ class DockerManager:
                 "GOSSIP_PORT": "9000",
                 "GOSSIP_INTERVAL": "5",
                 "ASSIGNED_GATEWAY": assigned_gateway,
+                "SYNC_MODE": sync_mode,
+                "EVENT_ID_RETENTION_LIMIT": str(event_id_retention_limit),
+                **(
+                    {"OBSERVABILITY_MODE": observability_mode}
+                    if observability_mode
+                    else {}
+                ),
             },
             ports={f"{http_port}/tcp": host_port},
             network=network.name,

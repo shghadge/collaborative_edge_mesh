@@ -18,6 +18,13 @@ COLUMNS = [
     "Avg State Size",
     "Sync Bytes",
     "Bytes/Event",
+    "Repair Pulls",
+    "Delta Pulls",
+    "Delta Success",
+    "Delta Gaps",
+    "Deltas Applied",
+    "Delta Bytes",
+    "Delta Bytes/Delta",
 ]
 
 
@@ -66,6 +73,25 @@ def _summarize_change(changes: list[float]) -> str:
     return f"{avg_change:.2f}% average change across {len(changes)} matching rows"
 
 
+def _ratio_display(row: dict, numerator: str, denominator: str) -> str:
+    denominator_value = _float(row, denominator)
+    if denominator_value == 0:
+        return "—"
+    return f"{_float(row, numerator) / denominator_value:.2f}"
+
+
+def _total(rows: list[dict], implementation: str, field: str) -> float:
+    return sum(
+        _float(row, field)
+        for row in rows
+        if row.get("implementation", "") == implementation
+    )
+
+
+def _format_total(value: float) -> str:
+    return f"{int(value):,}"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Summarize evaluation CSV files.")
     parser.add_argument("--inputs", required=True, help="Comma-separated CSV paths")
@@ -108,45 +134,134 @@ def main() -> int:
             _display(row.get("avg_state_size_bytes")),
             _display(row.get("sync_bytes_total")),
             _display(row.get("bytes_per_accepted_event")),
+            _display(row.get("repair_pull_count")),
+            _display(row.get("delta_pulls_started")),
+            _display(row.get("delta_pulls_success")),
+            _display(row.get("delta_pulls_gap")),
+            _display(row.get("delta_deltas_applied")),
+            _display(row.get("delta_bytes_received")),
+            _ratio_display(row, "delta_bytes_received", "delta_deltas_applied"),
         ]
         lines.append("| " + " | ".join(values) + " |")
 
-    growth_state = _summarize_change(
-        _pair_changes(
-            rows,
-            "current_full_state_repair",
-            "growth_fixed_full_state_repair",
-            "avg_state_size_bytes",
-        )
+    growth_state_changes = _pair_changes(
+        rows,
+        "current_full_state_repair",
+        "growth_fixed_full_state_repair",
+        "avg_state_size_bytes",
     )
-    delta_sync = _summarize_change(
-        _pair_changes(
-            rows,
-            "growth_fixed_full_state_repair",
-            "growth_fixed_delta_repair",
-            "sync_bytes_total",
-        )
+    key_delta_sync_changes = _pair_changes(
+        rows,
+        "growth_fixed_full_state_repair",
+        "growth_fixed_delta_repair",
+        "sync_bytes_total",
     )
-    delta_bytes_event = _summarize_change(
-        _pair_changes(
-            rows,
-            "growth_fixed_full_state_repair",
-            "growth_fixed_delta_repair",
-            "bytes_per_accepted_event",
-        )
+    key_delta_bytes_event_changes = _pair_changes(
+        rows,
+        "growth_fixed_full_state_repair",
+        "growth_fixed_delta_repair",
+        "bytes_per_accepted_event",
     )
+    true_delta_sync_changes = _pair_changes(
+        rows,
+        "growth_fixed_full_state_repair",
+        "growth_fixed_true_delta_repair",
+        "sync_bytes_total",
+    )
+    true_delta_bytes_event_changes = _pair_changes(
+        rows,
+        "growth_fixed_full_state_repair",
+        "growth_fixed_true_delta_repair",
+        "bytes_per_accepted_event",
+    )
+    true_vs_key_delta_sync_changes = _pair_changes(
+        rows,
+        "growth_fixed_delta_repair",
+        "growth_fixed_true_delta_repair",
+        "sync_bytes_total",
+    )
+
+    growth_state = _summarize_change(growth_state_changes)
+    key_delta_sync = _summarize_change(key_delta_sync_changes)
+    key_delta_bytes_event = _summarize_change(key_delta_bytes_event_changes)
+    true_delta_sync = _summarize_change(true_delta_sync_changes)
+    true_delta_bytes_event = _summarize_change(true_delta_bytes_event_changes)
+    true_vs_key_delta_sync = _summarize_change(true_vs_key_delta_sync_changes)
     availability = min((_float(row, "write_success_rate") for row in rows), default=0.0)
+
+    key_delta_bytes = _total(rows, "growth_fixed_delta_repair", "delta_bytes_received")
+    key_delta_applied = _total(
+        rows, "growth_fixed_delta_repair", "delta_deltas_applied"
+    )
+    true_delta_bytes = _total(
+        rows, "growth_fixed_true_delta_repair", "delta_bytes_received"
+    )
+    true_delta_applied = _total(
+        rows, "growth_fixed_true_delta_repair", "delta_deltas_applied"
+    )
+    key_delta_bytes_per_delta = (
+        key_delta_bytes / key_delta_applied if key_delta_applied else 0.0
+    )
+    true_delta_bytes_per_delta = (
+        true_delta_bytes / true_delta_applied if true_delta_applied else 0.0
+    )
 
     lines.append("")
     lines.append(f"- Growth fix state-size change: {growth_state}.")
-    if delta_sync == "insufficient data" or delta_bytes_event == "insufficient data":
-        lines.append("- Delta bandwidth change: insufficient data for comparison.")
+    if (
+        key_delta_sync == "insufficient data"
+        or key_delta_bytes_event == "insufficient data"
+    ):
+        lines.append(
+            "- Historical key-delta bandwidth change: insufficient data for comparison."
+        )
     else:
         lines.append(
-            "- Delta bandwidth change: "
-            f"sync_bytes_total {delta_sync}; bytes_per_accepted_event {delta_bytes_event}."
+            "- Historical key-delta bandwidth change: "
+            f"sync_bytes_total {key_delta_sync}; "
+            f"bytes_per_accepted_event {key_delta_bytes_event}."
+        )
+    if (
+        true_delta_sync == "insufficient data"
+        or true_delta_bytes_event == "insufficient data"
+    ):
+        lines.append("- True-delta bandwidth change: insufficient data for comparison.")
+    else:
+        lines.append(
+            "- True-delta bandwidth change: "
+            f"sync_bytes_total {true_delta_sync}; "
+            f"bytes_per_accepted_event {true_delta_bytes_event}."
         )
     lines.append(f"- Availability: minimum write_success_rate {availability:.4f}.")
+    lines.append("")
+    lines.append("## Observations")
+    lines.append("")
+    lines.append(
+        f"- Growth-fixed full-state reduces serialized state size modestly "
+        f"({growth_state}), confirming event ID retention was only one growth source."
+    )
+    lines.append(
+        f"- Historical key-level deltas are much worse than full-state repair "
+        f"({key_delta_sync}), because each log entry carries full CRDT object slices."
+    )
+    lines.append(
+        f"- True deltas improve over historical key-level deltas "
+        f"({true_vs_key_delta_sync}) but still exceed growth-fixed full-state repair "
+        f"({true_delta_sync})."
+    )
+    lines.append(
+        "- Delta diagnostics point to replay overhead: historical key-delta replayed "
+        f"{_format_total(key_delta_applied)} deltas / "
+        f"{_format_total(key_delta_bytes)} bytes "
+        f"({key_delta_bytes_per_delta:.2f} bytes per delta), while true-delta replayed "
+        f"{_format_total(true_delta_applied)} deltas / "
+        f"{_format_total(true_delta_bytes)} bytes "
+        f"({true_delta_bytes_per_delta:.2f} bytes per delta)."
+    )
+    lines.append(
+        "- Practical next optimization is hybrid repair: use true deltas only when a "
+        "peer is close to the sender's `delta_seq`; otherwise pull one full state."
+    )
 
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)

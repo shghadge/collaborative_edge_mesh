@@ -45,6 +45,18 @@ class NodeState:
         self.delta_log = []
         self.delta_log_limit = 1000
 
+    def reset(self):
+        """Clear all CRDT and delta state while preserving node configuration."""
+        self.version = 0
+        self.updated_at = datetime.utcnow()
+        self.counters.clear()
+        self.registers.clear()
+        self.pn_counters.clear()
+        self.sets.clear()
+        self.event_ids.clear()
+        self.delta_seq = 0
+        self.delta_log.clear()
+
     def record_event(
         self, event_id, event_type, data, category="general", operation=None
     ):
@@ -68,7 +80,10 @@ class NodeState:
         # track recent event ids for local/debug visibility without unbounded state growth
         if event_id not in self.event_ids:
             self.event_ids.append(event_id)
-            if len(self.event_ids) > self.event_id_retention_limit:
+            if (
+                self.event_id_retention_limit
+                and len(self.event_ids) > self.event_id_retention_limit
+            ):
                 self.event_ids = self.event_ids[-self.event_id_retention_limit :]
 
         delta_state = self._build_delta_state(stored_in, event_id)
@@ -79,19 +94,31 @@ class NodeState:
         return stored_in
 
     def _build_delta_state(self, stored_in, event_id):
+        """Build a minimal lattice join fragment for the last mutation.
+
+        Uses each CRDT primitive's last_delta() method to produce only
+        the join-irreducible element needed to advance a peer's state,
+        rather than copying the full CRDT object at the key level.
+        """
         delta_state = NodeState(self.node_id, self.event_id_retention_limit)
         counter_key = stored_in.get("counter_key")
         if counter_key and counter_key in self.counters:
-            delta_state.counters[counter_key] = self.counters[counter_key]
+            delta_state.counters[counter_key] = GCounter.from_dict(
+                self.counters[counter_key].last_delta()
+            )
         register_key = stored_in.get("register_key")
         if register_key and register_key in self.registers:
-            delta_state.registers[register_key] = self.registers[register_key]
+            delta_state.registers[register_key] = LWWRegister.from_dict(
+                self.registers[register_key].last_delta()
+            )
         pn_counter_key = stored_in.get("pn_counter_key")
         if pn_counter_key and pn_counter_key in self.pn_counters:
-            delta_state.pn_counters[pn_counter_key] = self.pn_counters[pn_counter_key]
+            delta_state.pn_counters[pn_counter_key] = PNCounter.from_dict(
+                self.pn_counters[pn_counter_key].last_delta()
+            )
         set_key = stored_in.get("set_key")
         if set_key and set_key in self.sets:
-            delta_state.sets[set_key] = self.sets[set_key]
+            delta_state.sets[set_key] = ORSet.from_dict(self.sets[set_key].last_delta())
         delta_state.event_ids = [event_id]
         return delta_state
 
@@ -291,6 +318,11 @@ class NodeState:
                 for orset in self.sets.values()
                 for tags in orset._elements.values()
             ),
+            "orset_removed_tag_count": sum(
+                len(tags)
+                for orset in self.sets.values()
+                for tags in orset._removed.values()
+            ),
             "crdt_counts": {
                 "g_counters": len(self.counters),
                 "lww_registers": len(self.registers),
@@ -341,7 +373,10 @@ class NodeState:
         for eid in other.event_ids:
             if eid not in self.event_ids:
                 self.event_ids.append(eid)
-        if len(self.event_ids) > self.event_id_retention_limit:
+        if (
+            self.event_id_retention_limit
+            and len(self.event_ids) > self.event_id_retention_limit
+        ):
             self.event_ids = self.event_ids[-self.event_id_retention_limit :]
         if self.merkle_root() != old_root:
             self.version += 1
@@ -372,7 +407,11 @@ class NodeState:
         # OR-Sets
         for key in sorted(self.sets):
             orset = self.sets[key]
-            raw = f"s:{key}:{json.dumps({e: sorted(t) for e, t in orset._elements.items()}, sort_keys=True)}"
+            orset_state = {
+                "adds": {e: sorted(t) for e, t in orset._elements.items()},
+                "removes": {e: sorted(t) for e, t in orset._removed.items()},
+            }
+            raw = f"s:{key}:{json.dumps(orset_state, sort_keys=True)}"
             leaves.append(hashlib.sha256(raw.encode()).hexdigest())
 
         if not leaves:
@@ -399,8 +438,13 @@ class NodeState:
             "registers": {k: v.to_dict() for k, v in self.registers.items()},
             "pn_counters": {k: v.to_dict() for k, v in self.pn_counters.items()},
             "sets": {k: v.to_dict() for k, v in self.sets.items()},
+            "event_id_retention_limit": self.event_id_retention_limit,
             "event_id_count": len(self.event_ids),
-            "recent_event_ids": list(self.event_ids[-self.event_id_retention_limit :]),
+            "recent_event_ids": list(
+                self.event_ids[-self.event_id_retention_limit :]
+                if self.event_id_retention_limit
+                else self.event_ids
+            ),
             "delta_seq": self.delta_seq,
             "merkle_root": self.merkle_root(),
             "state_summary": self.summary(),
@@ -453,7 +497,7 @@ class NodeState:
 
     @classmethod
     def from_dict(cls, data):
-        s = cls(data["node_id"])
+        s = cls(data["node_id"], data.get("event_id_retention_limit", 100))
         s.version = data.get("version", 0)
         s.updated_at = datetime.fromisoformat(
             data.get("updated_at", datetime.utcnow().isoformat())
@@ -469,6 +513,10 @@ class NodeState:
         }
         s.sets = {k: ORSet.from_dict(v) for k, v in data.get("sets", {}).items()}
         ids = data.get("recent_event_ids", data.get("event_ids", []))
-        s.event_ids = list(ids)[-s.event_id_retention_limit :]
+        s.event_ids = (
+            list(ids)[-s.event_id_retention_limit :]
+            if s.event_id_retention_limit
+            else list(ids)
+        )
         s.delta_seq = int(data.get("delta_seq", 0) or 0)
         return s

@@ -32,6 +32,22 @@ class GCounter:
             "total_value": self.value,
         }
 
+    def last_delta(self):
+        """Minimal lattice join fragment: only this node's current count.
+
+        Per Almeida et al., a delta mutator for a G-Counter increment
+        produces only the updated slot for the mutating node. Merging
+        this single-slot dict into a peer's counter via max-per-node
+        advances the peer without transferring all other node slots.
+        """
+        return {
+            "type": "gcounter",
+            "node_id": self.node_id,
+            "description": self.description,
+            "counts": {self.node_id: self.counts.get(self.node_id, 0)},
+            "total_value": self.counts.get(self.node_id, 0),
+        }
+
     @classmethod
     def from_dict(cls, data):
         c = cls(data["node_id"], description=data.get("description", ""))

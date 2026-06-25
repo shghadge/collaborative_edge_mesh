@@ -28,28 +28,7 @@ class GatewayService:
         self.running = False
         self.node_health = {}
         self.relay_observations = {}
-        self.runtime_metrics = {
-            "polls_started": 0,
-            "polls_completed": 0,
-            "polls_failed": 0,
-            "total_http_requests": 0,
-            "total_http_success": 0,
-            "total_http_failures": 0,
-            "http_retries": 0,
-            "state_merges_successful": 0,
-            "state_merges_failed": 0,
-            "stale_state_skips": 0,
-            "consecutive_divergent_polls": 0,
-            "divergence_started_at": None,
-            "divergence_duration_seconds": 0.0,
-            "total_convergence_events": 0,
-            "last_convergence_seconds": None,
-            "last_poll_duration_ms": 0.0,
-            "last_merge_duration_ms": 0.0,
-            "last_reachable_nodes": 0,
-            "relay_reports_received": 0,
-            "relay_observations_accepted": 0,
-        }
+        self.runtime_metrics = self._new_runtime_metrics()
 
         self.visibility_freshness_seconds = max(
             config.gateway_visibility_freshness_seconds,
@@ -71,6 +50,31 @@ class GatewayService:
                 "last_version": None,
             }
             self._ensure_node_health(node_id)
+
+    @staticmethod
+    def _new_runtime_metrics():
+        return {
+            "polls_started": 0,
+            "polls_completed": 0,
+            "polls_failed": 0,
+            "total_http_requests": 0,
+            "total_http_success": 0,
+            "total_http_failures": 0,
+            "http_retries": 0,
+            "state_merges_successful": 0,
+            "state_merges_failed": 0,
+            "stale_state_skips": 0,
+            "consecutive_divergent_polls": 0,
+            "divergence_started_at": None,
+            "divergence_duration_seconds": 0.0,
+            "total_convergence_events": 0,
+            "last_convergence_seconds": None,
+            "last_poll_duration_ms": 0.0,
+            "last_merge_duration_ms": 0.0,
+            "last_reachable_nodes": 0,
+            "relay_reports_received": 0,
+            "relay_observations_accepted": 0,
+        }
 
     def register_node(self, node_id, url):
         """Register a new edge node (used by Docker manager when creating nodes)."""
@@ -119,6 +123,21 @@ class GatewayService:
             total=len(self.edge_nodes),
             removed=removed,
         )
+
+    def reset_runtime(self):
+        """Clear scenario-scoped gateway state while preserving registered nodes."""
+        self.merged_state = None
+        self.is_divergent = False
+        self.last_poll = None
+        self.poll_count = 0
+        self.relay_observations.clear()
+        self.runtime_metrics = self._new_runtime_metrics()
+        for info in self.edge_nodes.values():
+            info["last_merkle"] = None
+            info["last_version"] = None
+        self.node_health = {}
+        for node_id in self.edge_nodes:
+            self._ensure_node_health(node_id)
 
     def _ensure_node_health(self, node_id):
         if node_id not in self.node_health:

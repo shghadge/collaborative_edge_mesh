@@ -16,6 +16,10 @@ class HashChainLog:
         self.data_dir = data_dir
         os.makedirs(data_dir, exist_ok=True)
 
+    def reset(self):
+        """Clear all in-memory hash-chain entries."""
+        self.entries.clear()
+
     def append(self, event_id, event_type, event_data):
         prev_hash = self.entries[-1]["hash"] if self.entries else "genesis"
 

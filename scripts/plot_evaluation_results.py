@@ -39,6 +39,7 @@ COLORS = {
     "current_full_state_repair": "#2563eb",
     "growth_fixed_full_state_repair": "#16a34a",
     "growth_fixed_delta_repair": "#dc2626",
+    "growth_fixed_true_delta_repair": "#9333ea",
 }
 
 
@@ -141,11 +142,15 @@ def _write_comparison_changes(rows: list[dict], out_dir: Path) -> Path:
         "growth_avg_state_size_bytes",
         "growth_state_size_change_pct",
         "growth_sync_bytes_total",
-        "delta_sync_bytes_total",
-        "delta_sync_bytes_change_pct",
+        "key_delta_sync_bytes_total",
+        "key_delta_sync_bytes_change_pct",
+        "true_delta_sync_bytes_total",
+        "true_delta_sync_bytes_change_pct",
         "growth_bytes_per_accepted_event",
-        "delta_bytes_per_accepted_event",
-        "delta_bytes_per_event_change_pct",
+        "key_delta_bytes_per_accepted_event",
+        "key_delta_bytes_per_event_change_pct",
+        "true_delta_bytes_per_accepted_event",
+        "true_delta_bytes_per_event_change_pct",
     ]
 
     def pct(before: float | None, after: float | None) -> str:
@@ -159,13 +164,16 @@ def _write_comparison_changes(rows: list[dict], out_dir: Path) -> Path:
         for key, implementations in sorted(by_key.items()):
             current = implementations.get("current_full_state_repair", {})
             growth = implementations.get("growth_fixed_full_state_repair", {})
-            delta = implementations.get("growth_fixed_delta_repair", {})
+            key_delta = implementations.get("growth_fixed_delta_repair", {})
+            true_delta = implementations.get("growth_fixed_true_delta_repair", {})
             current_state = _float(current, "avg_state_size_bytes")
             growth_state = _float(growth, "avg_state_size_bytes")
             growth_sync = _float(growth, "sync_bytes_total")
-            delta_sync = _float(delta, "sync_bytes_total")
+            key_delta_sync = _float(key_delta, "sync_bytes_total")
+            true_delta_sync = _float(true_delta, "sync_bytes_total")
             growth_bpe = _float(growth, "bytes_per_accepted_event")
-            delta_bpe = _float(delta, "bytes_per_accepted_event")
+            key_delta_bpe = _float(key_delta, "bytes_per_accepted_event")
+            true_delta_bpe = _float(true_delta, "bytes_per_accepted_event")
             writer.writerow(
                 {
                     "scenario": key[0],
@@ -175,11 +183,21 @@ def _write_comparison_changes(rows: list[dict], out_dir: Path) -> Path:
                     "growth_avg_state_size_bytes": growth_state or "",
                     "growth_state_size_change_pct": pct(current_state, growth_state),
                     "growth_sync_bytes_total": growth_sync or "",
-                    "delta_sync_bytes_total": delta_sync or "",
-                    "delta_sync_bytes_change_pct": pct(growth_sync, delta_sync),
+                    "key_delta_sync_bytes_total": key_delta_sync or "",
+                    "key_delta_sync_bytes_change_pct": pct(growth_sync, key_delta_sync),
+                    "true_delta_sync_bytes_total": true_delta_sync or "",
+                    "true_delta_sync_bytes_change_pct": pct(
+                        growth_sync, true_delta_sync
+                    ),
                     "growth_bytes_per_accepted_event": growth_bpe or "",
-                    "delta_bytes_per_accepted_event": delta_bpe or "",
-                    "delta_bytes_per_event_change_pct": pct(growth_bpe, delta_bpe),
+                    "key_delta_bytes_per_accepted_event": key_delta_bpe or "",
+                    "key_delta_bytes_per_event_change_pct": pct(
+                        growth_bpe, key_delta_bpe
+                    ),
+                    "true_delta_bytes_per_accepted_event": true_delta_bpe or "",
+                    "true_delta_bytes_per_event_change_pct": pct(
+                        growth_bpe, true_delta_bpe
+                    ),
                 }
             )
     return path

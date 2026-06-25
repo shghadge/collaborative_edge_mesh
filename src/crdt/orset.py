@@ -22,47 +22,60 @@ class ORSet:
       - remove("highway_101") → highway_101 is cleared
       - concurrent add + remove → add wins (road stays reported as blocked)
 
-    Internally: elements maps element -> set of unique tags.
+    Internally: elements maps element -> add tags, and removed maps
+    element -> observed add tags removed by this replica. Merge is a
+    monotonic union of both maps; the visible value is adds minus removals.
     """
 
     def __init__(self, node_id, description=""):
         self.node_id = node_id
         self.description = description
-        # element -> { tag1, tag2, ... }
-        # an element is "in the set" if it has at least one tag
         self._elements = {}
+        self._removed = {}
+        self._last_delta = None
 
     @property
     def value(self):
         """Return the set of elements currently in the set."""
-        return {elem for elem, tags in self._elements.items() if tags}
+        active = set()
+        for elem, tags in self._elements.items():
+            if tags.difference(self._removed.get(elem, set())):
+                active.add(elem)
+        return active
 
     def add(self, element):
         """Add an element. Generates a unique tag for this add operation."""
         tag = f"{self.node_id}:{uuid.uuid4().hex[:12]}"
-        if element not in self._elements:
-            self._elements[element] = set()
-        self._elements[element].add(tag)
+        self._elements.setdefault(element, set()).add(tag)
+        self._last_delta = {
+            "elements": {element: {tag}},
+            "removed": {},
+        }
 
     def remove(self, element):
-        """Remove an element by clearing all *observed* tags.
+        """Remove an element by tombstoning all *observed* tags.
 
         If another node concurrently adds the same element, their tag
         won't be in our observed set, so the element survives (add-wins).
         """
-        if element in self._elements:
-            self._elements[element] = set()
+        observed = set(self._elements.get(element, set()))
+        if observed:
+            self._removed.setdefault(element, set()).update(observed)
+        self._last_delta = {
+            "elements": {},
+            "removed": {element: observed} if observed else {},
+        }
 
     def lookup(self, element):
         """Check if an element is in the set."""
-        return bool(self._elements.get(element))
+        return element in self.value
 
     def merge(self, other):
-        """Merge another OR-Set. Union of all tags per element."""
+        """Merge another OR-Set. Union of add tags and remove tombstones."""
         for elem, tags in other._elements.items():
-            if elem not in self._elements:
-                self._elements[elem] = set()
-            self._elements[elem] = self._elements[elem].union(tags)
+            self._elements.setdefault(elem, set()).update(tags)
+        for elem, tags in other._removed.items():
+            self._removed.setdefault(elem, set()).update(tags)
 
     def to_dict(self):
         return {
@@ -70,11 +83,38 @@ class ORSet:
             "node_id": self.node_id,
             "description": self.description,
             "elements": {
-                elem: sorted(tags)
-                for elem, tags in self._elements.items()
-                if tags  # only include elements that are actually present
+                elem: sorted(tags) for elem, tags in self._elements.items() if tags
+            },
+            "removed_elements": {
+                elem: sorted(tags) for elem, tags in self._removed.items() if tags
             },
             "active_elements": sorted(self.value),
+        }
+
+    def last_delta(self):
+        """Minimal lattice join fragment for the most recent OR-Set mutation."""
+        if self._last_delta is None:
+            return self.to_dict()
+        elements = {
+            elem: sorted(tags)
+            for elem, tags in self._last_delta["elements"].items()
+            if tags
+        }
+        removed = {
+            elem: sorted(tags)
+            for elem, tags in self._last_delta["removed"].items()
+            if tags
+        }
+        fragment = ORSet(self.node_id, self.description)
+        fragment._elements = {elem: set(tags) for elem, tags in elements.items()}
+        fragment._removed = {elem: set(tags) for elem, tags in removed.items()}
+        return {
+            "type": "or_set",
+            "node_id": self.node_id,
+            "description": self.description,
+            "elements": elements,
+            "removed_elements": removed,
+            "active_elements": sorted(fragment.value),
         }
 
     @classmethod
@@ -82,5 +122,8 @@ class ORSet:
         s = cls(data["node_id"], description=data.get("description", ""))
         s._elements = {
             elem: set(tags) for elem, tags in data.get("elements", {}).items()
+        }
+        s._removed = {
+            elem: set(tags) for elem, tags in data.get("removed_elements", {}).items()
         }
         return s

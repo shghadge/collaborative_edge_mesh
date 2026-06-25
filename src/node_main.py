@@ -2,6 +2,8 @@
 Edge node entry point. Starts the HTTP intake, UDP gossip, and mDNS discovery services.
 """
 
+from datetime import datetime
+
 import asyncio
 import logging
 import signal
@@ -33,7 +35,7 @@ log = structlog.get_logger()
 
 
 async def main():
-    state = NodeState(config.node_id)
+    state = NodeState(config.node_id, config.event_id_retention_limit)
     chain = HashChainLog(config.node_id, f"{config.data_dir}/logs")
     intake = IntakeService(config, state, chain)
 
@@ -64,6 +66,19 @@ async def main():
     @intake.app.get("/state/deltas")
     async def state_deltas(since: int = 0):
         return state.get_deltas_since(since)
+
+    @intake.app.post("/evaluation/reset")
+    async def evaluation_reset():
+        state.reset()
+        chain.reset()
+        gossip.reset_runtime()
+        intake.start_time = datetime.utcnow()
+        return {
+            "status": "reset",
+            "node_id": config.node_id,
+            "merkle_root": state.merkle_root(),
+            "delta_seq": state.delta_seq,
+        }
 
     @intake.app.get("/peers")
     async def discovered_peers():

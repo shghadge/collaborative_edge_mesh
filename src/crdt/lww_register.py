@@ -51,6 +51,14 @@ class LWWRegister:
             "writer_id": self._writer_id,
         }
 
+    def last_delta(self):
+        """Minimal delta for an LWW-Register is the full register state.
+
+        A register holds exactly one value, so the delta and the full
+        state are identical. Included for interface consistency.
+        """
+        return self.to_dict()
+
     @classmethod
     def from_dict(cls, data):
         r = cls(data["node_id"], description=data.get("description", ""))

@@ -128,6 +128,15 @@ async def gateway_runtime_metrics():
     return gateway.get_runtime_metrics()
 
 
+@app.post("/gateway/evaluation/reset")
+async def gateway_evaluation_reset():
+    gateway.reset_runtime()
+    return {
+        "status": "reset",
+        "registered_node_count": len(gateway.edge_nodes),
+    }
+
+
 @app.post("/gateway/nodes/register")
 async def register_gateway_node(node: GatewayNode):
     gateway.register_node(node.node_id, node.url)

@@ -9,6 +9,11 @@ class Config:
         self.http_port = int(os.getenv("HTTP_PORT", "8000"))
         self.gossip_port = int(os.getenv("GOSSIP_PORT", "9000"))
         self.gossip_interval = float(os.getenv("GOSSIP_INTERVAL", "5"))
+        self.sync_mode = os.getenv("SYNC_MODE", "full_state").strip().lower()
+        if self.sync_mode not in {"full_state", "true_delta"}:
+            self.sync_mode = "full_state"
+        retention_limit = int(os.getenv("EVENT_ID_RETENTION_LIMIT", "100"))
+        self.event_id_retention_limit = retention_limit if retention_limit > 0 else None
         self.gateway_poll_interval = float(os.getenv("GATEWAY_POLL_INTERVAL", "10"))
         self.data_dir = os.getenv("DATA_DIR", "/data")
         self.log_level = os.getenv("LOG_LEVEL", "INFO")

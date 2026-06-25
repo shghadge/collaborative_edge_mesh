@@ -40,7 +40,12 @@ class GossipService:
         self.sock = None
         self.peer_observations = {}
         self._last_repair_pull_at = {}
-        self.stats = {
+        self.stats = self._new_stats()
+        self.peer_delta_seq = {}
+
+    @staticmethod
+    def _new_stats():
+        return {
             "sent": 0,
             "received": 0,
             "merged": 0,
@@ -71,7 +76,6 @@ class GossipService:
             "delta_bytes_received": 0,
             "delta_deltas_applied": 0,
         }
-        self.peer_delta_seq = {}
 
     async def start(self):
         self.running = True
@@ -234,7 +238,10 @@ class GossipService:
 
             if remote_root != self.state.merkle_root():
                 self.stats["merkle_mismatches"] += 1
-                await self._maybe_pull_delta_from_sender(addr, message)
+                if self.config.sync_mode == "true_delta":
+                    await self._maybe_pull_delta_from_sender(addr, message)
+                else:
+                    await self._maybe_pull_state_from_sender(addr, message)
 
             return
 
@@ -285,7 +292,10 @@ class GossipService:
                     theirs=remote_root[:12],
                     their_event_count=message.get("event_count"),
                 )
-                await self._maybe_pull_state_from_sender(addr, message)
+                if self.config.sync_mode == "true_delta":
+                    await self._maybe_pull_delta_from_sender(addr, message)
+                else:
+                    await self._maybe_pull_state_from_sender(addr, message)
 
     async def _maybe_pull_delta_from_sender(self, addr, message):
         host = addr[0] if addr else None
@@ -397,6 +407,13 @@ class GossipService:
     def _parse_peer(self, peer):
         parts = peer.rsplit(":", 1)
         return parts[0], int(parts[1]) if len(parts) > 1 else 9000
+
+    def reset_runtime(self):
+        """Clear scenario-scoped gossip observations and counters."""
+        self.peer_observations.clear()
+        self._last_repair_pull_at.clear()
+        self.peer_delta_seq.clear()
+        self.stats = self._new_stats()
 
     def get_stats(self):
         stats = dict(self.stats)

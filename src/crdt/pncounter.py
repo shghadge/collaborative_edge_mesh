@@ -56,6 +56,23 @@ class PNCounter:
             "total_value": self.value,
         }
 
+    def last_delta(self):
+        """Minimal lattice join fragment for a PN-Counter mutation.
+
+        Returns only the local node's slot from both the positive and
+        negative internal G-Counters. A peer merging this delta updates
+        only the mutating node's contribution without receiving every
+        other node's counts.
+        """
+        return {
+            "type": "pn_counter",
+            "node_id": self.node_id,
+            "description": self.description,
+            "positive": self._p.last_delta(),
+            "negative": self._n.last_delta(),
+            "total_value": self.value,
+        }
+
     @classmethod
     def from_dict(cls, data):
         c = cls(data["node_id"], description=data.get("description", ""))

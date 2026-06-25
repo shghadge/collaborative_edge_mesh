@@ -45,6 +45,17 @@ def _text_request(url: str, timeout: int = 30) -> str:
         return response.read().decode("utf-8")
 
 
+def _wait_for_api(base_url: str, timeout_seconds: float = 30.0) -> bool:
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        try:
+            _json_request("GET", f"{base_url}/evaluation/status", timeout=2)
+            return True
+        except (HTTPError, URLError, TimeoutError, OSError):
+            time.sleep(0.5)
+    return False
+
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -55,7 +66,9 @@ def main() -> int:
     )
     parser.add_argument("--base-url", default="http://localhost:8000")
     parser.add_argument("--implementation-label", required=True)
-    parser.add_argument("--sync-mode", required=True)
+    parser.add_argument(
+        "--sync-mode", choices=["full_state", "true_delta"], required=True
+    )
     parser.add_argument("--state-growth-fix", choices=["true", "false"], required=True)
     parser.add_argument("--node-counts", default="5,10,15")
     parser.add_argument("--events-per-node", type=int, default=15)
@@ -63,6 +76,7 @@ def main() -> int:
     parser.add_argument("--convergence-wait-seconds", type=float, default=25)
     parser.add_argument("--partition-wait-seconds", type=float, default=8)
     parser.add_argument("--poll-interval-seconds", type=float, default=2)
+    parser.add_argument("--event-concurrency", type=int, default=25)
     parser.add_argument("--network-profile", default="hard_partition")
     parser.add_argument(
         "--dashboard-observability", default="light", choices=["off", "light", "full"]
@@ -71,6 +85,10 @@ def main() -> int:
     args = parser.parse_args()
 
     base_url = args.base_url.rstrip("/")
+    if not _wait_for_api(base_url):
+        print("evaluation API did not become ready", file=sys.stderr)
+        return 1
+
     node_counts = _csv_list_int(args.node_counts)
     partition_splits = _csv_list_float(args.partition_splits)
     state_growth_fix = _bool_arg(args.state_growth_fix)
@@ -81,6 +99,7 @@ def main() -> int:
         "convergence_wait_seconds": args.convergence_wait_seconds,
         "partition_wait_seconds": args.partition_wait_seconds,
         "poll_interval_seconds": args.poll_interval_seconds,
+        "event_concurrency": args.event_concurrency,
         "implementation_label": args.implementation_label,
         "sync_mode": args.sync_mode,
         "state_growth_fix": state_growth_fix,
@@ -127,6 +146,7 @@ def main() -> int:
         "convergence_wait_seconds": args.convergence_wait_seconds,
         "partition_wait_seconds": args.partition_wait_seconds,
         "poll_interval_seconds": args.poll_interval_seconds,
+        "event_concurrency": args.event_concurrency,
         "network_profile": args.network_profile,
         "started_at": started_at,
         "finished_at": finished_at,

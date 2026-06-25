@@ -1,7 +1,13 @@
-.PHONY: build format format-check docker-clean docker-rebuild
+.PHONY: quick smoke build format format-check docker-clean docker-rebuild
 
 UV ?= uv
 RUFF ?= $(UV) run ruff
+
+quick:
+	@$(UV) run python scripts/run_quick_checks.py
+
+smoke:
+	@$(UV) run python scripts/run_evaluation_smoke.py --sync-mode true_delta
 
 build:
 	@docker compose build
