@@ -17,6 +17,7 @@ log = structlog.get_logger()
 NETWORK_PROFILES = {"hard_partition", "degraded_300ms_10loss"}
 OBSERVABILITY_MODES = {"off", "light", "full"}
 SYNC_MODES = {"full_state", "true_delta"}
+SCENARIOS = {"baseline", "partition_heal", "high_load"}
 DEFAULT_EVENT_ID_RETENTION_LIMIT = 100
 
 CSV_HEADER = [
@@ -76,11 +77,14 @@ class EvalScenarioConfig(BaseModel):
     event_id_retention_limit: int = DEFAULT_EVENT_ID_RETENTION_LIMIT
     network_profile: str = "hard_partition"
     scenario_seed: int | None = None
-    dashboard_observability: str = "light"
+    dashboard_observability: str = "off"
     event_concurrency: int = Field(default=25)
     docker_cpus: float | None = None
     docker_memory: str | None = None
     repetitions: int = Field(default=1, ge=1)
+    scenarios: list[str] = Field(default=["baseline", "partition_heal", "high_load"])
+    warm_topology: bool = True
+    node_readiness_timeout_seconds: float = Field(default=30.0, ge=1.0)
 
     def implementation_label(self) -> str:
         retention = (
@@ -99,7 +103,7 @@ class EvalScenarioConfig(BaseModel):
 
 
 def initial_eval_state() -> dict[str, Any]:
-    return {
+    state = {
         "running": False,
         "run_id": None,
         "started_at": None,
@@ -109,6 +113,21 @@ def initial_eval_state() -> dict[str, Any]:
         "results": [],
         "error": None,
         "csv_data": None,
+    }
+    state.update(_progress_defaults())
+    return state
+
+
+def _progress_defaults() -> dict[str, Any]:
+    return {
+        "completed_steps": 0,
+        "steps_remaining": 0,
+        "current_repetition": None,
+        "total_repetitions": 0,
+        "repetitions_remaining": 0,
+        "current_node_count": None,
+        "current_scenario": None,
+        "current_partition_split": None,
     }
 
 
@@ -140,12 +159,37 @@ class EvaluationRunner:
             raise ValueError("event_id_retention_limit must be zero or greater")
         if cfg.repetitions < 1:
             raise ValueError("repetitions must be at least 1")
+        unknown_scenarios = sorted(set(cfg.scenarios) - SCENARIOS)
+        if unknown_scenarios:
+            raise ValueError(
+                "scenarios must contain only baseline, partition_heal, or high_load"
+            )
+        if self._scenario_step_count(cfg) == 0:
+            raise ValueError("selected scenarios produce no evaluation steps")
+
+    def _enabled_scenarios(self, cfg: EvalScenarioConfig) -> set[str]:
+        return set(cfg.scenarios)
+
+    def _active_partition_splits(self, cfg: EvalScenarioConfig) -> list[float]:
+        if (
+            cfg.network_profile == "hard_partition"
+            and "partition_heal" in self._enabled_scenarios(cfg)
+        ):
+            return cfg.partition_splits
+        return []
+
+    def _scenario_step_count(self, cfg: EvalScenarioConfig) -> int:
+        scenarios = self._enabled_scenarios(cfg)
+        count = 0
+        if "baseline" in scenarios:
+            count += 1
+        if "high_load" in scenarios:
+            count += 1
+        count += len(self._active_partition_splits(cfg))
+        return count
 
     def planned_steps(self, cfg: EvalScenarioConfig) -> int:
-        partition_splits = (
-            cfg.partition_splits if cfg.network_profile == "hard_partition" else []
-        )
-        return cfg.repetitions * len(cfg.node_counts) * (2 + len(partition_splits))
+        return cfg.repetitions * len(cfg.node_counts) * self._scenario_step_count(cfg)
 
     def status(self) -> dict[str, Any]:
         return {
@@ -153,12 +197,44 @@ class EvaluationRunner:
             "run_id": self.state["run_id"],
             "started_at": self.state["started_at"],
             "progress": self.state["progress"],
+            "completed_steps": self.state["completed_steps"],
             "total_steps": self.state["total_steps"],
+            "steps_remaining": self.state["steps_remaining"],
             "current_step": self.state["current_step"],
+            "current_repetition": self.state["current_repetition"],
+            "total_repetitions": self.state["total_repetitions"],
+            "repetitions_remaining": self.state["repetitions_remaining"],
+            "current_node_count": self.state["current_node_count"],
+            "current_scenario": self.state["current_scenario"],
+            "current_partition_split": self.state["current_partition_split"],
             "error": self.state["error"],
             "results_count": len(self.state["results"]),
             "has_csv": self.state["csv_data"] is not None,
         }
+
+    def _set_progress(
+        self,
+        *,
+        current_step: str,
+        completed_steps: int,
+        cfg: EvalScenarioConfig,
+        repetition: int,
+        node_count: int,
+        scenario: str,
+        partition_split: str | None = None,
+    ) -> None:
+        self.state["current_step"] = current_step
+        self.state["progress"] = completed_steps
+        self.state["completed_steps"] = completed_steps
+        self.state["steps_remaining"] = max(
+            self.state["total_steps"] - completed_steps, 0
+        )
+        self.state["current_repetition"] = repetition
+        self.state["total_repetitions"] = cfg.repetitions
+        self.state["repetitions_remaining"] = max(cfg.repetitions - repetition, 0)
+        self.state["current_node_count"] = node_count
+        self.state["current_scenario"] = scenario
+        self.state["current_partition_split"] = partition_split
 
     async def send_events(
         self,
@@ -521,36 +597,77 @@ class EvaluationRunner:
                 return metrics
             await asyncio.sleep(cfg.poll_interval_seconds)
 
-    async def recreate_nodes(self, node_count: int, cfg: EvalScenarioConfig):
+    async def wait_for_nodes_ready(self, session, nodes, timeout_seconds: float):
+        pending = {
+            node["node_id"]: self.candidate_urls(
+                node.get("internal_url"),
+                node.get("url"),
+                node.get("external_url"),
+            )
+            for node in nodes
+        }
+        deadline = time.time() + timeout_seconds
+
+        async def _probe(node_id, urls):
+            for base_url in urls:
+                try:
+                    async with session.get(f"{base_url}/health") as response:
+                        if response.status < 400:
+                            return node_id
+                except Exception:
+                    continue
+            return None
+
+        while pending and time.time() < deadline:
+            probes = [_probe(node_id, urls) for node_id, urls in pending.items()]
+            for ready_node_id in await asyncio.gather(*probes):
+                if ready_node_id:
+                    pending.pop(ready_node_id, None)
+            if pending:
+                await asyncio.sleep(0.25)
+
+        if pending:
+            missing = ", ".join(sorted(pending))
+            raise RuntimeError(f"nodes did not become ready: {missing}")
+
+    async def recreate_nodes(self, session, node_count: int, cfg: EvalScenarioConfig):
         if hasattr(self.docker_mgr, "clear_netem"):
             try:
                 await asyncio.to_thread(self.docker_mgr.clear_netem)
             except Exception:
                 pass
         existing = await asyncio.to_thread(self.docker_mgr.list_nodes)
-        for node in existing:
-            try:
-                await asyncio.to_thread(self.docker_mgr.remove_node, node["node_id"])
-            except Exception:
-                pass
-        await asyncio.sleep(2)
-        for _ in range(node_count):
-            try:
-                await asyncio.to_thread(
-                    self.docker_mgr.create_node,
-                    sync_mode=cfg.sync_mode,
-                    event_id_retention_limit=cfg.event_id_retention_limit,
-                    observability_mode=cfg.dashboard_observability,
-                    cpu_limit=cfg.docker_cpus,
-                    memory_limit=cfg.docker_memory,
-                )
-            except Exception as error:
-                log.warning("eval_node_create_failed", error=str(error))
+        remove_tasks = [
+            asyncio.to_thread(self.docker_mgr.remove_node, node["node_id"])
+            for node in existing
+        ]
+        if remove_tasks:
+            await asyncio.gather(*remove_tasks, return_exceptions=True)
+
+        create_tasks = [
+            asyncio.to_thread(
+                self.docker_mgr.create_node,
+                node_id=f"node-{index + 1}",
+                sync_mode=cfg.sync_mode,
+                event_id_retention_limit=cfg.event_id_retention_limit,
+                observability_mode=cfg.dashboard_observability,
+                cpu_limit=cfg.docker_cpus,
+                memory_limit=cfg.docker_memory,
+            )
+            for index in range(node_count)
+        ]
+        for result in await asyncio.gather(*create_tasks, return_exceptions=True):
+            if isinstance(result, Exception):
+                log.warning("eval_node_create_failed", error=str(result))
+
+        nodes = await asyncio.to_thread(self.docker_mgr.list_nodes)
+        if len(nodes) < node_count:
+            raise RuntimeError(f"expected {node_count} nodes, found {len(nodes)}")
+        await self.wait_for_nodes_ready(
+            session, nodes, cfg.node_readiness_timeout_seconds
+        )
         await self.sync_gateways_with_nodes(force=True)
-        await asyncio.sleep(3)
-        return await asyncio.to_thread(
-            self.docker_mgr.list_nodes
-        ), await self.discover_gateways()
+        return nodes, await self.discover_gateways()
 
     async def reset_runtime(self, session, nodes, gateways):
         async def _post_first_available(urls, path):
@@ -635,11 +752,13 @@ class EvaluationRunner:
         self.state["results"] = []
         self.state["error"] = None
         self.state["csv_data"] = None
+        self.state.update(_progress_defaults())
 
-        partition_splits = (
-            cfg.partition_splits if cfg.network_profile == "hard_partition" else []
-        )
+        scenarios = self._enabled_scenarios(cfg)
+        partition_splits = self._active_partition_splits(cfg)
         self.state["total_steps"] = self.planned_steps(cfg)
+        self.state["steps_remaining"] = self.state["total_steps"]
+        self.state["total_repetitions"] = cfg.repetitions
         step = 0
 
         async def _prepare_scenario(session, nodes, gateways):
@@ -652,6 +771,9 @@ class EvaluationRunner:
                     await asyncio.to_thread(self.docker_mgr.clear_netem)
                 except Exception:
                     pass
+            await self.wait_for_nodes_ready(
+                session, nodes, cfg.node_readiness_timeout_seconds
+            )
             await self.reset_runtime(session, nodes, gateways)
             if cfg.network_profile != "hard_partition" and hasattr(
                 self.docker_mgr, "apply_netem_profile"
@@ -661,7 +783,7 @@ class EvaluationRunner:
                 )
             return nodes, gateways
 
-        async def _finish_scenario():
+        async def _finish_scenario(session, nodes):
             try:
                 await asyncio.to_thread(self.docker_mgr.heal_all)
             except Exception:
@@ -671,59 +793,89 @@ class EvaluationRunner:
                     await asyncio.to_thread(self.docker_mgr.clear_netem)
                 except Exception:
                     pass
+            await self.wait_for_nodes_ready(
+                session, nodes, cfg.node_readiness_timeout_seconds
+            )
 
         try:
             timeout = aiohttp.ClientTimeout(total=30)
-            for repetition in range(1, cfg.repetitions + 1):
+            async with aiohttp.ClientSession(timeout=timeout) as session:
                 for node_count in cfg.node_counts:
-                    async with aiohttp.ClientSession(timeout=timeout) as session:
-                        nodes, gateways = await self.recreate_nodes(node_count, cfg)
-                        self.state["current_step"] = (
-                            f"[rep {repetition}/{cfg.repetitions}] "
-                            f"[{node_count}N] Baseline"
+                    warm_nodes = None
+                    warm_gateways = None
+                    if cfg.warm_topology:
+                        warm_nodes, warm_gateways = await self.recreate_nodes(
+                            session, node_count, cfg
                         )
-                        self.state["progress"] = step
-                        nodes, gateways = await _prepare_scenario(
-                            session, nodes, gateways
-                        )
-                        baseline_events = await self.send_events(
-                            session,
-                            nodes,
-                            cfg.events_per_node,
-                            concurrency=cfg.event_concurrency,
-                            rng=rng,
-                        )
-                        metrics = await self.wait_for_metrics(
-                            session,
-                            nodes,
-                            gateways,
-                            cfg,
-                            baseline_events["accepted"],
-                            tracking_ids=baseline_events["tracking_ids"],
-                        )
-                        self._append_result(
-                            self._row_base(
+
+                    for repetition in range(1, cfg.repetitions + 1):
+                        if cfg.warm_topology:
+                            nodes, gateways = warm_nodes, warm_gateways
+                        else:
+                            nodes, gateways = await self.recreate_nodes(
+                                session, node_count, cfg
+                            )
+
+                        if "baseline" in scenarios:
+                            self._set_progress(
+                                current_step=(
+                                    f"[rep {repetition}/{cfg.repetitions}] "
+                                    f"[{node_count}N] Baseline"
+                                ),
+                                completed_steps=step,
+                                cfg=cfg,
+                                repetition=repetition,
+                                node_count=node_count,
+                                scenario="baseline",
+                            )
+                            nodes, gateways = await _prepare_scenario(
+                                session, nodes, gateways
+                            )
+                            baseline_events = await self.send_events(
+                                session,
+                                nodes,
+                                cfg.events_per_node,
+                                concurrency=cfg.event_concurrency,
+                                rng=rng,
+                            )
+                            metrics = await self.wait_for_metrics(
+                                session,
+                                nodes,
+                                gateways,
                                 cfg,
-                                run_id,
-                                repetition,
-                                "baseline",
-                                node_count,
-                                baseline_events,
-                            ),
-                            metrics,
-                        )
-                        await _finish_scenario()
-                        step += 1
+                                baseline_events["accepted"],
+                                tracking_ids=baseline_events["tracking_ids"],
+                            )
+                            self._append_result(
+                                self._row_base(
+                                    cfg,
+                                    run_id,
+                                    repetition,
+                                    "baseline",
+                                    node_count,
+                                    baseline_events,
+                                ),
+                                metrics,
+                            )
+                            await _finish_scenario(session, nodes)
+                            step += 1
 
                         for split in partition_splits:
                             split_label = (
                                 f"{round(split * 100)}/{round((1 - split) * 100)}"
                             )
-                            self.state["current_step"] = (
-                                f"[rep {repetition}/{cfg.repetitions}] "
-                                f"[{node_count}N] Partition {split_label}"
+                            self._set_progress(
+                                current_step=(
+                                    f"[rep {repetition}/{cfg.repetitions}] "
+                                    f"[{node_count}N] Partition {split_label}"
+                                ),
+                                completed_steps=step,
+                                cfg=cfg,
+                                repetition=repetition,
+                                node_count=node_count,
+                                scenario="partition_heal",
+                                partition_split=split_label,
                             )
-                            self.state["progress"] = step
                             nodes, gateways = await _prepare_scenario(
                                 session, nodes, gateways
                             )
@@ -741,7 +893,6 @@ class EvaluationRunner:
                                 )
                             except Exception:
                                 pass
-                            await asyncio.sleep(1)
                             partition_events = await self.send_events(
                                 session,
                                 nodes,
@@ -754,7 +905,9 @@ class EvaluationRunner:
                                 await asyncio.to_thread(self.docker_mgr.heal_all)
                             except Exception:
                                 pass
-                            await asyncio.sleep(2)
+                            await self.wait_for_nodes_ready(
+                                session, nodes, cfg.node_readiness_timeout_seconds
+                            )
                             combined_events = {
                                 "attempted": pre_events["attempted"]
                                 + partition_events["attempted"],
@@ -784,49 +937,58 @@ class EvaluationRunner:
                                 ),
                                 metrics,
                             )
-                            await _finish_scenario()
+                            await _finish_scenario(session, nodes)
                             step += 1
 
-                        self.state["current_step"] = (
-                            f"[rep {repetition}/{cfg.repetitions}] "
-                            f"[{node_count}N] High load"
-                        )
-                        self.state["progress"] = step
-                        nodes, gateways = await _prepare_scenario(
-                            session, nodes, gateways
-                        )
-                        heavy_events = await self.send_events(
-                            session,
-                            nodes,
-                            cfg.events_per_node * 3,
-                            category="resource",
-                            concurrency=cfg.event_concurrency,
-                            rng=rng,
-                        )
-                        metrics = await self.wait_for_metrics(
-                            session,
-                            nodes,
-                            gateways,
-                            cfg,
-                            heavy_events["accepted"],
-                            tracking_ids=heavy_events["tracking_ids"],
-                        )
-                        self._append_result(
-                            self._row_base(
+                        if "high_load" in scenarios:
+                            self._set_progress(
+                                current_step=(
+                                    f"[rep {repetition}/{cfg.repetitions}] "
+                                    f"[{node_count}N] High load"
+                                ),
+                                completed_steps=step,
+                                cfg=cfg,
+                                repetition=repetition,
+                                node_count=node_count,
+                                scenario="high_load",
+                            )
+                            nodes, gateways = await _prepare_scenario(
+                                session, nodes, gateways
+                            )
+                            heavy_events = await self.send_events(
+                                session,
+                                nodes,
+                                cfg.events_per_node * 3,
+                                category="resource",
+                                concurrency=cfg.event_concurrency,
+                                rng=rng,
+                            )
+                            metrics = await self.wait_for_metrics(
+                                session,
+                                nodes,
+                                gateways,
                                 cfg,
-                                run_id,
-                                repetition,
-                                "high_load",
-                                node_count,
-                                heavy_events,
-                            ),
-                            metrics,
-                        )
-                        await _finish_scenario()
-                        step += 1
+                                heavy_events["accepted"],
+                                tracking_ids=heavy_events["tracking_ids"],
+                            )
+                            self._append_result(
+                                self._row_base(
+                                    cfg,
+                                    run_id,
+                                    repetition,
+                                    "high_load",
+                                    node_count,
+                                    heavy_events,
+                                ),
+                                metrics,
+                            )
+                            await _finish_scenario(session, nodes)
+                            step += 1
 
             self.state["current_step"] = "Generating CSV..."
             self.state["progress"] = step
+            self.state["completed_steps"] = step
+            self.state["steps_remaining"] = 0
             output = io.StringIO()
             writer = csv.DictWriter(
                 output, fieldnames=CSV_HEADER, extrasaction="ignore"

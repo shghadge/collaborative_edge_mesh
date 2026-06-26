@@ -764,6 +764,7 @@ async def run_evaluation(cfg: EvalScenarioConfig = None):
         "node_counts": cfg.node_counts,
         "events_per_node": cfg.events_per_node,
         "repetitions": cfg.repetitions,
+        "scenarios": cfg.scenarios,
         "partition_splits": partition_splits,
         "implementation": cfg.implementation_label(),
         "sync_mode": cfg.sync_mode,
@@ -772,6 +773,8 @@ async def run_evaluation(cfg: EvalScenarioConfig = None):
         "dashboard_observability": cfg.dashboard_observability,
         "docker_cpus": cfg.docker_cpus,
         "docker_memory": cfg.docker_memory,
+        "warm_topology": cfg.warm_topology,
+        "node_readiness_timeout_seconds": cfg.node_readiness_timeout_seconds,
     }
 
 

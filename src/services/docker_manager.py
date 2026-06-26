@@ -525,6 +525,11 @@ class DockerManager:
     def remove_node(self, node_id):
         """Stop and remove a node container."""
         container_name = f"edge-node-{node_id.replace('node-', '')}"
+        node_number = self._node_number_from_name(container_name)
+        managed_info = self.managed_nodes.get(container_name, {})
+        host_port = managed_info.get("host_port") or self._host_port_for_node_name(
+            container_name
+        )
         self.invalidate_cache()
 
         try:
@@ -532,6 +537,10 @@ class DockerManager:
             container.stop(timeout=5)
             container.remove()
         except docker.errors.NotFound:
+            if node_number is not None:
+                self._reserved_nodes.discard(node_number)
+            if host_port is not None:
+                self._reserved_ports.discard(host_port)
             return self._action_response(
                 action="remove_node",
                 target=container_name,
@@ -541,6 +550,10 @@ class DockerManager:
 
         self.managed_nodes.pop(container_name, None)
         self.isolated_nodes.discard(container_name)
+        if node_number is not None:
+            self._reserved_nodes.discard(node_number)
+        if host_port is not None:
+            self._reserved_ports.discard(host_port)
         if self.gateway is not None:
             self.gateway.unregister_node(container_name)
         log.info("node_removed", node_id=node_id, container=container_name)

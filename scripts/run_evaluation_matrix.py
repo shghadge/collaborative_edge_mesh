@@ -17,6 +17,32 @@ def _csv_list_float(value: str) -> list[float]:
     return [float(part.strip()) for part in value.split(",") if part.strip()]
 
 
+def _csv_list_str(value: str) -> list[str]:
+    return [part.strip() for part in value.split(",") if part.strip()]
+
+
+def _manifest_matches(manifest: dict, expected: dict) -> bool:
+    return all(manifest.get(key) == value for key, value in expected.items())
+
+
+def _completed_run(out_dir: Path, expected: dict) -> tuple[Path, Path] | None:
+    if not out_dir.exists():
+        return None
+    for manifest_path in sorted(out_dir.glob("*.json"), reverse=True):
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not _manifest_matches(manifest, expected):
+            continue
+        csv_path = Path(manifest.get("csv_path", ""))
+        if not csv_path.is_absolute():
+            csv_path = Path.cwd() / csv_path
+        if csv_path.exists():
+            return csv_path, manifest_path
+    return None
+
+
 def _json_request(
     method: str, url: str, payload: dict | None = None, timeout: int = 30
 ):
@@ -34,6 +60,29 @@ def _json_request(
 def _text_request(url: str, timeout: int = 30) -> str:
     with urlopen(url, timeout=timeout) as response:
         return response.read().decode("utf-8")
+
+
+def _status_line(status: dict) -> str:
+    completed = status.get("completed_steps", status.get("progress", 0))
+    total = status.get("total_steps", 0)
+    if not total:
+        return status.get("current_step") or "Starting evaluation"
+
+    remaining = status.get("steps_remaining")
+    current = status.get("current_step") or "Starting"
+    repetition = status.get("current_repetition")
+    total_repetitions = status.get("total_repetitions")
+    repetitions_remaining = status.get("repetitions_remaining")
+    parts = [f"{completed}/{total} scenario runs"]
+    if remaining is not None:
+        parts.append(f"{remaining} remaining")
+    if repetition and total_repetitions:
+        parts.append(
+            f"rep {repetition}/{total_repetitions} "
+            f"({repetitions_remaining} reps after current)"
+        )
+    parts.append(current)
+    return " | ".join(parts)
 
 
 def _wait_for_api(base_url: str, timeout_seconds: float = 30.0) -> bool:
@@ -64,6 +113,7 @@ def main() -> int:
     parser.add_argument("--events-per-node", type=int, default=15)
     parser.add_argument("--repetitions", type=int, default=1)
     parser.add_argument("--partition-splits", default="0.5,0.7,0.8")
+    parser.add_argument("--scenarios", default="baseline,partition_heal,high_load")
     parser.add_argument("--convergence-wait-seconds", type=float, default=25)
     parser.add_argument("--partition-wait-seconds", type=float, default=8)
     parser.add_argument("--poll-interval-seconds", type=float, default=2)
@@ -72,18 +122,32 @@ def main() -> int:
     parser.add_argument("--docker-cpus", type=float)
     parser.add_argument("--docker-memory")
     parser.add_argument(
-        "--dashboard-observability", default="light", choices=["off", "light", "full"]
+        "--dashboard-observability", default="off", choices=["off", "light", "full"]
+    )
+    parser.add_argument(
+        "--cold-topology",
+        action="store_true",
+        help="Recreate containers for every repetition instead of reusing topology.",
+    )
+    parser.add_argument("--node-readiness-timeout-seconds", type=float, default=30.0)
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Skip the run if an exact completed manifest already exists.",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Run even when --resume finds a completed matching manifest.",
     )
     parser.add_argument("--out", default="results/evaluation")
     args = parser.parse_args()
 
     base_url = args.base_url.rstrip("/")
-    if not _wait_for_api(base_url):
-        print("evaluation API did not become ready", file=sys.stderr)
-        return 1
-
     node_counts = _csv_list_int(args.node_counts)
     partition_splits = _csv_list_float(args.partition_splits)
+    scenarios = _csv_list_str(args.scenarios)
+    warm_topology = not args.cold_topology
     implementation_label = (
         f"{args.sync_mode}_retention_{args.event_id_retention_limit}_"
         f"{args.network_profile}"
@@ -94,11 +158,46 @@ def main() -> int:
         )
     elif args.docker_memory:
         implementation_label += f"_mem_{args.docker_memory}"
+
+    expected_manifest = {
+        "implementation_label": implementation_label,
+        "sync_mode": args.sync_mode,
+        "event_id_retention_limit": args.event_id_retention_limit,
+        "node_counts": node_counts,
+        "events_per_node": args.events_per_node,
+        "partition_splits": partition_splits,
+        "repetitions": args.repetitions,
+        "scenarios": scenarios,
+        "convergence_wait_seconds": args.convergence_wait_seconds,
+        "partition_wait_seconds": args.partition_wait_seconds,
+        "poll_interval_seconds": args.poll_interval_seconds,
+        "event_concurrency": args.event_concurrency,
+        "network_profile": args.network_profile,
+        "docker_cpus": args.docker_cpus,
+        "docker_memory": args.docker_memory,
+        "dashboard_observability": args.dashboard_observability,
+        "warm_topology": warm_topology,
+        "node_readiness_timeout_seconds": args.node_readiness_timeout_seconds,
+    }
+    out_dir = Path(args.out) / implementation_label
+    if args.resume and not args.force:
+        completed = _completed_run(out_dir, expected_manifest)
+        if completed is not None:
+            csv_path, json_path = completed
+            print(csv_path)
+            print(json_path)
+            return 0
+
+    if not _wait_for_api(base_url):
+        print("evaluation API did not become ready", file=sys.stderr)
+        return 1
+
     payload = {
         "node_counts": node_counts,
         "events_per_node": args.events_per_node,
         "partition_splits": partition_splits,
         "repetitions": args.repetitions,
+        "scenarios": scenarios,
         "convergence_wait_seconds": args.convergence_wait_seconds,
         "partition_wait_seconds": args.partition_wait_seconds,
         "poll_interval_seconds": args.poll_interval_seconds,
@@ -109,18 +208,26 @@ def main() -> int:
         "dashboard_observability": args.dashboard_observability,
         "docker_cpus": args.docker_cpus,
         "docker_memory": args.docker_memory,
+        "warm_topology": warm_topology,
+        "node_readiness_timeout_seconds": args.node_readiness_timeout_seconds,
     }
 
     started_at = _utc_now()
     try:
         started = _json_request("POST", f"{base_url}/evaluation/run", payload=payload)
         run_id = started.get("run_id")
+        last_status_line = None
         while True:
             status = _json_request("GET", f"{base_url}/evaluation/status")
             run_id = run_id or status.get("run_id")
             if status.get("error"):
                 print(f"evaluation failed: {status['error']}", file=sys.stderr)
                 return 1
+            if status.get("running"):
+                status_line = _status_line(status)
+                if status_line != last_status_line:
+                    print(status_line, flush=True)
+                    last_status_line = status_line
             if not status.get("running"):
                 break
             time.sleep(args.poll_interval_seconds)
@@ -133,7 +240,6 @@ def main() -> int:
     if not run_id:
         run_id = f"eval-{int(time.time())}"
 
-    out_dir = Path(args.out) / implementation_label
     out_dir.mkdir(parents=True, exist_ok=True)
     csv_path = out_dir / f"{run_id}.csv"
     json_path = out_dir / f"{run_id}.json"
@@ -141,20 +247,7 @@ def main() -> int:
 
     manifest = {
         "run_id": run_id,
-        "implementation_label": implementation_label,
-        "sync_mode": args.sync_mode,
-        "event_id_retention_limit": args.event_id_retention_limit,
-        "node_counts": node_counts,
-        "events_per_node": args.events_per_node,
-        "partition_splits": partition_splits,
-        "repetitions": args.repetitions,
-        "convergence_wait_seconds": args.convergence_wait_seconds,
-        "partition_wait_seconds": args.partition_wait_seconds,
-        "poll_interval_seconds": args.poll_interval_seconds,
-        "event_concurrency": args.event_concurrency,
-        "network_profile": args.network_profile,
-        "docker_cpus": args.docker_cpus,
-        "docker_memory": args.docker_memory,
+        **expected_manifest,
         "started_at": started_at,
         "finished_at": finished_at,
         "csv_path": str(csv_path),
