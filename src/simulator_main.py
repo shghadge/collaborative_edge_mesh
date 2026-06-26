@@ -763,6 +763,7 @@ async def run_evaluation(cfg: EvalScenarioConfig = None):
         "total_steps": total_steps,
         "node_counts": cfg.node_counts,
         "events_per_node": cfg.events_per_node,
+        "repetitions": cfg.repetitions,
         "partition_splits": partition_splits,
         "implementation": cfg.implementation_label(),
         "sync_mode": cfg.sync_mode,

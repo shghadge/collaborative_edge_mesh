@@ -21,6 +21,7 @@ DEFAULT_EVENT_ID_RETENTION_LIMIT = 100
 
 CSV_HEADER = [
     "run_id",
+    "repetition",
     "implementation",
     "sync_mode",
     "event_id_retention_limit",
@@ -79,6 +80,7 @@ class EvalScenarioConfig(BaseModel):
     event_concurrency: int = Field(default=25)
     docker_cpus: float | None = None
     docker_memory: str | None = None
+    repetitions: int = Field(default=1, ge=1)
 
     def implementation_label(self) -> str:
         retention = (
@@ -136,12 +138,14 @@ class EvaluationRunner:
             )
         if cfg.event_id_retention_limit < 0:
             raise ValueError("event_id_retention_limit must be zero or greater")
+        if cfg.repetitions < 1:
+            raise ValueError("repetitions must be at least 1")
 
     def planned_steps(self, cfg: EvalScenarioConfig) -> int:
         partition_splits = (
             cfg.partition_splits if cfg.network_profile == "hard_partition" else []
         )
-        return len(cfg.node_counts) * (2 + len(partition_splits))
+        return cfg.repetitions * len(cfg.node_counts) * (2 + len(partition_splits))
 
     def status(self) -> dict[str, Any]:
         return {
@@ -583,12 +587,20 @@ class EvaluationRunner:
             await asyncio.gather(*gateway_tasks, return_exceptions=True)
 
     def _row_base(
-        self, cfg, run_id, scenario, node_count, event_result, partition_split=None
+        self,
+        cfg,
+        run_id,
+        repetition,
+        scenario,
+        node_count,
+        event_result,
+        partition_split=None,
     ):
         attempted = event_result.get("attempted", 0)
         accepted = event_result.get("accepted", 0)
         return {
             "run_id": run_id,
+            "repetition": repetition,
             "implementation": cfg.implementation_label(),
             "sync_mode": cfg.sync_mode,
             "event_id_retention_limit": cfg.event_id_retention_limit,
@@ -662,131 +674,156 @@ class EvaluationRunner:
 
         try:
             timeout = aiohttp.ClientTimeout(total=30)
-            for node_count in cfg.node_counts:
-                async with aiohttp.ClientSession(timeout=timeout) as session:
-                    nodes, gateways = await self.recreate_nodes(node_count, cfg)
-                    self.state["current_step"] = f"[{node_count}N] Baseline"
-                    self.state["progress"] = step
-                    nodes, gateways = await _prepare_scenario(session, nodes, gateways)
-                    baseline_events = await self.send_events(
-                        session,
-                        nodes,
-                        cfg.events_per_node,
-                        concurrency=cfg.event_concurrency,
-                        rng=rng,
-                    )
-                    metrics = await self.wait_for_metrics(
-                        session,
-                        nodes,
-                        gateways,
-                        cfg,
-                        baseline_events["accepted"],
-                        tracking_ids=baseline_events["tracking_ids"],
-                    )
-                    self._append_result(
-                        self._row_base(
-                            cfg, run_id, "baseline", node_count, baseline_events
-                        ),
-                        metrics,
-                    )
-                    await _finish_scenario()
-                    step += 1
-
-                    for split in partition_splits:
-                        split_label = f"{round(split * 100)}/{round((1 - split) * 100)}"
+            for repetition in range(1, cfg.repetitions + 1):
+                for node_count in cfg.node_counts:
+                    async with aiohttp.ClientSession(timeout=timeout) as session:
+                        nodes, gateways = await self.recreate_nodes(node_count, cfg)
                         self.state["current_step"] = (
-                            f"[{node_count}N] Partition {split_label}"
+                            f"[rep {repetition}/{cfg.repetitions}] "
+                            f"[{node_count}N] Baseline"
                         )
                         self.state["progress"] = step
                         nodes, gateways = await _prepare_scenario(
                             session, nodes, gateways
                         )
-                        pre_events = await self.send_events(
+                        baseline_events = await self.send_events(
                             session,
                             nodes,
                             cfg.events_per_node,
                             concurrency=cfg.event_concurrency,
                             rng=rng,
                         )
-                        await self.poll_all_gateways(session, gateways)
-                        try:
-                            await asyncio.to_thread(
-                                self.docker_mgr.create_split_brain, split
-                            )
-                        except Exception:
-                            pass
-                        await asyncio.sleep(1)
-                        partition_events = await self.send_events(
-                            session,
-                            nodes,
-                            3,
-                            concurrency=cfg.event_concurrency,
-                            rng=rng,
-                        )
-                        await asyncio.sleep(cfg.partition_wait_seconds)
-                        try:
-                            await asyncio.to_thread(self.docker_mgr.heal_all)
-                        except Exception:
-                            pass
-                        await asyncio.sleep(2)
-                        combined_events = {
-                            "attempted": pre_events["attempted"]
-                            + partition_events["attempted"],
-                            "accepted": pre_events["accepted"]
-                            + partition_events["accepted"],
-                            "tracking_ids": pre_events["tracking_ids"]
-                            + partition_events["tracking_ids"],
-                        }
-                        expected_events = combined_events["accepted"]
                         metrics = await self.wait_for_metrics(
                             session,
                             nodes,
                             gateways,
                             cfg,
-                            expected_events,
-                            tracking_ids=combined_events["tracking_ids"],
+                            baseline_events["accepted"],
+                            tracking_ids=baseline_events["tracking_ids"],
                         )
                         self._append_result(
                             self._row_base(
                                 cfg,
                                 run_id,
-                                "partition_heal",
+                                repetition,
+                                "baseline",
                                 node_count,
-                                combined_events,
-                                partition_split=split_label,
+                                baseline_events,
                             ),
                             metrics,
                         )
                         await _finish_scenario()
                         step += 1
 
-                    self.state["current_step"] = f"[{node_count}N] High load"
-                    self.state["progress"] = step
-                    nodes, gateways = await _prepare_scenario(session, nodes, gateways)
-                    heavy_events = await self.send_events(
-                        session,
-                        nodes,
-                        cfg.events_per_node * 3,
-                        category="resource",
-                        concurrency=cfg.event_concurrency,
-                        rng=rng,
-                    )
-                    metrics = await self.wait_for_metrics(
-                        session,
-                        nodes,
-                        gateways,
-                        cfg,
-                        heavy_events["accepted"],
-                        tracking_ids=heavy_events["tracking_ids"],
-                    )
-                    self._append_result(
-                        self._row_base(
-                            cfg, run_id, "high_load", node_count, heavy_events
-                        ),
-                        metrics,
-                    )
-                    await _finish_scenario()
-                    step += 1
+                        for split in partition_splits:
+                            split_label = (
+                                f"{round(split * 100)}/{round((1 - split) * 100)}"
+                            )
+                            self.state["current_step"] = (
+                                f"[rep {repetition}/{cfg.repetitions}] "
+                                f"[{node_count}N] Partition {split_label}"
+                            )
+                            self.state["progress"] = step
+                            nodes, gateways = await _prepare_scenario(
+                                session, nodes, gateways
+                            )
+                            pre_events = await self.send_events(
+                                session,
+                                nodes,
+                                cfg.events_per_node,
+                                concurrency=cfg.event_concurrency,
+                                rng=rng,
+                            )
+                            await self.poll_all_gateways(session, gateways)
+                            try:
+                                await asyncio.to_thread(
+                                    self.docker_mgr.create_split_brain, split
+                                )
+                            except Exception:
+                                pass
+                            await asyncio.sleep(1)
+                            partition_events = await self.send_events(
+                                session,
+                                nodes,
+                                3,
+                                concurrency=cfg.event_concurrency,
+                                rng=rng,
+                            )
+                            await asyncio.sleep(cfg.partition_wait_seconds)
+                            try:
+                                await asyncio.to_thread(self.docker_mgr.heal_all)
+                            except Exception:
+                                pass
+                            await asyncio.sleep(2)
+                            combined_events = {
+                                "attempted": pre_events["attempted"]
+                                + partition_events["attempted"],
+                                "accepted": pre_events["accepted"]
+                                + partition_events["accepted"],
+                                "tracking_ids": pre_events["tracking_ids"]
+                                + partition_events["tracking_ids"],
+                            }
+                            expected_events = combined_events["accepted"]
+                            metrics = await self.wait_for_metrics(
+                                session,
+                                nodes,
+                                gateways,
+                                cfg,
+                                expected_events,
+                                tracking_ids=combined_events["tracking_ids"],
+                            )
+                            self._append_result(
+                                self._row_base(
+                                    cfg,
+                                    run_id,
+                                    repetition,
+                                    "partition_heal",
+                                    node_count,
+                                    combined_events,
+                                    partition_split=split_label,
+                                ),
+                                metrics,
+                            )
+                            await _finish_scenario()
+                            step += 1
+
+                        self.state["current_step"] = (
+                            f"[rep {repetition}/{cfg.repetitions}] "
+                            f"[{node_count}N] High load"
+                        )
+                        self.state["progress"] = step
+                        nodes, gateways = await _prepare_scenario(
+                            session, nodes, gateways
+                        )
+                        heavy_events = await self.send_events(
+                            session,
+                            nodes,
+                            cfg.events_per_node * 3,
+                            category="resource",
+                            concurrency=cfg.event_concurrency,
+                            rng=rng,
+                        )
+                        metrics = await self.wait_for_metrics(
+                            session,
+                            nodes,
+                            gateways,
+                            cfg,
+                            heavy_events["accepted"],
+                            tracking_ids=heavy_events["tracking_ids"],
+                        )
+                        self._append_result(
+                            self._row_base(
+                                cfg,
+                                run_id,
+                                repetition,
+                                "high_load",
+                                node_count,
+                                heavy_events,
+                            ),
+                            metrics,
+                        )
+                        await _finish_scenario()
+                        step += 1
 
             self.state["current_step"] = "Generating CSV..."
             self.state["progress"] = step

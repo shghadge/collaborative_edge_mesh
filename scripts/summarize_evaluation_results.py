@@ -8,8 +8,16 @@ the project report tables that compare historical labels such as
 
 import argparse
 import csv
+import statistics
 from collections import defaultdict
 from pathlib import Path
+
+HISTORICAL_IMPLEMENTATIONS = {
+    "current_full_state_repair",
+    "growth_fixed_full_state_repair",
+    "growth_fixed_delta_repair",
+    "growth_fixed_true_delta_repair",
+}
 
 
 COLUMNS = [
@@ -99,6 +107,116 @@ def _format_total(value: float) -> str:
     return f"{int(value):,}"
 
 
+def _percentile(values: list[float], percentile: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    index = min(
+        len(ordered) - 1,
+        max(0, round((percentile / 100.0) * (len(ordered) - 1))),
+    )
+    return ordered[index]
+
+
+def _numeric_values(rows: list[dict], field: str) -> list[float]:
+    values = []
+    for row in rows:
+        raw = row.get(field, "")
+        if raw in {"", "None", None}:
+            continue
+        values.append(float(raw))
+    return values
+
+
+def _has_repetitions(rows: list[dict]) -> bool:
+    return any(row.get("repetition") not in {"", None} for row in rows)
+
+
+def _has_historical_implementations(rows: list[dict]) -> bool:
+    return any(
+        row.get("implementation", "") in HISTORICAL_IMPLEMENTATIONS for row in rows
+    )
+
+
+def _repetition_key(row: dict) -> tuple[str, str, str, str]:
+    return (
+        row.get("implementation", ""),
+        row.get("scenario", ""),
+        row.get("node_count", ""),
+        row.get("partition_split", ""),
+    )
+
+
+def _append_repetition_summary(lines: list[str], rows: list[dict]) -> None:
+    if not _has_repetitions(rows):
+        return
+
+    grouped = defaultdict(list)
+    for row in rows:
+        grouped[_repetition_key(row)].append(row)
+
+    columns = [
+        "Implementation",
+        "Scenario",
+        "Nodes",
+        "Split",
+        "Reps",
+        "Metric",
+        "Median",
+        "Max",
+        "P90/P95",
+    ]
+    metric_fields = [
+        ("time_to_last_node_s", "Time to Last Node"),
+        ("convergence_time_s", "Observer Convergence"),
+        ("sync_bytes_total", "Sync Bytes"),
+        ("bytes_per_accepted_event", "Bytes/Event"),
+        ("missing_at_cutoff_count", "Missing @ Cutoff"),
+        ("tracking_coverage_percent", "Tracking Coverage %"),
+    ]
+
+    lines.append("")
+    lines.append("## Repeated-run Statistics")
+    lines.append("")
+    lines.append(
+        "Tail metrics are shown only as rough descriptive statistics; prefer max/worst-observed for very small repetition counts."
+    )
+    lines.append("")
+    lines.append("| " + " | ".join(columns) + " |")
+    lines.append("| " + " | ".join(["---"] * len(columns)) + " |")
+
+    for key, group in sorted(grouped.items()):
+        implementation, scenario, node_count, split = key
+        repetitions = sorted({row.get("repetition", "") for row in group})
+        rep_count = len([rep for rep in repetitions if rep not in {"", None}])
+        for field, label in metric_fields:
+            values = _numeric_values(group, field)
+            if not values:
+                continue
+            tail = "—"
+            if len(values) >= 20:
+                tail = f"p95={_percentile(values, 95):.3f}"
+            elif len(values) >= 10:
+                tail = f"p90={_percentile(values, 90):.3f}"
+            lines.append(
+                "| "
+                + " | ".join(
+                    [
+                        _display(implementation),
+                        _display(scenario),
+                        _display(node_count),
+                        _display(split),
+                        str(rep_count),
+                        label,
+                        f"{statistics.median(values):.3f}",
+                        f"{max(values):.3f}",
+                        tail,
+                    ]
+                )
+                + " |"
+            )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Summarize evaluation CSV files.")
     parser.add_argument("--inputs", required=True, help="Comma-separated CSV paths")
@@ -151,124 +269,147 @@ def main() -> int:
         ]
         lines.append("| " + " | ".join(values) + " |")
 
-    growth_state_changes = _pair_changes(
-        rows,
-        "current_full_state_repair",
-        "growth_fixed_full_state_repair",
-        "avg_state_size_bytes",
-    )
-    key_delta_sync_changes = _pair_changes(
-        rows,
-        "growth_fixed_full_state_repair",
-        "growth_fixed_delta_repair",
-        "sync_bytes_total",
-    )
-    key_delta_bytes_event_changes = _pair_changes(
-        rows,
-        "growth_fixed_full_state_repair",
-        "growth_fixed_delta_repair",
-        "bytes_per_accepted_event",
-    )
-    true_delta_sync_changes = _pair_changes(
-        rows,
-        "growth_fixed_full_state_repair",
-        "growth_fixed_true_delta_repair",
-        "sync_bytes_total",
-    )
-    true_delta_bytes_event_changes = _pair_changes(
-        rows,
-        "growth_fixed_full_state_repair",
-        "growth_fixed_true_delta_repair",
-        "bytes_per_accepted_event",
-    )
-    true_vs_key_delta_sync_changes = _pair_changes(
-        rows,
-        "growth_fixed_delta_repair",
-        "growth_fixed_true_delta_repair",
-        "sync_bytes_total",
-    )
-
-    growth_state = _summarize_change(growth_state_changes)
-    key_delta_sync = _summarize_change(key_delta_sync_changes)
-    key_delta_bytes_event = _summarize_change(key_delta_bytes_event_changes)
-    true_delta_sync = _summarize_change(true_delta_sync_changes)
-    true_delta_bytes_event = _summarize_change(true_delta_bytes_event_changes)
-    true_vs_key_delta_sync = _summarize_change(true_vs_key_delta_sync_changes)
     availability = min((_float(row, "write_success_rate") for row in rows), default=0.0)
 
-    key_delta_bytes = _total(rows, "growth_fixed_delta_repair", "delta_bytes_received")
-    key_delta_applied = _total(
-        rows, "growth_fixed_delta_repair", "delta_deltas_applied"
-    )
-    true_delta_bytes = _total(
-        rows, "growth_fixed_true_delta_repair", "delta_bytes_received"
-    )
-    true_delta_applied = _total(
-        rows, "growth_fixed_true_delta_repair", "delta_deltas_applied"
-    )
-    key_delta_bytes_per_delta = (
-        key_delta_bytes / key_delta_applied if key_delta_applied else 0.0
-    )
-    true_delta_bytes_per_delta = (
-        true_delta_bytes / true_delta_applied if true_delta_applied else 0.0
-    )
+    if _has_historical_implementations(rows):
+        growth_state_changes = _pair_changes(
+            rows,
+            "current_full_state_repair",
+            "growth_fixed_full_state_repair",
+            "avg_state_size_bytes",
+        )
+        key_delta_sync_changes = _pair_changes(
+            rows,
+            "growth_fixed_full_state_repair",
+            "growth_fixed_delta_repair",
+            "sync_bytes_total",
+        )
+        key_delta_bytes_event_changes = _pair_changes(
+            rows,
+            "growth_fixed_full_state_repair",
+            "growth_fixed_delta_repair",
+            "bytes_per_accepted_event",
+        )
+        true_delta_sync_changes = _pair_changes(
+            rows,
+            "growth_fixed_full_state_repair",
+            "growth_fixed_true_delta_repair",
+            "sync_bytes_total",
+        )
+        true_delta_bytes_event_changes = _pair_changes(
+            rows,
+            "growth_fixed_full_state_repair",
+            "growth_fixed_true_delta_repair",
+            "bytes_per_accepted_event",
+        )
+        true_vs_key_delta_sync_changes = _pair_changes(
+            rows,
+            "growth_fixed_delta_repair",
+            "growth_fixed_true_delta_repair",
+            "sync_bytes_total",
+        )
 
-    lines.append("")
-    lines.append(f"- Growth fix state-size change: {growth_state}.")
-    if (
-        key_delta_sync == "insufficient data"
-        or key_delta_bytes_event == "insufficient data"
-    ):
+        growth_state = _summarize_change(growth_state_changes)
+        key_delta_sync = _summarize_change(key_delta_sync_changes)
+        key_delta_bytes_event = _summarize_change(key_delta_bytes_event_changes)
+        true_delta_sync = _summarize_change(true_delta_sync_changes)
+        true_delta_bytes_event = _summarize_change(true_delta_bytes_event_changes)
+        true_vs_key_delta_sync = _summarize_change(true_vs_key_delta_sync_changes)
+
+        key_delta_bytes = _total(
+            rows, "growth_fixed_delta_repair", "delta_bytes_received"
+        )
+        key_delta_applied = _total(
+            rows, "growth_fixed_delta_repair", "delta_deltas_applied"
+        )
+        true_delta_bytes = _total(
+            rows, "growth_fixed_true_delta_repair", "delta_bytes_received"
+        )
+        true_delta_applied = _total(
+            rows, "growth_fixed_true_delta_repair", "delta_deltas_applied"
+        )
+        key_delta_bytes_per_delta = (
+            key_delta_bytes / key_delta_applied if key_delta_applied else 0.0
+        )
+        true_delta_bytes_per_delta = (
+            true_delta_bytes / true_delta_applied if true_delta_applied else 0.0
+        )
+
+        lines.append("")
+        lines.append(f"- Growth fix state-size change: {growth_state}.")
+        if (
+            key_delta_sync == "insufficient data"
+            or key_delta_bytes_event == "insufficient data"
+        ):
+            lines.append(
+                "- Historical key-delta bandwidth change: insufficient data for comparison."
+            )
+        else:
+            lines.append(
+                "- Historical key-delta bandwidth change: "
+                f"sync_bytes_total {key_delta_sync}; "
+                f"bytes_per_accepted_event {key_delta_bytes_event}."
+            )
+        if (
+            true_delta_sync == "insufficient data"
+            or true_delta_bytes_event == "insufficient data"
+        ):
+            lines.append(
+                "- True-delta bandwidth change: insufficient data for comparison."
+            )
+        else:
+            lines.append(
+                "- True-delta bandwidth change: "
+                f"sync_bytes_total {true_delta_sync}; "
+                f"bytes_per_accepted_event {true_delta_bytes_event}."
+            )
+        lines.append(f"- Availability: minimum write_success_rate {availability:.4f}.")
+        lines.append("")
+        lines.append("## Observations")
+        lines.append("")
         lines.append(
-            "- Historical key-delta bandwidth change: insufficient data for comparison."
+            f"- Growth-fixed full-state reduces serialized state size modestly "
+            f"({growth_state}), confirming event ID retention was only one growth source."
+        )
+        lines.append(
+            f"- Historical key-level deltas are much worse than full-state repair "
+            f"({key_delta_sync}), because each log entry carries full CRDT object slices."
+        )
+        lines.append(
+            f"- True deltas improve over historical key-level deltas "
+            f"({true_vs_key_delta_sync}) but still exceed growth-fixed full-state repair "
+            f"({true_delta_sync})."
+        )
+        lines.append(
+            "- Delta diagnostics point to replay overhead: historical key-delta replayed "
+            f"{_format_total(key_delta_applied)} deltas / "
+            f"{_format_total(key_delta_bytes)} bytes "
+            f"({key_delta_bytes_per_delta:.2f} bytes per delta), while true-delta replayed "
+            f"{_format_total(true_delta_applied)} deltas / "
+            f"{_format_total(true_delta_bytes)} bytes "
+            f"({true_delta_bytes_per_delta:.2f} bytes per delta)."
+        )
+        lines.append(
+            "- Practical next optimization is hybrid repair: use true deltas only when a "
+            "peer is close to the sender's `delta_seq`; otherwise pull one full state."
         )
     else:
+        lines.append("")
+        lines.append(f"- Availability: minimum write_success_rate {availability:.4f}.")
+        lines.append("")
+        lines.append("## Observations")
+        lines.append("")
         lines.append(
-            "- Historical key-delta bandwidth change: "
-            f"sync_bytes_total {key_delta_sync}; "
-            f"bytes_per_accepted_event {key_delta_bytes_event}."
+            "- No historical implementation labels were present, so historical full-state/key-delta comparison notes were suppressed."
         )
-    if (
-        true_delta_sync == "insufficient data"
-        or true_delta_bytes_event == "insufficient data"
-    ):
-        lines.append("- True-delta bandwidth change: insufficient data for comparison.")
-    else:
         lines.append(
-            "- True-delta bandwidth change: "
-            f"sync_bytes_total {true_delta_sync}; "
-            f"bytes_per_accepted_event {true_delta_bytes_event}."
+            "- Use the repeated-run statistics below for current Docker-system claims."
         )
-    lines.append(f"- Availability: minimum write_success_rate {availability:.4f}.")
-    lines.append("")
-    lines.append("## Observations")
-    lines.append("")
-    lines.append(
-        f"- Growth-fixed full-state reduces serialized state size modestly "
-        f"({growth_state}), confirming event ID retention was only one growth source."
-    )
-    lines.append(
-        f"- Historical key-level deltas are much worse than full-state repair "
-        f"({key_delta_sync}), because each log entry carries full CRDT object slices."
-    )
-    lines.append(
-        f"- True deltas improve over historical key-level deltas "
-        f"({true_vs_key_delta_sync}) but still exceed growth-fixed full-state repair "
-        f"({true_delta_sync})."
-    )
-    lines.append(
-        "- Delta diagnostics point to replay overhead: historical key-delta replayed "
-        f"{_format_total(key_delta_applied)} deltas / "
-        f"{_format_total(key_delta_bytes)} bytes "
-        f"({key_delta_bytes_per_delta:.2f} bytes per delta), while true-delta replayed "
-        f"{_format_total(true_delta_applied)} deltas / "
-        f"{_format_total(true_delta_bytes)} bytes "
-        f"({true_delta_bytes_per_delta:.2f} bytes per delta)."
-    )
-    lines.append(
-        "- Practical next optimization is hybrid repair: use true deltas only when a "
-        "peer is close to the sender's `delta_seq`; otherwise pull one full state."
-    )
+        lines.append(
+            "- Treat `convergence_time_s` as observer timing and `time_to_last_node_s` as the lower-skew mesh propagation metric."
+        )
+
+    _append_repetition_summary(lines, rows)
 
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)

@@ -62,6 +62,7 @@ def main() -> int:
     parser.add_argument("--event-id-retention-limit", type=int, default=100)
     parser.add_argument("--node-counts", default="5,10,15")
     parser.add_argument("--events-per-node", type=int, default=15)
+    parser.add_argument("--repetitions", type=int, default=1)
     parser.add_argument("--partition-splits", default="0.5,0.7,0.8")
     parser.add_argument("--convergence-wait-seconds", type=float, default=25)
     parser.add_argument("--partition-wait-seconds", type=float, default=8)
@@ -97,6 +98,7 @@ def main() -> int:
         "node_counts": node_counts,
         "events_per_node": args.events_per_node,
         "partition_splits": partition_splits,
+        "repetitions": args.repetitions,
         "convergence_wait_seconds": args.convergence_wait_seconds,
         "partition_wait_seconds": args.partition_wait_seconds,
         "poll_interval_seconds": args.poll_interval_seconds,
@@ -145,6 +147,7 @@ def main() -> int:
         "node_counts": node_counts,
         "events_per_node": args.events_per_node,
         "partition_splits": partition_splits,
+        "repetitions": args.repetitions,
         "convergence_wait_seconds": args.convergence_wait_seconds,
         "partition_wait_seconds": args.partition_wait_seconds,
         "poll_interval_seconds": args.poll_interval_seconds,
