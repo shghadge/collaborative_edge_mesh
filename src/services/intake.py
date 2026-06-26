@@ -65,6 +65,7 @@ class IntakeService:
                     "location": event.location,
                     **event.metadata,
                 }
+                event_data["tracking_id"] = tracking_id
 
                 # route to correct CRDT based on category
                 stored_in = self.state.record_event(

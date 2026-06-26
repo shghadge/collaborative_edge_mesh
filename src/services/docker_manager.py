@@ -399,6 +399,8 @@ class DockerManager:
         sync_mode="full_state",
         event_id_retention_limit=100,
         observability_mode=None,
+        cpu_limit=None,
+        memory_limit=None,
     ):
         """Spin up a new edge node container and register it with the gateway."""
         with self._creation_lock:
@@ -445,6 +447,12 @@ class DockerManager:
             image = self._get_image_name()
             network = self._get_network()
 
+        run_options = {}
+        if cpu_limit is not None:
+            run_options["nano_cpus"] = int(float(cpu_limit) * 1_000_000_000)
+        if memory_limit:
+            run_options["mem_limit"] = memory_limit
+
         # Execute docker.run OUTSIDE the lock to allow concurrent image fetches & daemon processing
         container = self.client.containers.run(
             image,
@@ -467,6 +475,7 @@ class DockerManager:
             ports={f"{http_port}/tcp": host_port},
             network=network.name,
             cap_add=["NET_ADMIN"],
+            **run_options,
         )
 
         # get assigned IP

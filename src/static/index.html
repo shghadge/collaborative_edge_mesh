@@ -642,65 +642,16 @@
                             </div>
                             <div class="form-group">
                                 <label
-                                    for="eval-partition-splits"
+                                    for="eval-scenario-preset"
                                     class="text-[11px] uppercase tracking-widest text-slate-500"
-                                    >Partition Splits</label
-                                ><input
-                                    type="text"
-                                    id="eval-partition-splits"
-                                    value="0.5,0.7,0.8"
-                                    class="mt-1 w-36 rounded border border-white/15 bg-slate-900 px-2 py-1 text-sm"
-                                />
-                            </div>
-                            <div class="form-group">
-                                <label
-                                    for="eval-convergence-wait"
-                                    class="text-[11px] uppercase tracking-widest text-slate-500"
-                                    >Convergence Wait</label
-                                ><input
-                                    type="number"
-                                    id="eval-convergence-wait"
-                                    value="25"
-                                    min="1"
-                                    class="mt-1 w-28 rounded border border-white/15 bg-slate-900 px-2 py-1 text-sm"
-                                />
-                            </div>
-                            <div class="form-group">
-                                <label
-                                    for="eval-network-profile"
-                                    class="text-[11px] uppercase tracking-widest text-slate-500"
-                                    >Network Profile</label
-                                ><input
-                                    type="text"
-                                    id="eval-network-profile"
-                                    value="hard_partition"
-                                    class="mt-1 w-40 rounded border border-white/15 bg-slate-900 px-2 py-1 text-sm"
-                                />
-                            </div>
-                            <div class="form-group">
-                                <label
-                                    for="eval-implementation-label"
-                                    class="text-[11px] uppercase tracking-widest text-slate-500"
-                                    >Implementation</label
-                                ><input
-                                    type="text"
-                                    id="eval-implementation-label"
-                                    value="current_full_state_repair"
-                                    class="mt-1 w-56 rounded border border-white/15 bg-slate-900 px-2 py-1 text-sm"
-                                />
-                            </div>
-                            <div class="form-group">
-                                <label
-                                    for="eval-dashboard-observability"
-                                    class="text-[11px] uppercase tracking-widest text-slate-500"
-                                    >Dashboard Obs.</label
+                                    >Scenario Preset</label
                                 ><select
-                                    id="eval-dashboard-observability"
-                                    class="mt-1 w-28 rounded border border-white/15 bg-slate-900 px-2 py-1 text-sm"
+                                    id="eval-scenario-preset"
+                                    class="mt-1 w-40 rounded border border-white/15 bg-slate-900 px-2 py-1 text-sm"
                                 >
-                                    <option value="light" selected>light</option>
-                                    <option value="full">full</option>
-                                    <option value="off">off</option>
+                                    <option value="quick" selected>quick</option>
+                                    <option value="standard">standard</option>
+                                    <option value="degraded-link">degraded-link</option>
                                 </select>
                             </div>
                             <div

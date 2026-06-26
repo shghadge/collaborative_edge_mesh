@@ -12,6 +12,7 @@ Events are routed to the correct CRDT based on their category.
 
 import hashlib
 import json
+import time
 from datetime import datetime
 
 from .gcounter import GCounter
@@ -44,6 +45,8 @@ class NodeState:
         self.delta_seq = 0
         self.delta_log = []
         self.delta_log_limit = 1000
+        self.first_seen_tracking = {}
+        self.current_gossip_round = 0
 
     def reset(self):
         """Clear all CRDT and delta state while preserving node configuration."""
@@ -56,6 +59,8 @@ class NodeState:
         self.event_ids.clear()
         self.delta_seq = 0
         self.delta_log.clear()
+        self.first_seen_tracking.clear()
+        self.current_gossip_round = 0
 
     def record_event(
         self, event_id, event_type, data, category="general", operation=None
@@ -85,6 +90,12 @@ class NodeState:
                 and len(self.event_ids) > self.event_id_retention_limit
             ):
                 self.event_ids = self.event_ids[-self.event_id_retention_limit :]
+
+        tracking_id = data.get("tracking_id")
+        if tracking_id:
+            stored_in["tracking_id"] = str(tracking_id)
+
+        self._record_first_seen(tracking_id, data.get("evaluation_submitted_at"))
 
         delta_state = self._build_delta_state(stored_in, event_id)
         self.record_delta(delta_state)
@@ -120,6 +131,11 @@ class NodeState:
         if set_key and set_key in self.sets:
             delta_state.sets[set_key] = ORSet.from_dict(self.sets[set_key].last_delta())
         delta_state.event_ids = [event_id]
+        tracking_id = stored_in.get("tracking_id")
+        if tracking_id and tracking_id in self.first_seen_tracking:
+            delta_state.first_seen_tracking[tracking_id] = dict(
+                self.first_seen_tracking[tracking_id]
+            )
         return delta_state
 
     def record_delta(self, delta_state: "NodeState") -> int:
@@ -130,6 +146,28 @@ class NodeState:
         if len(self.delta_log) > self.delta_log_limit:
             self.delta_log = self.delta_log[-self.delta_log_limit :]
         return self.delta_seq
+
+    def set_gossip_round(self, round_number: int):
+        self.current_gossip_round = max(int(round_number or 0), 0)
+
+    def _record_first_seen(self, tracking_id, submitted_at=None):
+        if not tracking_id or tracking_id in self.first_seen_tracking:
+            return
+        now = time.time()
+        self.first_seen_tracking[str(tracking_id)] = {
+            "tracking_id": str(tracking_id),
+            "node_id": self.node_id,
+            "first_seen_at": now,
+            "submitted_at": submitted_at,
+            "gossip_round": self.current_gossip_round,
+        }
+
+    def _merge_first_seen_tracking(self, other: "NodeState"):
+        for tracking_id in other.first_seen_tracking:
+            self._record_first_seen(
+                tracking_id,
+                other.first_seen_tracking[tracking_id].get("submitted_at"),
+            )
 
     def _record_sensor(self, event_id, event_type, data):
         """Sensor data: count the event, store latest reading in register.
@@ -378,6 +416,8 @@ class NodeState:
             and len(self.event_ids) > self.event_id_retention_limit
         ):
             self.event_ids = self.event_ids[-self.event_id_retention_limit :]
+        self._merge_first_seen_tracking(other)
+
         if self.merkle_root() != old_root:
             self.version += 1
             self.updated_at = datetime.utcnow()
@@ -445,6 +485,8 @@ class NodeState:
                 if self.event_id_retention_limit
                 else self.event_ids
             ),
+            "first_seen_tracking": dict(self.first_seen_tracking),
+            "current_gossip_round": self.current_gossip_round,
             "delta_seq": self.delta_seq,
             "merkle_root": self.merkle_root(),
             "state_summary": self.summary(),
@@ -518,5 +560,7 @@ class NodeState:
             if s.event_id_retention_limit
             else list(ids)
         )
+        s.first_seen_tracking = dict(data.get("first_seen_tracking", {}))
+        s.current_gossip_round = int(data.get("current_gossip_round", 0) or 0)
         s.delta_seq = int(data.get("delta_seq", 0) or 0)
         return s

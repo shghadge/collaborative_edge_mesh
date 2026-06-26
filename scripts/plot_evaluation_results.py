@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+"""Historical SVG report helper for old implementation-comparison CSVs.
+
+Core evaluation runs do not depend on this script. It is kept for regenerating
+presentation/report artifacts from the historical four-implementation matrix.
+"""
+
 import argparse
 import csv
 import html

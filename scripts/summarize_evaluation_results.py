@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+"""Historical report helper for the old implementation-comparison CSVs.
+
+Core evaluation runs do not depend on this script. It is kept for regenerating
+the project report tables that compare historical labels such as
+`current_full_state_repair` and `growth_fixed_true_delta_repair`.
+"""
+
 import argparse
 import csv
 from collections import defaultdict

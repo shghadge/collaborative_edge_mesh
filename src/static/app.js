@@ -1015,14 +1015,30 @@ async function runEvaluation() {
     const btn = document.getElementById('btn-run-eval');
     const nodeCountsRaw = document.getElementById('eval-node-counts').value;
     const eventsPerNode = parseInt(document.getElementById('eval-events-per-node').value) || 5;
-    const partitionSplitsRaw = document.getElementById('eval-partition-splits').value;
-    const convergenceWait = parseFloat(document.getElementById('eval-convergence-wait').value) || 25;
-    const networkProfile = document.getElementById('eval-network-profile').value.trim() || 'hard_partition';
-    const implementationLabel = document.getElementById('eval-implementation-label').value.trim() || 'current_full_state_repair';
-    const dashboardObservability = document.getElementById('eval-dashboard-observability').value || 'light';
+    const preset = document.getElementById('eval-scenario-preset').value || 'quick';
+    const presets = {
+        quick: {
+            partition_splits: [0.5],
+            convergence_wait_seconds: 15,
+            network_profile: 'hard_partition',
+            dashboard_observability: 'light',
+        },
+        standard: {
+            partition_splits: [0.5, 0.7, 0.8],
+            convergence_wait_seconds: 25,
+            network_profile: 'hard_partition',
+            dashboard_observability: 'light',
+        },
+        'degraded-link': {
+            partition_splits: [],
+            convergence_wait_seconds: 25,
+            network_profile: 'degraded_300ms_10loss',
+            dashboard_observability: 'light',
+        },
+    };
+    const selectedPreset = presets[preset] || presets.quick;
 
     const nodeCounts = nodeCountsRaw.split(',').map(s => parseInt(s.trim())).filter(n => n > 0);
-    const partitionSplits = partitionSplitsRaw.split(',').map(s => parseFloat(s.trim())).filter(n => n > 0 && n < 1);
     if (!nodeCounts.length) {
         toast('Enter at least one node count', 'error');
         return;
@@ -1040,11 +1056,12 @@ async function runEvaluation() {
         await api('POST', '/evaluation/run', {
             node_counts: nodeCounts,
             events_per_node: eventsPerNode,
-            partition_splits: partitionSplits,
-            convergence_wait_seconds: convergenceWait,
-            network_profile: networkProfile,
-            implementation_label: implementationLabel,
-            dashboard_observability: dashboardObservability,
+            partition_splits: selectedPreset.partition_splits,
+            convergence_wait_seconds: selectedPreset.convergence_wait_seconds,
+            network_profile: selectedPreset.network_profile,
+            dashboard_observability: selectedPreset.dashboard_observability,
+            sync_mode: 'true_delta',
+            event_id_retention_limit: 100,
         });
         toast('Evaluation started', 'success');
         startEvalPolling();

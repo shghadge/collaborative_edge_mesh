@@ -17,15 +17,6 @@ def _csv_list_float(value: str) -> list[float]:
     return [float(part.strip()) for part in value.split(",") if part.strip()]
 
 
-def _bool_arg(value: str) -> bool:
-    normalized = value.strip().lower()
-    if normalized == "true":
-        return True
-    if normalized == "false":
-        return False
-    raise argparse.ArgumentTypeError("expected true or false")
-
-
 def _json_request(
     method: str, url: str, payload: dict | None = None, timeout: int = 30
 ):
@@ -65,11 +56,10 @@ def main() -> int:
         description="Run an evaluation matrix and save CSV output."
     )
     parser.add_argument("--base-url", default="http://localhost:8000")
-    parser.add_argument("--implementation-label", required=True)
     parser.add_argument(
-        "--sync-mode", choices=["full_state", "true_delta"], required=True
+        "--sync-mode", choices=["full_state", "true_delta"], default="true_delta"
     )
-    parser.add_argument("--state-growth-fix", choices=["true", "false"], required=True)
+    parser.add_argument("--event-id-retention-limit", type=int, default=100)
     parser.add_argument("--node-counts", default="5,10,15")
     parser.add_argument("--events-per-node", type=int, default=15)
     parser.add_argument("--partition-splits", default="0.5,0.7,0.8")
@@ -78,6 +68,8 @@ def main() -> int:
     parser.add_argument("--poll-interval-seconds", type=float, default=2)
     parser.add_argument("--event-concurrency", type=int, default=25)
     parser.add_argument("--network-profile", default="hard_partition")
+    parser.add_argument("--docker-cpus", type=float)
+    parser.add_argument("--docker-memory")
     parser.add_argument(
         "--dashboard-observability", default="light", choices=["off", "light", "full"]
     )
@@ -91,7 +83,16 @@ def main() -> int:
 
     node_counts = _csv_list_int(args.node_counts)
     partition_splits = _csv_list_float(args.partition_splits)
-    state_growth_fix = _bool_arg(args.state_growth_fix)
+    implementation_label = (
+        f"{args.sync_mode}_retention_{args.event_id_retention_limit}_"
+        f"{args.network_profile}"
+    )
+    if args.docker_cpus:
+        implementation_label += (
+            f"_cpu_{args.docker_cpus:g}_mem_{args.docker_memory or 'default'}"
+        )
+    elif args.docker_memory:
+        implementation_label += f"_mem_{args.docker_memory}"
     payload = {
         "node_counts": node_counts,
         "events_per_node": args.events_per_node,
@@ -100,11 +101,12 @@ def main() -> int:
         "partition_wait_seconds": args.partition_wait_seconds,
         "poll_interval_seconds": args.poll_interval_seconds,
         "event_concurrency": args.event_concurrency,
-        "implementation_label": args.implementation_label,
         "sync_mode": args.sync_mode,
-        "state_growth_fix": state_growth_fix,
+        "event_id_retention_limit": args.event_id_retention_limit,
         "network_profile": args.network_profile,
         "dashboard_observability": args.dashboard_observability,
+        "docker_cpus": args.docker_cpus,
+        "docker_memory": args.docker_memory,
     }
 
     started_at = _utc_now()
@@ -129,7 +131,7 @@ def main() -> int:
     if not run_id:
         run_id = f"eval-{int(time.time())}"
 
-    out_dir = Path(args.out) / args.implementation_label
+    out_dir = Path(args.out) / implementation_label
     out_dir.mkdir(parents=True, exist_ok=True)
     csv_path = out_dir / f"{run_id}.csv"
     json_path = out_dir / f"{run_id}.json"
@@ -137,9 +139,9 @@ def main() -> int:
 
     manifest = {
         "run_id": run_id,
-        "implementation_label": args.implementation_label,
+        "implementation_label": implementation_label,
         "sync_mode": args.sync_mode,
-        "state_growth_fix": state_growth_fix,
+        "event_id_retention_limit": args.event_id_retention_limit,
         "node_counts": node_counts,
         "events_per_node": args.events_per_node,
         "partition_splits": partition_splits,
@@ -148,6 +150,8 @@ def main() -> int:
         "poll_interval_seconds": args.poll_interval_seconds,
         "event_concurrency": args.event_concurrency,
         "network_profile": args.network_profile,
+        "docker_cpus": args.docker_cpus,
+        "docker_memory": args.docker_memory,
         "started_at": started_at,
         "finished_at": finished_at,
         "csv_path": str(csv_path),

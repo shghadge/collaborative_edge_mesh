@@ -132,6 +132,7 @@ class GossipService:
                     except Exception as e:
                         self.stats["errors"] += 1
                         log.debug("gossip_send_failed", peer=peer, error=str(e))
+                self.state.set_gossip_round(self.stats["broadcast_cycles"])
 
             except Exception as e:
                 log.error("broadcast_error", error=str(e))
@@ -254,6 +255,7 @@ class GossipService:
                 state_version=getattr(incoming, "version", None),
                 hop_count=1,
             )
+            self.state.set_gossip_round(self.stats["broadcast_cycles"])
             old_root = self.state.merkle_root()
             started = time.time()
             self.state.merge(incoming)
@@ -326,6 +328,7 @@ class GossipService:
                 await self._maybe_pull_state_from_sender(addr, message)
                 return
 
+            self.state.set_gossip_round(self.stats["broadcast_cycles"])
             old_root = self.state.merkle_root()
             started = time.time()
             applied = self.state.apply_delta_payload(payload)
@@ -384,6 +387,7 @@ class GossipService:
                     self.stats["repair_bytes_received"] += len(text.encode())
                     data = json.loads(text)
             incoming = NodeState.from_dict(data)
+            self.state.set_gossip_round(self.stats["broadcast_cycles"])
             old_root = self.state.merkle_root()
             started = time.time()
             self.state.merge(incoming)

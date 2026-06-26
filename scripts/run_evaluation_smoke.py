@@ -6,10 +6,6 @@ import sys
 from pathlib import Path
 
 
-def _default_label(sync_mode: str) -> str:
-    return f"smoke_{sync_mode}"
-
-
 def _csv_path_from_output(output: str) -> Path:
     for line in output.splitlines():
         stripped = line.strip()
@@ -52,7 +48,6 @@ def main() -> int:
     parser.add_argument(
         "--sync-mode", choices=["full_state", "true_delta"], default="true_delta"
     )
-    parser.add_argument("--implementation-label")
     parser.add_argument("--out", default="results/evaluation_smoke")
     parser.add_argument("--node-counts", default="2")
     parser.add_argument("--events-per-node", type=int, default=2)
@@ -63,18 +58,15 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    label = args.implementation_label or _default_label(args.sync_mode)
     command = [
         sys.executable,
         "scripts/run_evaluation_matrix.py",
         "--base-url",
         args.base_url,
-        "--implementation-label",
-        label,
         "--sync-mode",
         args.sync_mode,
-        "--state-growth-fix",
-        "true",
+        "--event-id-retention-limit",
+        "100",
         "--node-counts",
         args.node_counts,
         "--events-per-node",
@@ -90,7 +82,6 @@ def main() -> int:
         "--out",
         args.out,
     ]
-
     print(f"==> smoke evaluation: {' '.join(command)}", flush=True)
     completed = subprocess.run(command, text=True, capture_output=True)
     if completed.stdout:

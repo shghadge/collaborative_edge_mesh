@@ -47,13 +47,8 @@ class Config:
             float(os.getenv("OBSERVABILITY_PUSH_INTERVAL_SECONDS", "3")), 1.0
         )
 
-        self.gateway_http_retries = max(int(os.getenv("GATEWAY_HTTP_RETRIES", "2")), 1)
-        self.gateway_http_retry_backoff_ms = max(
-            int(os.getenv("GATEWAY_HTTP_RETRY_BACKOFF_MS", "150")), 0
-        )
-        self.gateway_node_failure_backoff = max(
-            float(os.getenv("GATEWAY_NODE_FAILURE_BACKOFF", "2")), 0.0
-        )
+        self.enable_heal_state_push = self._bool_env("ENABLE_HEAL_STATE_PUSH", False)
+
         self.gateway_visibility_freshness_seconds = max(
             float(os.getenv("GATEWAY_VISIBILITY_FRESHNESS_SECONDS", "10")), 1.0
         )
@@ -69,6 +64,13 @@ class Config:
         raw_edge_nodes = os.getenv("EDGE_NODES", "")
         self.edge_nodes = [p.strip() for p in raw_edge_nodes.split(",") if p.strip()]
         self.deep_observability_enabled = self.observability_mode == "full"
+
+    @staticmethod
+    def _bool_env(name: str, default: bool = False) -> bool:
+        value = os.getenv(name)
+        if value is None:
+            return default
+        return value.strip().lower() in {"1", "true", "yes", "on"}
 
     def _parse_runtime_mode(self, value: str) -> str:
         runtime_mode = value.strip().lower()
