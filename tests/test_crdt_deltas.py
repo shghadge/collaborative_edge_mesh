@@ -52,6 +52,39 @@ class DeltaMutatorTests(unittest.TestCase):
             {"edge-1": 1},
         )
 
+    def test_node_state_delta_log_uses_compact_serialization(self):
+        source = NodeState("edge-1")
+        source.record_event(
+            "event-1",
+            "water_level",
+            {
+                "tracking_id": "event-1",
+                "location": "bridge",
+                "value": 10,
+                "evaluation_submitted_at": 123.0,
+            },
+            category="sensor",
+        )
+
+        delta_state = source.delta_log[-1]["state"]
+        replica = NodeState("edge-2")
+        applied = replica.apply_delta_payload(source.get_deltas_since(0))
+
+        self.assertEqual(applied, 1)
+        self.assertEqual(replica.get_event_count("water_level"), 1)
+        self.assertIn("event-1", replica.first_seen_tracking)
+        for full_state_field in (
+            "version",
+            "updated_at",
+            "event_id_retention_limit",
+            "event_id_count",
+            "delta_seq",
+            "delta_log_limit",
+            "merkle_root",
+            "state_summary",
+        ):
+            self.assertNotIn(full_state_field, delta_state)
+
     def test_orset_remove_delta_tombstones_observed_add(self):
         source = ORSet("edge-1")
         replica = ORSet("edge-2")
@@ -108,7 +141,7 @@ class DeltaMutatorTests(unittest.TestCase):
         self.assertEqual(restored.event_ids, ["event-0", "event-1", "event-2"])
 
     def test_node_state_reset_preserves_configuration_and_clears_runtime_state(self):
-        state = NodeState("edge-1", event_id_retention_limit=None)
+        state = NodeState("edge-1", event_id_retention_limit=None, delta_log_limit=25)
         state.record_event(
             "event-1",
             "temperature",
@@ -119,6 +152,7 @@ class DeltaMutatorTests(unittest.TestCase):
         state.reset()
 
         self.assertEqual(state.node_id, "edge-1")
+        self.assertEqual(state.delta_log_limit, 25)
         self.assertIsNone(state.event_id_retention_limit)
         self.assertEqual(state.version, 0)
         self.assertEqual(state.delta_seq, 0)

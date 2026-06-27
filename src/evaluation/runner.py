@@ -19,6 +19,7 @@ OBSERVABILITY_MODES = {"off", "light", "full"}
 SYNC_MODES = {"full_state", "true_delta"}
 SCENARIOS = {"baseline", "partition_heal", "high_load"}
 DEFAULT_EVENT_ID_RETENTION_LIMIT = 100
+DEFAULT_DELTA_LOG_LIMIT = 1000
 
 CSV_HEADER = [
     "run_id",
@@ -26,6 +27,7 @@ CSV_HEADER = [
     "implementation",
     "sync_mode",
     "event_id_retention_limit",
+    "delta_log_limit",
     "network_profile",
     "dashboard_observability",
     "docker_cpus",
@@ -75,6 +77,7 @@ class EvalScenarioConfig(BaseModel):
     poll_interval_seconds: float = Field(default=2.0)
     sync_mode: str = "true_delta"
     event_id_retention_limit: int = DEFAULT_EVENT_ID_RETENTION_LIMIT
+    delta_log_limit: int = DEFAULT_DELTA_LOG_LIMIT
     network_profile: str = "hard_partition"
     scenario_seed: int | None = None
     dashboard_observability: str = "off"
@@ -85,6 +88,7 @@ class EvalScenarioConfig(BaseModel):
     scenarios: list[str] = Field(default=["baseline", "partition_heal", "high_load"])
     warm_topology: bool = True
     node_readiness_timeout_seconds: float = Field(default=30.0, ge=1.0)
+    partition_events_per_node: int = Field(default=3, ge=0)
 
     def implementation_label(self) -> str:
         retention = (
@@ -93,6 +97,13 @@ class EvalScenarioConfig(BaseModel):
             else f"retention_{self.event_id_retention_limit}"
         )
         base = f"{self.sync_mode}_{retention}_{self.network_profile}"
+        if self.delta_log_limit != DEFAULT_DELTA_LOG_LIMIT:
+            delta_retention = (
+                "unbounded_delta_log"
+                if self.delta_log_limit <= 0
+                else f"delta_log_{self.delta_log_limit}"
+            )
+            base = f"{base}_{delta_retention}"
         if self.docker_cpus:
             return (
                 f"{base}_cpu_{self.docker_cpus:g}_mem_{self.docker_memory or 'default'}"
@@ -157,6 +168,8 @@ class EvaluationRunner:
             )
         if cfg.event_id_retention_limit < 0:
             raise ValueError("event_id_retention_limit must be zero or greater")
+        if cfg.delta_log_limit < 0:
+            raise ValueError("delta_log_limit must be zero or greater")
         if cfg.repetitions < 1:
             raise ValueError("repetitions must be at least 1")
         unknown_scenarios = sorted(set(cfg.scenarios) - SCENARIOS)
@@ -650,6 +663,7 @@ class EvaluationRunner:
                 node_id=f"node-{index + 1}",
                 sync_mode=cfg.sync_mode,
                 event_id_retention_limit=cfg.event_id_retention_limit,
+                delta_log_limit=cfg.delta_log_limit,
                 observability_mode=cfg.dashboard_observability,
                 cpu_limit=cfg.docker_cpus,
                 memory_limit=cfg.docker_memory,
@@ -721,6 +735,7 @@ class EvaluationRunner:
             "implementation": cfg.implementation_label(),
             "sync_mode": cfg.sync_mode,
             "event_id_retention_limit": cfg.event_id_retention_limit,
+            "delta_log_limit": cfg.delta_log_limit,
             "network_profile": cfg.network_profile,
             "dashboard_observability": cfg.dashboard_observability,
             "docker_cpus": cfg.docker_cpus or "",
@@ -896,7 +911,7 @@ class EvaluationRunner:
                             partition_events = await self.send_events(
                                 session,
                                 nodes,
-                                3,
+                                cfg.partition_events_per_node,
                                 concurrency=cfg.event_concurrency,
                                 rng=rng,
                             )

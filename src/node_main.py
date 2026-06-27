@@ -35,7 +35,11 @@ log = structlog.get_logger()
 
 
 async def main():
-    state = NodeState(config.node_id, config.event_id_retention_limit)
+    state = NodeState(
+        config.node_id,
+        config.event_id_retention_limit,
+        delta_log_limit=config.delta_log_limit,
+    )
     chain = HashChainLog(config.node_id, f"{config.data_dir}/logs")
     intake = IntakeService(config, state, chain)
 

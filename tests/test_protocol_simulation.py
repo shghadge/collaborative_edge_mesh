@@ -97,6 +97,28 @@ class ProtocolSimulationTests(unittest.TestCase):
         self.assertEqual(len(_roots(nodes)), 1)
         self.assertEqual({node.get_event_count() for node in nodes}, {25})
 
+    def test_delta_pull_can_leave_valid_root_mismatch(self):
+        remote = NodeState("edge-1")
+        local = NodeState("edge-2")
+        remote.record_event(
+            "remote-event",
+            "water_level",
+            {"location": "bridge", "value": 3},
+            category="sensor",
+        )
+        local.record_event(
+            "local-event",
+            "water_level",
+            {"location": "bridge", "value": 4},
+            category="sensor",
+        )
+        remote_advertised_root = remote.merkle_root()
+
+        local.apply_delta_payload(remote.get_deltas_since(0))
+
+        self.assertNotEqual(local.merkle_root(), remote_advertised_root)
+        self.assertEqual(local.get_event_count("water_level"), 2)
+
     def test_true_delta_payload_is_smaller_than_key_level_snapshot(self):
         source = NodeState("edge-1")
         peer = NodeState("edge-2")
@@ -132,8 +154,7 @@ class ProtocolSimulationTests(unittest.TestCase):
         )
 
     def test_delta_log_gap_signals_full_state_fallback_needed(self):
-        source = NodeState("edge-1")
-        source.delta_log_limit = 2
+        source = NodeState("edge-1", delta_log_limit=2)
         for index in range(4):
             source.record_event(
                 f"event-{index}",

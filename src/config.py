@@ -13,6 +13,8 @@ class Config:
         if self.sync_mode not in {"full_state", "true_delta"}:
             self.sync_mode = "full_state"
         retention_limit = int(os.getenv("EVENT_ID_RETENTION_LIMIT", "100"))
+        delta_log_limit = int(os.getenv("DELTA_LOG_LIMIT", "1000"))
+        self.delta_log_limit = delta_log_limit if delta_log_limit > 0 else None
         self.event_id_retention_limit = retention_limit if retention_limit > 0 else None
         self.gateway_poll_interval = float(os.getenv("GATEWAY_POLL_INTERVAL", "10"))
         self.data_dir = os.getenv("DATA_DIR", "/data")

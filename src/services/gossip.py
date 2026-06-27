@@ -347,12 +347,6 @@ class GossipService:
                 state_version=message.get("state_version"),
                 hop_count=1,
             )
-            remote_delta_seq = int(message.get("delta_seq", 0) or 0)
-            if (
-                self.state.merkle_root() != message.get("merkle_root")
-                and self.peer_delta_seq[sender] >= remote_delta_seq
-            ):
-                await self._maybe_pull_state_from_sender(addr, message)
         except Exception as error:
             self.stats["repair_pulls_failed"] += 1
             log.debug("delta_pull_failed", peer=host, error=str(error))

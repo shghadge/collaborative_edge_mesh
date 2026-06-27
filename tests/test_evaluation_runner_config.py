@@ -46,6 +46,19 @@ class EvaluationRunnerConfigTests(unittest.TestCase):
         self.assertEqual(EvalScenarioConfig().dashboard_observability, "off")
         self.assertTrue(EvalScenarioConfig().warm_topology)
 
+    def test_config_exposes_delta_log_and_partition_write_controls(self):
+        cfg = EvalScenarioConfig(delta_log_limit=25, partition_events_per_node=40)
+
+        self.assertIn("delta_log_25", cfg.implementation_label())
+        self.assertEqual(cfg.delta_log_limit, 25)
+        self.assertEqual(cfg.partition_events_per_node, 40)
+
+    def test_validation_rejects_negative_delta_log_limit(self):
+        cfg = EvalScenarioConfig(delta_log_limit=-1)
+
+        with self.assertRaisesRegex(ValueError, "delta_log_limit"):
+            self.runner.validate_config(cfg)
+
     def test_status_exposes_repetition_progress(self):
         cfg = EvalScenarioConfig(node_counts=[5], repetitions=4)
         self.runner.state["total_steps"] = self.runner.planned_steps(cfg)

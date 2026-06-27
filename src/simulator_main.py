@@ -769,12 +769,14 @@ async def run_evaluation(cfg: EvalScenarioConfig = None):
         "implementation": cfg.implementation_label(),
         "sync_mode": cfg.sync_mode,
         "event_id_retention_limit": cfg.event_id_retention_limit,
+        "delta_log_limit": cfg.delta_log_limit,
         "network_profile": cfg.network_profile,
         "dashboard_observability": cfg.dashboard_observability,
         "docker_cpus": cfg.docker_cpus,
         "docker_memory": cfg.docker_memory,
         "warm_topology": cfg.warm_topology,
         "node_readiness_timeout_seconds": cfg.node_readiness_timeout_seconds,
+        "partition_events_per_node": cfg.partition_events_per_node,
     }
 
 

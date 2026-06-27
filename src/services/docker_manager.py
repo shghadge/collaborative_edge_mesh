@@ -398,6 +398,7 @@ class DockerManager:
         assigned_gateway="",
         sync_mode="full_state",
         event_id_retention_limit=100,
+        delta_log_limit=1000,
         observability_mode=None,
         cpu_limit=None,
         memory_limit=None,
@@ -466,6 +467,7 @@ class DockerManager:
                 "ASSIGNED_GATEWAY": assigned_gateway,
                 "SYNC_MODE": sync_mode,
                 "EVENT_ID_RETENTION_LIMIT": str(event_id_retention_limit),
+                "DELTA_LOG_LIMIT": str(delta_log_limit),
                 **(
                     {"OBSERVABILITY_MODE": observability_mode}
                     if observability_mode

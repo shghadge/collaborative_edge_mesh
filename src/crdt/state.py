@@ -32,7 +32,9 @@ class NodeState:
       GENERAL events       → G-Counter + LWW-Register (backward compatible)
     """
 
-    def __init__(self, node_id, event_id_retention_limit=100):
+    def __init__(
+        self, node_id, event_id_retention_limit=100, delta_log_limit: int | None = 1000
+    ):
         self.node_id = node_id
         self.version = 0
         self.updated_at = datetime.utcnow()
@@ -44,7 +46,9 @@ class NodeState:
         self.event_ids = []
         self.delta_seq = 0
         self.delta_log = []
-        self.delta_log_limit = 1000
+        self.delta_log_limit = (
+            delta_log_limit if delta_log_limit and delta_log_limit > 0 else None
+        )
         self.first_seen_tracking = {}
         self.current_gossip_round = 0
 
@@ -111,7 +115,11 @@ class NodeState:
         the join-irreducible element needed to advance a peer's state,
         rather than copying the full CRDT object at the key level.
         """
-        delta_state = NodeState(self.node_id, self.event_id_retention_limit)
+        delta_state = NodeState(
+            self.node_id,
+            self.event_id_retention_limit,
+            delta_log_limit=self.delta_log_limit,
+        )
         counter_key = stored_in.get("counter_key")
         if counter_key and counter_key in self.counters:
             delta_state.counters[counter_key] = GCounter.from_dict(
@@ -141,9 +149,9 @@ class NodeState:
     def record_delta(self, delta_state: "NodeState") -> int:
         self.delta_seq += 1
         self.delta_log.append(
-            {"seq": self.delta_seq, "state": delta_state.to_dict(include_deltas=False)}
+            {"seq": self.delta_seq, "state": delta_state.to_delta_dict()}
         )
-        if len(self.delta_log) > self.delta_log_limit:
+        if self.delta_log_limit and len(self.delta_log) > self.delta_log_limit:
             self.delta_log = self.delta_log[-self.delta_log_limit :]
         return self.delta_seq
 
@@ -488,12 +496,25 @@ class NodeState:
             "first_seen_tracking": dict(self.first_seen_tracking),
             "current_gossip_round": self.current_gossip_round,
             "delta_seq": self.delta_seq,
+            "delta_log_limit": self.delta_log_limit,
             "merkle_root": self.merkle_root(),
             "state_summary": self.summary(),
         }
         if include_deltas:
             data["delta_log"] = list(self.delta_log)
         return data
+
+    def to_delta_dict(self):
+        return {
+            "node_id": self.node_id,
+            "counters": {k: v.to_dict() for k, v in self.counters.items()},
+            "registers": {k: v.to_dict() for k, v in self.registers.items()},
+            "pn_counters": {k: v.to_dict() for k, v in self.pn_counters.items()},
+            "sets": {k: v.to_dict() for k, v in self.sets.items()},
+            "recent_event_ids": list(self.event_ids),
+            "first_seen_tracking": dict(self.first_seen_tracking),
+            "current_gossip_round": self.current_gossip_round,
+        }
 
     def get_deltas_since(self, since_seq: int) -> dict:
         since_seq = max(int(since_seq or 0), 0)
@@ -539,7 +560,11 @@ class NodeState:
 
     @classmethod
     def from_dict(cls, data):
-        s = cls(data["node_id"], data.get("event_id_retention_limit", 100))
+        s = cls(
+            data["node_id"],
+            data.get("event_id_retention_limit", 100),
+            delta_log_limit=data.get("delta_log_limit", 1000),
+        )
         s.version = data.get("version", 0)
         s.updated_at = datetime.fromisoformat(
             data.get("updated_at", datetime.utcnow().isoformat())

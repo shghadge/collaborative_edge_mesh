@@ -109,6 +109,7 @@ def main() -> int:
         "--sync-mode", choices=["full_state", "true_delta"], default="true_delta"
     )
     parser.add_argument("--event-id-retention-limit", type=int, default=100)
+    parser.add_argument("--delta-log-limit", type=int, default=1000)
     parser.add_argument("--node-counts", default="5,10,15")
     parser.add_argument("--events-per-node", type=int, default=15)
     parser.add_argument("--repetitions", type=int, default=1)
@@ -116,6 +117,7 @@ def main() -> int:
     parser.add_argument("--scenarios", default="baseline,partition_heal,high_load")
     parser.add_argument("--convergence-wait-seconds", type=float, default=25)
     parser.add_argument("--partition-wait-seconds", type=float, default=8)
+    parser.add_argument("--partition-events-per-node", type=int, default=3)
     parser.add_argument("--poll-interval-seconds", type=float, default=2)
     parser.add_argument("--event-concurrency", type=int, default=25)
     parser.add_argument("--network-profile", default="hard_partition")
@@ -152,6 +154,13 @@ def main() -> int:
         f"{args.sync_mode}_retention_{args.event_id_retention_limit}_"
         f"{args.network_profile}"
     )
+    if args.delta_log_limit != 1000:
+        delta_label = (
+            "unbounded_delta_log"
+            if args.delta_log_limit <= 0
+            else f"delta_log_{args.delta_log_limit}"
+        )
+        implementation_label = f"{implementation_label}_{delta_label}"
     if args.docker_cpus:
         implementation_label += (
             f"_cpu_{args.docker_cpus:g}_mem_{args.docker_memory or 'default'}"
@@ -163,6 +172,7 @@ def main() -> int:
         "implementation_label": implementation_label,
         "sync_mode": args.sync_mode,
         "event_id_retention_limit": args.event_id_retention_limit,
+        "delta_log_limit": args.delta_log_limit,
         "node_counts": node_counts,
         "events_per_node": args.events_per_node,
         "partition_splits": partition_splits,
@@ -171,6 +181,7 @@ def main() -> int:
         "convergence_wait_seconds": args.convergence_wait_seconds,
         "partition_wait_seconds": args.partition_wait_seconds,
         "poll_interval_seconds": args.poll_interval_seconds,
+        "partition_events_per_node": args.partition_events_per_node,
         "event_concurrency": args.event_concurrency,
         "network_profile": args.network_profile,
         "docker_cpus": args.docker_cpus,
@@ -200,10 +211,12 @@ def main() -> int:
         "scenarios": scenarios,
         "convergence_wait_seconds": args.convergence_wait_seconds,
         "partition_wait_seconds": args.partition_wait_seconds,
+        "partition_events_per_node": args.partition_events_per_node,
         "poll_interval_seconds": args.poll_interval_seconds,
         "event_concurrency": args.event_concurrency,
         "sync_mode": args.sync_mode,
         "event_id_retention_limit": args.event_id_retention_limit,
+        "delta_log_limit": args.delta_log_limit,
         "network_profile": args.network_profile,
         "dashboard_observability": args.dashboard_observability,
         "docker_cpus": args.docker_cpus,
