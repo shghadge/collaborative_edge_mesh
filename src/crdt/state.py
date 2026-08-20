@@ -443,7 +443,13 @@ class NodeState:
         # LWW-Registers
         for key in sorted(self.registers):
             reg = self.registers[key]
-            raw = f"r:{key}:{json.dumps({'v': reg._value, 't': reg._timestamp.isoformat(), 'w': reg._writer_id}, sort_keys=True)}"
+            register_state = {
+                "v": reg._value,
+                "t": reg._timestamp.isoformat(),
+                "w": reg._writer_id,
+                "e": reg._event_id,
+            }
+            raw = f"r:{key}:{json.dumps(register_state, sort_keys=True)}"
             leaves.append(hashlib.sha256(raw.encode()).hexdigest())
 
         # PN-Counters
@@ -554,7 +560,12 @@ class NodeState:
             state_data = item.get("state")
             if not isinstance(state_data, dict):
                 continue
-            self.merge(NodeState.from_dict(state_data))
+            incoming = NodeState.from_dict(state_data)
+            old_root = self.merkle_root()
+            self.merge(incoming)
+            if self.merkle_root() == old_root:
+                continue
+            self.record_delta(incoming)
             applied += 1
         return applied
 

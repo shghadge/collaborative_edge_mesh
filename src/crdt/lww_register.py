@@ -16,30 +16,33 @@ class LWWRegister:
         self._value = None
         self._timestamp = datetime.min
         self._writer_id = node_id
+        self._event_id = ""
 
     @property
     def value(self):
         return self._value
 
-    def set(self, value, timestamp=None):
+    def set(self, value, timestamp=None, event_id=None):
         ts = timestamp or datetime.utcnow()
-        # only update if this write is newer (or same time but higher node id)
-        if ts > self._timestamp or (
-            ts == self._timestamp and self.node_id >= self._writer_id
-        ):
+        if event_id is None and isinstance(value, dict):
+            event_id = value.get("event_id")
+        event_id = str(event_id or "")
+        candidate_order = (ts, self.node_id, event_id)
+        current_order = (self._timestamp, self._writer_id, self._event_id)
+        if candidate_order > current_order:
             self._value = value
             self._timestamp = ts
             self._writer_id = self.node_id
+            self._event_id = event_id
 
     def merge(self, other):
-        if other._timestamp > self._timestamp:
+        local_order = (self._timestamp, self._writer_id, self._event_id)
+        remote_order = (other._timestamp, other._writer_id, other._event_id)
+        if remote_order > local_order:
             self._value = other._value
             self._timestamp = other._timestamp
             self._writer_id = other._writer_id
-        elif other._timestamp == self._timestamp and other._writer_id > self._writer_id:
-            self._value = other._value
-            self._timestamp = other._timestamp
-            self._writer_id = other._writer_id
+            self._event_id = other._event_id
 
     def to_dict(self):
         return {
@@ -49,6 +52,7 @@ class LWWRegister:
             "value": self._value,
             "timestamp": self._timestamp.isoformat(),
             "writer_id": self._writer_id,
+            "event_id": self._event_id,
         }
 
     def last_delta(self):
@@ -65,4 +69,5 @@ class LWWRegister:
         r._value = data["value"]
         r._timestamp = datetime.fromisoformat(data["timestamp"])
         r._writer_id = data["writer_id"]
+        r._event_id = str(data.get("event_id") or "")
         return r

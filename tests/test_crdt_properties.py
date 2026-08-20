@@ -82,11 +82,12 @@ def _pncounter_lattice(counter: PNCounter) -> tuple[dict[str, int], dict[str, in
     )
 
 
-def _lww_lattice(register: LWWRegister) -> tuple[object, str, str]:
+def _lww_lattice(register: LWWRegister) -> tuple[object, str, str, str]:
     return (
         register.value,
         register._timestamp.isoformat(),
         register._writer_id,
+        register._event_id,
     )
 
 
@@ -181,6 +182,23 @@ class CRDTPropertyTests(unittest.TestCase):
             _lww_lattice(_merge_copy(a, _merge_copy(b, c))),
         )
         self.assertEqual(_lww_lattice(_merge_copy(a, a)), _lww_lattice(a))
+
+    def test_lww_register_breaks_same_writer_timestamp_ties_with_event_id(self):
+        timestamp = datetime(2026, 1, 1)
+        first = LWWRegister("edge-a")
+        first.set("first", timestamp=timestamp, event_id="event-a")
+        second = LWWRegister("edge-a")
+        second.set("second", timestamp=timestamp, event_id="event-b")
+
+        left = _merge_copy(first, second)
+        right = _merge_copy(second, first)
+
+        self.assertEqual(_lww_lattice(left), _lww_lattice(right))
+        self.assertEqual(left.value, "second")
+        self.assertEqual(
+            _lww_lattice(LWWRegister.from_dict(left.to_dict())),
+            _lww_lattice(left),
+        )
 
     @given(set_maps, set_maps, set_maps, set_maps, set_maps, set_maps)
     def test_orset_merge_laws(self, ae, ar, be, br, ce, cr):

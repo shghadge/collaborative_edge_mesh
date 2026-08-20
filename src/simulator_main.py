@@ -757,9 +757,12 @@ async def run_evaluation(cfg: EvalScenarioConfig = None):
         cfg.partition_splits if cfg.network_profile == "hard_partition" else []
     )
     total_steps = evaluation_runner.planned_steps(cfg)
-    asyncio.create_task(evaluation_runner.run(cfg))
+    run_id = evaluation_runner.reserve_run()
+    asyncio.create_task(evaluation_runner.run(cfg, run_id=run_id))
     return {
         "status": "started",
+        "run_id": run_id,
+        "case_id": cfg.case_id,
         "total_steps": total_steps,
         "node_counts": cfg.node_counts,
         "events_per_node": cfg.events_per_node,
@@ -771,6 +774,7 @@ async def run_evaluation(cfg: EvalScenarioConfig = None):
         "event_id_retention_limit": cfg.event_id_retention_limit,
         "delta_log_limit": cfg.delta_log_limit,
         "network_profile": cfg.network_profile,
+        "offered_rate_per_second": cfg.offered_rate_per_second,
         "dashboard_observability": cfg.dashboard_observability,
         "docker_cpus": cfg.docker_cpus,
         "docker_memory": cfg.docker_memory,

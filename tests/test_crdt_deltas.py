@@ -85,6 +85,30 @@ class DeltaMutatorTests(unittest.TestCase):
         ):
             self.assertNotIn(full_state_field, delta_state)
 
+    def test_applied_delta_is_relayed_until_all_replicas_receive_it(self):
+        source = NodeState("edge-1")
+        relay = NodeState("edge-2")
+        sink = NodeState("edge-3")
+        source.record_event(
+            "event-1",
+            "water_level",
+            {
+                "tracking_id": "event-1",
+                "location": "bridge",
+                "value": 10,
+            },
+            category="sensor",
+        )
+
+        self.assertEqual(relay.apply_delta_payload(source.get_deltas_since(0)), 1)
+        self.assertEqual(relay.delta_seq, 1)
+        self.assertEqual(sink.apply_delta_payload(relay.get_deltas_since(0)), 1)
+        self.assertEqual(sink.merkle_root(), source.merkle_root())
+
+        source_seq = source.delta_seq
+        self.assertEqual(source.apply_delta_payload(sink.get_deltas_since(0)), 0)
+        self.assertEqual(source.delta_seq, source_seq)
+
     def test_orset_remove_delta_tombstones_observed_add(self):
         source = ORSet("edge-1")
         replica = ORSet("edge-2")

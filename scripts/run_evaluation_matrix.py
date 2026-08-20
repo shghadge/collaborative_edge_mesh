@@ -106,13 +106,16 @@ def main() -> int:
     )
     parser.add_argument("--base-url", default="http://localhost:8000")
     parser.add_argument(
-        "--sync-mode", choices=["full_state", "true_delta"], default="true_delta"
+        "--sync-mode",
+        choices=["full_state", "true_delta", "centralized"],
+        default="true_delta",
     )
     parser.add_argument("--event-id-retention-limit", type=int, default=100)
     parser.add_argument("--delta-log-limit", type=int, default=1000)
     parser.add_argument("--node-counts", default="5,10,15")
     parser.add_argument("--events-per-node", type=int, default=15)
     parser.add_argument("--repetitions", type=int, default=1)
+    parser.add_argument("--scenario-seed", type=int)
     parser.add_argument("--partition-splits", default="0.5,0.7,0.8")
     parser.add_argument("--scenarios", default="baseline,partition_heal,high_load")
     parser.add_argument("--convergence-wait-seconds", type=float, default=25)
@@ -120,6 +123,7 @@ def main() -> int:
     parser.add_argument("--partition-events-per-node", type=int, default=3)
     parser.add_argument("--poll-interval-seconds", type=float, default=2)
     parser.add_argument("--event-concurrency", type=int, default=25)
+    parser.add_argument("--offered-rate-per-second", type=float)
     parser.add_argument("--network-profile", default="hard_partition")
     parser.add_argument("--docker-cpus", type=float)
     parser.add_argument("--docker-memory")
@@ -132,6 +136,7 @@ def main() -> int:
         help="Recreate containers for every repetition instead of reusing topology.",
     )
     parser.add_argument("--node-readiness-timeout-seconds", type=float, default=30.0)
+    parser.add_argument("--case-id")
     parser.add_argument(
         "--resume",
         action="store_true",
@@ -169,6 +174,7 @@ def main() -> int:
         implementation_label += f"_mem_{args.docker_memory}"
 
     expected_manifest = {
+        "case_id": args.case_id,
         "implementation_label": implementation_label,
         "sync_mode": args.sync_mode,
         "event_id_retention_limit": args.event_id_retention_limit,
@@ -177,6 +183,7 @@ def main() -> int:
         "events_per_node": args.events_per_node,
         "partition_splits": partition_splits,
         "repetitions": args.repetitions,
+        "scenario_seed": args.scenario_seed,
         "scenarios": scenarios,
         "convergence_wait_seconds": args.convergence_wait_seconds,
         "partition_wait_seconds": args.partition_wait_seconds,
@@ -184,6 +191,7 @@ def main() -> int:
         "partition_events_per_node": args.partition_events_per_node,
         "event_concurrency": args.event_concurrency,
         "network_profile": args.network_profile,
+        "offered_rate_per_second": args.offered_rate_per_second,
         "docker_cpus": args.docker_cpus,
         "docker_memory": args.docker_memory,
         "dashboard_observability": args.dashboard_observability,
@@ -204,10 +212,12 @@ def main() -> int:
         return 1
 
     payload = {
+        "case_id": args.case_id,
         "node_counts": node_counts,
         "events_per_node": args.events_per_node,
         "partition_splits": partition_splits,
         "repetitions": args.repetitions,
+        "scenario_seed": args.scenario_seed,
         "scenarios": scenarios,
         "convergence_wait_seconds": args.convergence_wait_seconds,
         "partition_wait_seconds": args.partition_wait_seconds,
@@ -215,6 +225,7 @@ def main() -> int:
         "poll_interval_seconds": args.poll_interval_seconds,
         "event_concurrency": args.event_concurrency,
         "sync_mode": args.sync_mode,
+        "offered_rate_per_second": args.offered_rate_per_second,
         "event_id_retention_limit": args.event_id_retention_limit,
         "delta_log_limit": args.delta_log_limit,
         "network_profile": args.network_profile,
@@ -245,6 +256,7 @@ def main() -> int:
                 break
             time.sleep(args.poll_interval_seconds)
         csv_text = _text_request(f"{base_url}/evaluation/download")
+        results = _json_request("GET", f"{base_url}/evaluation/results")
     except (HTTPError, URLError, TimeoutError, OSError) as error:
         print(f"evaluation request failed: {error}", file=sys.stderr)
         return 1
@@ -256,7 +268,12 @@ def main() -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     csv_path = out_dir / f"{run_id}.csv"
     json_path = out_dir / f"{run_id}.json"
+    results_path = out_dir / f"{run_id}-results.json"
     csv_path.write_text(csv_text, encoding="utf-8")
+    results_path.write_text(
+        json.dumps(results, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
 
     manifest = {
         "run_id": run_id,
@@ -264,6 +281,7 @@ def main() -> int:
         "started_at": started_at,
         "finished_at": finished_at,
         "csv_path": str(csv_path),
+        "results_path": str(results_path),
     }
     json_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     print(csv_path)

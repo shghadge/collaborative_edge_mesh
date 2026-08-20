@@ -739,6 +739,52 @@ class DockerManager:
             group_b=[c.name for c in group_b],
         )
 
+    def partition_from_gateway(self, majority_ratio: float, gateway_url: str) -> dict:
+        """Block the minority client group from the centralized baseline."""
+        from urllib.parse import urlparse
+
+        gateway_host = urlparse(gateway_url).hostname
+        if not gateway_host:
+            return self._action_response(
+                action="partition_from_gateway",
+                target="gateway",
+                status="failed",
+                message="Gateway URL has no host",
+            )
+
+        nodes = sorted(
+            [c for c in self.client.containers.list() if "edge-node" in c.name],
+            key=lambda container: container.name,
+        )
+        if len(nodes) < 2:
+            return self._action_response(
+                action="partition_from_gateway",
+                target="gateway",
+                status="failed",
+                message="Need at least 2 nodes",
+            )
+
+        ratio = max(0.0, min(float(majority_ratio), 1.0))
+        split_index = round(len(nodes) * ratio)
+        split_index = max(1, min(split_index, len(nodes) - 1))
+        connected = nodes[:split_index]
+        disconnected = nodes[split_index:]
+        for container in disconnected:
+            container.exec_run(f"iptables -A OUTPUT -d {gateway_host} -j DROP")
+            container.exec_run(f"iptables -A INPUT -s {gateway_host} -j DROP")
+            self.isolated_nodes.add(container.name)
+
+        return self._action_response(
+            action="partition_from_gateway",
+            target="gateway",
+            status="partitioned",
+            message="Disconnected selected clients from the centralized baseline",
+            partition_ratio=ratio,
+            group_a=[container.name for container in connected],
+            group_b=[container.name for container in disconnected],
+            gateway_host=gateway_host,
+        )
+
     def apply_netem_profile(self, profile: str):
         """Apply a supported tc/netem profile to all dynamic edge nodes."""
         if profile == "hard_partition":
@@ -807,3 +853,70 @@ class DockerManager:
             message="Cleared netem qdisc",
             results=results,
         )
+
+    def resource_snapshot(self) -> list[dict[str, float | int | str]]:
+        """Return one resource-counter sample for each running edge node."""
+        samples = []
+        for container in self.client.containers.list():
+            if "edge-node" not in container.name:
+                continue
+            try:
+                try:
+                    stats = container.stats(stream=False, one_shot=True)
+                except TypeError:
+                    stats = container.stats(stream=False)
+
+                cpu_stats = stats.get("cpu_stats") or {}
+                cpu_usage = cpu_stats.get("cpu_usage") or {}
+                online_cpus = cpu_stats.get("online_cpus") or len(
+                    cpu_usage.get("percpu_usage") or []
+                )
+
+                memory_stats = stats.get("memory_stats") or {}
+                memory_detail = memory_stats.get("stats") or {}
+                cache = memory_detail.get(
+                    "inactive_file", memory_detail.get("cache", 0)
+                )
+                memory_bytes = max(memory_stats.get("usage", 0) - cache, 0)
+
+                network_rx_bytes = 0
+                network_tx_bytes = 0
+                for network in (stats.get("networks") or {}).values():
+                    network_rx_bytes += network.get("rx_bytes", 0)
+                    network_tx_bytes += network.get("tx_bytes", 0)
+
+                block_read_bytes = 0
+                block_write_bytes = 0
+                entries = (
+                    stats.get("blkio_stats", {}).get("io_service_bytes_recursive") or []
+                )
+                for entry in entries:
+                    operation = str(entry.get("op", "")).lower()
+                    if operation == "read":
+                        block_read_bytes += entry.get("value", 0)
+                    elif operation == "write":
+                        block_write_bytes += entry.get("value", 0)
+
+                samples.append(
+                    {
+                        "node": container.name,
+                        "cpu_usage_ns": int(cpu_usage.get("total_usage", 0)),
+                        "system_cpu_usage_ns": int(
+                            cpu_stats.get("system_cpu_usage", 0)
+                        ),
+                        "online_cpus": max(int(online_cpus), 1),
+                        "memory_bytes": memory_bytes,
+                        "memory_limit_bytes": memory_stats.get("limit", 0),
+                        "network_rx_bytes": network_rx_bytes,
+                        "network_tx_bytes": network_tx_bytes,
+                        "block_read_bytes": block_read_bytes,
+                        "block_write_bytes": block_write_bytes,
+                    }
+                )
+            except Exception as error:
+                log.warning(
+                    "node_resource_snapshot_failed",
+                    node=container.name,
+                    error=str(error),
+                )
+        return samples

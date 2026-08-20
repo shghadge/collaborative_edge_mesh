@@ -1,0 +1,3 @@
+case_id,enabled,purpose,sync_mode,event_id_retention_limit,delta_log_limit,node_count,scenario,partition_split,network_profile,events_per_node,partition_events_per_node,event_concurrency,offered_rate_per_second,partition_wait_seconds,convergence_wait_seconds,poll_interval_seconds,seed,docker_cpus,docker_memory,observability
+capture-full_state-5n-baseline-s7401,1,packet_capture,full_state,100,1000,5,baseline,,hard_partition,15,0,25,,15,45,2,7401,1,512m,off
+capture-true_delta-5n-baseline-s7401,1,packet_capture,true_delta,100,1000,5,baseline,,hard_partition,15,0,25,,15,45,2,7401,1,512m,off
