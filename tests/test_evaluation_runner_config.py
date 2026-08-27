@@ -1,6 +1,8 @@
 import unittest
 from unittest.mock import AsyncMock, patch
 
+
+from src.config import Config
 from src.evaluation.runner import EvalScenarioConfig, EvaluationRunner
 
 
@@ -28,7 +30,7 @@ class EvaluationRunnerConfigTests(unittest.TestCase):
             node_counts=[5],
             repetitions=2,
             partition_splits=[0.5, 0.7],
-            network_profile="degraded_300ms_10loss",
+            network_profile="degraded",
             scenarios=["baseline", "partition_heal", "high_load"],
         )
 
@@ -36,7 +38,7 @@ class EvaluationRunnerConfigTests(unittest.TestCase):
 
     def test_validation_rejects_empty_effective_matrix(self):
         cfg = EvalScenarioConfig(
-            network_profile="degraded_300ms_10loss",
+            network_profile="degraded",
             scenarios=["partition_heal"],
         )
 
@@ -53,6 +55,96 @@ class EvaluationRunnerConfigTests(unittest.TestCase):
         self.assertIn("delta_log_25", cfg.implementation_label())
         self.assertEqual(cfg.delta_log_limit, 25)
         self.assertEqual(cfg.partition_events_per_node, 40)
+
+    def test_repetition_seeds_are_deterministic_and_distinct(self):
+        cfg = EvalScenarioConfig(scenario_seed=7301, repetitions=3)
+
+        self.assertEqual(
+            [cfg.seed_for_repetition(repetition) for repetition in range(1, 4)],
+            [7301, 7302, 7303],
+        )
+
+    def test_report_network_profiles_and_sync_modes_are_executable(self):
+        for network_profile in (
+            "clean_lan",
+            "constrained_wifi",
+            "degraded",
+            "severe",
+            "hard_partition",
+        ):
+            for sync_mode in (
+                "full_state",
+                "optimized_full_state",
+                "naive_key_delta",
+                "true_delta",
+            ):
+                with self.subTest(
+                    network_profile=network_profile,
+                    sync_mode=sync_mode,
+                ):
+                    cfg = EvalScenarioConfig(
+                        network_profile=network_profile,
+                        sync_mode=sync_mode,
+                        scenarios=["baseline"],
+                    )
+                    self.runner.validate_config(cfg)
+
+    def test_full_state_is_unbounded_and_optimized_full_state_is_bounded(self):
+        full_state = EvalScenarioConfig(
+            sync_mode="full_state",
+            event_id_retention_limit=100,
+        )
+        optimized = EvalScenarioConfig(
+            sync_mode="optimized_full_state",
+            event_id_retention_limit=100,
+        )
+
+        self.assertEqual(full_state.effective_event_id_retention_limit(), 0)
+        self.assertIn("unbounded_retention", full_state.implementation_label())
+        self.assertEqual(optimized.effective_event_id_retention_limit(), 100)
+        self.assertIn("retention_100", optimized.implementation_label())
+
+    def test_optimized_full_state_rejects_unbounded_retention(self):
+        cfg = EvalScenarioConfig(
+            sync_mode="optimized_full_state",
+            event_id_retention_limit=0,
+        )
+
+        with self.assertRaisesRegex(ValueError, "positive"):
+            self.runner.validate_config(cfg)
+
+    def test_result_row_records_effective_network_profile(self):
+        cfg = EvalScenarioConfig(
+            network_profile="constrained_wifi",
+            scenarios=["baseline"],
+        )
+        self.runner._network_profile_receipt = {"status": "applied"}
+
+        row = self.runner._row_base(
+            cfg,
+            "run-1",
+            1,
+            "baseline",
+            5,
+            {"attempted": 0, "accepted": 0},
+        )
+
+        self.assertEqual(row["network_delay_ms"], 50.0)
+        self.assertEqual(row["network_jitter_ms"], 15.0)
+        self.assertEqual(row["network_loss_percent"], 2.0)
+        self.assertEqual(row["network_bandwidth_mbps"], 10.0)
+        self.assertTrue(row["network_rules_verified"])
+
+    def test_node_config_accepts_all_report_sync_modes(self):
+        for sync_mode in (
+            "full_state",
+            "optimized_full_state",
+            "naive_key_delta",
+            "true_delta",
+        ):
+            with self.subTest(sync_mode=sync_mode):
+                with patch.dict("os.environ", {"SYNC_MODE": sync_mode}):
+                    self.assertEqual(Config().sync_mode, sync_mode)
 
     def test_validation_rejects_negative_delta_log_limit(self):
         cfg = EvalScenarioConfig(delta_log_limit=-1)
@@ -143,9 +235,7 @@ class EvaluationRunnerTimeoutTests(unittest.IsolatedAsyncioTestCase):
         runner._collect_resource_sample = AsyncMock()
         cfg = EvalScenarioConfig(convergence_wait_seconds=45)
 
-        with patch(
-            "src.evaluation.runner.time.time", side_effect=[0.0, 46.0, 47.0]
-        ):
+        with patch("src.evaluation.runner.time.time", side_effect=[0.0, 46.0, 47.0]):
             metrics = await runner.wait_for_metrics(
                 session=None,
                 nodes=[],

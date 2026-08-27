@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 from src.crdt.gcounter import GCounter
 from src.crdt.pncounter import PNCounter
@@ -51,6 +52,56 @@ class DeltaMutatorTests(unittest.TestCase):
             delta_state["counters"]["event_count:water_level"]["counts"],
             {"edge-1": 1},
         )
+
+    def test_naive_key_delta_contains_full_changed_key(self):
+        peer = NodeState("edge-2")
+        peer.record_event(
+            "peer-event",
+            "water_level",
+            {"location": "bridge", "value": 9},
+            category="sensor",
+        )
+        true_delta_source = NodeState("edge-1", sync_mode="true_delta")
+        key_delta_source = NodeState("edge-1", sync_mode="naive_key_delta")
+        for source in (true_delta_source, key_delta_source):
+            source.merge(peer)
+            source.record_event(
+                "local-event",
+                "water_level",
+                {"location": "bridge", "value": 10},
+                category="sensor",
+            )
+
+        true_delta = true_delta_source.get_deltas_since(0, mode="true_delta")
+        key_delta = key_delta_source.get_deltas_since(0, mode="naive_key_delta")
+        counter_key = "event_count:water_level"
+
+        self.assertEqual(
+            true_delta["deltas"][0]["state"]["counters"][counter_key]["counts"],
+            {"edge-1": 1},
+        )
+        self.assertEqual(
+            key_delta["deltas"][0]["state"]["counters"][counter_key]["counts"],
+            {"edge-1": 1, "edge-2": 1},
+        )
+
+        replica = NodeState("edge-3", sync_mode="naive_key_delta")
+        self.assertEqual(replica.apply_delta_payload(key_delta), 1)
+        self.assertEqual(replica.merkle_root(), key_delta_source.merkle_root())
+
+    def test_full_state_modes_do_not_build_unused_delta_logs(self):
+        for sync_mode in ("full_state", "optimized_full_state"):
+            with self.subTest(sync_mode=sync_mode):
+                state = NodeState("edge-1", sync_mode=sync_mode)
+                state.record_event(
+                    "event-1",
+                    "water_level",
+                    {"location": "bridge", "value": 10},
+                    category="sensor",
+                )
+
+                self.assertEqual(state.delta_seq, 0)
+                self.assertEqual(state.delta_log, [])
 
     def test_node_state_delta_log_uses_compact_serialization(self):
         source = NodeState("edge-1")
@@ -108,6 +159,54 @@ class DeltaMutatorTests(unittest.TestCase):
         source_seq = source.delta_seq
         self.assertEqual(source.apply_delta_payload(sink.get_deltas_since(0)), 0)
         self.assertEqual(source.delta_seq, source_seq)
+
+    def test_delta_batch_hashes_once_and_relays_each_state_change(self):
+        source = NodeState("edge-1")
+        replica = NodeState("edge-2")
+        sink = NodeState("edge-3")
+        source.record_event(
+            "sensor-event",
+            "water_level",
+            {"location": "bridge", "value": 10},
+            category="sensor",
+        )
+        source.record_event(
+            "resource-event",
+            "shelter_occupancy",
+            {"location": "shelter-a", "value": 4},
+            category="resource",
+        )
+        source.record_event(
+            "hazard-event",
+            "road_status",
+            {"location": "highway_101", "value": "blocked"},
+            category="infrastructure",
+        )
+        payload = source.get_deltas_since(0)
+
+        with patch.object(
+            replica, "merkle_root", wraps=replica.merkle_root
+        ) as merkle_root:
+            applied = replica.apply_delta_payload(payload)
+
+        self.assertEqual(applied, 3)
+        self.assertEqual(merkle_root.call_count, 2)
+        self.assertEqual(replica.version, 1)
+        self.assertEqual(replica.delta_seq, 3)
+        self.assertEqual(sink.apply_delta_payload(replica.get_deltas_since(0)), 3)
+        self.assertEqual(sink.merkle_root(), source.merkle_root())
+
+        version = replica.version
+        delta_seq = replica.delta_seq
+        with patch.object(
+            replica, "merkle_root", wraps=replica.merkle_root
+        ) as merkle_root:
+            reapplied = replica.apply_delta_payload(payload)
+
+        self.assertEqual(reapplied, 0)
+        self.assertEqual(merkle_root.call_count, 2)
+        self.assertEqual(replica.version, version)
+        self.assertEqual(replica.delta_seq, delta_seq)
 
     def test_orset_remove_delta_tombstones_observed_add(self):
         source = ORSet("edge-1")

@@ -1,53 +1,17 @@
 #!/usr/bin/env python3
 import argparse
-import csv
 import subprocess
 import sys
+from collections import Counter
 from pathlib import Path
 
-REQUIRED_COLUMNS = {
-    "case_id",
-    "enabled",
-    "sync_mode",
-    "node_count",
-    "event_id_retention_limit",
-    "delta_log_limit",
-    "scenario",
-    "partition_split",
-    "network_profile",
-    "events_per_node",
-    "partition_events_per_node",
-    "event_concurrency",
-    "offered_rate_per_second",
-    "partition_wait_seconds",
-    "convergence_wait_seconds",
-    "poll_interval_seconds",
-    "seed",
-    "docker_cpus",
-    "docker_memory",
-    "observability",
-}
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-
-def _enabled(value: str) -> bool:
-    return value.strip().lower() in {"1", "true", "yes", "on"}
+from src.evaluation.matrix import load_experiment_matrix, validate_experiment_cases
 
 
 def _load_cases(path: Path) -> list[dict[str, str]]:
-    with path.open(newline="", encoding="utf-8") as handle:
-        reader = csv.DictReader(handle)
-        missing = REQUIRED_COLUMNS - set(reader.fieldnames or [])
-        if missing:
-            names = ", ".join(sorted(missing))
-            raise ValueError(f"matrix is missing required columns: {names}")
-        cases = [row for row in reader if _enabled(row["enabled"])]
-
-    case_ids = [row["case_id"].strip() for row in cases]
-    if any(not case_id for case_id in case_ids):
-        raise ValueError("every enabled matrix row requires a case_id")
-    if len(case_ids) != len(set(case_ids)):
-        raise ValueError("enabled matrix case_id values must be unique")
-    return cases
+    return load_experiment_matrix(path)
 
 
 def _case_command(
@@ -62,6 +26,10 @@ def _case_command(
         base_url,
         "--sync-mode",
         case["sync_mode"].strip(),
+        "--condition-id",
+        case["condition_id"].strip(),
+        "--sweep",
+        case["sweep"].strip(),
         "--event-id-retention-limit",
         case["event_id_retention_limit"].strip(),
         "--delta-log-limit",
@@ -89,7 +57,7 @@ def _case_command(
         "--scenario-seed",
         case["seed"].strip(),
         "--repetitions",
-        "1",
+        case["repetitions"].strip(),
         "--dashboard-observability",
         case["observability"].strip(),
         "--case-id",
@@ -123,10 +91,17 @@ def main() -> int:
     parser.add_argument("--out", type=Path, default=Path("results/reviewer_revision"))
     parser.add_argument("--no-resume", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--require-complete",
+        action="store_true",
+        help="Require the exact 1,760-configuration focused matrix.",
+    )
     args = parser.parse_args()
 
     try:
         cases = _load_cases(args.matrix)
+        if args.require_complete:
+            validate_experiment_cases(cases, require_complete=True)
     except (OSError, ValueError) as error:
         print(f"invalid reviewer matrix: {error}", file=sys.stderr)
         return 2
@@ -134,6 +109,15 @@ def main() -> int:
     if not cases:
         print("reviewer matrix has no enabled cases", file=sys.stderr)
         return 2
+
+    if args.dry_run:
+        sweep_counts = Counter(case["sweep"].strip() for case in cases)
+        result_rows = sum(int(case["repetitions"]) for case in cases)
+        print(f"validated_configurations={len(cases)}")
+        print(f"expected_result_rows={result_rows}")
+        for sweep, count in sorted(sweep_counts.items()):
+            print(f"{sweep}={count}")
+        return 0
 
     for index, case in enumerate(cases, start=1):
         case_id = case["case_id"].strip()
@@ -144,9 +128,6 @@ def main() -> int:
             resume=not args.no_resume,
         )
         print(f"[{index}/{len(cases)}] {case_id}", flush=True)
-        if args.dry_run:
-            print(" ".join(command))
-            continue
         completed = subprocess.run(command, check=False)
         if completed.returncode != 0:
             print(f"case failed: {case_id}", file=sys.stderr)

@@ -42,6 +42,7 @@ async def main():
         config.node_id,
         config.event_id_retention_limit,
         delta_log_limit=config.delta_log_limit,
+        sync_mode=config.sync_mode,
     )
     chain = HashChainLog(config.node_id, f"{config.data_dir}/logs")
     intake = IntakeService(config, state, chain)
@@ -71,8 +72,8 @@ async def main():
         }
 
     @intake.app.get("/state/deltas")
-    async def state_deltas(since: int = 0):
-        return state.get_deltas_since(since)
+    async def state_deltas(since: int = 0, mode: str = "true_delta"):
+        return state.get_deltas_since(since, mode=mode)
 
     @intake.app.post("/evaluation/central-submit")
     async def central_submit(request: Request):

@@ -10,6 +10,52 @@ NETWORK_NAME = "collaborative_edge_mesh_mesh"
 IMAGE_NAME = "collaborative_edge_mesh-simulator:latest"  # built by docker compose
 SUBNET = "172.28.0"
 
+NETWORK_PROFILE_SETTINGS = {
+    "clean_lan": {
+        "delay_ms": 1.0,
+        "jitter_ms": 0.2,
+        "loss_percent": 0.0,
+        "bandwidth_mbps": 1000.0,
+    },
+    "constrained_wifi": {
+        "delay_ms": 50.0,
+        "jitter_ms": 15.0,
+        "loss_percent": 2.0,
+        "bandwidth_mbps": 10.0,
+    },
+    "degraded": {
+        "delay_ms": 300.0,
+        "jitter_ms": 100.0,
+        "loss_percent": 10.0,
+        "bandwidth_mbps": 2.0,
+    },
+    "severe": {
+        "delay_ms": 600.0,
+        "jitter_ms": 200.0,
+        "loss_percent": 20.0,
+        "bandwidth_mbps": 0.5,
+    },
+}
+
+
+def build_network_profile_commands(profile: str) -> list[str]:
+    settings = NETWORK_PROFILE_SETTINGS[profile]
+    bandwidth = settings["bandwidth_mbps"]
+    delay = settings["delay_ms"]
+    jitter = settings["jitter_ms"]
+    loss = settings["loss_percent"]
+    return [
+        "tc qdisc replace dev eth0 root handle 1: htb default 10",
+        (
+            "tc class replace dev eth0 parent 1: classid 1:10 htb "
+            f"rate {bandwidth:g}mbit ceil {bandwidth:g}mbit burst 32k"
+        ),
+        (
+            "tc qdisc replace dev eth0 parent 1:10 handle 10: netem "
+            f"delay {delay:g}ms {jitter:g}ms loss {loss:g}%"
+        ),
+    ]
+
 
 class DockerManager:
     """Manages edge node containers via the Docker API."""
@@ -705,38 +751,67 @@ class DockerManager:
         ips_a = [get_ip(c) for c in group_a]
         ips_b = [get_ip(c) for c in group_b]
 
-        # group A blocks traffic from group B and vice versa
-        for c in group_a:
-            for ip in ips_b:
-                if ip:
-                    c.exec_run(f"iptables -A INPUT -s {ip} -j DROP")
-                    c.exec_run(f"iptables -A OUTPUT -d {ip} -j DROP")
+        results = []
+        applied = True
+        for container, opposite_ips in (
+            *((container, ips_b) for container in group_a),
+            *((container, ips_a) for container in group_b),
+        ):
+            for ip in opposite_ips:
+                if not ip:
+                    applied = False
+                    continue
+                for direction, address_flag in (("INPUT", "-s"), ("OUTPUT", "-d")):
+                    add_command = f"iptables -A {direction} {address_flag} {ip} -j DROP"
+                    check_command = (
+                        f"iptables -C {direction} {address_flag} {ip} -j DROP"
+                    )
+                    add_code, add_output = container.exec_run(add_command)
+                    check_code, check_output = container.exec_run(check_command)
+                    if add_code != 0 or check_code != 0:
+                        applied = False
+                    results.append(
+                        {
+                            "node": container.name,
+                            "add_command": add_command,
+                            "add_exit_code": add_code,
+                            "add_output": (
+                                add_output.decode(errors="replace")
+                                if isinstance(add_output, bytes)
+                                else str(add_output)
+                            ),
+                            "check_command": check_command,
+                            "check_exit_code": check_code,
+                            "check_output": (
+                                check_output.decode(errors="replace")
+                                if isinstance(check_output, bytes)
+                                else str(check_output)
+                            ),
+                        }
+                    )
 
-        for c in group_b:
-            for ip in ips_a:
-                if ip:
-                    c.exec_run(f"iptables -A INPUT -s {ip} -j DROP")
-                    c.exec_run(f"iptables -A OUTPUT -d {ip} -j DROP")
-
-        # Mark all as 'isolated' (partially) so UI shows red lines
-        # This is simplification but effective for demo visualization
-        for c in nodes:
-            self.isolated_nodes.add(c.name)
-
-        log.info(
-            "split_brain_created",
-            group_a=[c.name for c in group_a],
-            group_b=[c.name for c in group_b],
-        )
+        if applied:
+            for container in nodes:
+                self.isolated_nodes.add(container.name)
+            log.info(
+                "split_brain_created",
+                group_a=[container.name for container in group_a],
+                group_b=[container.name for container in group_b],
+            )
 
         return self._action_response(
             action="split_brain",
             target="mesh",
-            status="split_brain",
-            message="Created split-brain partition",
+            status="split_brain" if applied else "failed",
+            message=(
+                "Created and verified split-brain partition"
+                if applied
+                else "Failed to apply every split-brain rule"
+            ),
             partition_ratio=ratio,
-            group_a=[c.name for c in group_a],
-            group_b=[c.name for c in group_b],
+            group_a=[container.name for container in group_a],
+            group_b=[container.name for container in group_b],
+            results=results,
         )
 
     def partition_from_gateway(self, majority_ratio: float, gateway_url: str) -> dict:
@@ -786,7 +861,7 @@ class DockerManager:
         )
 
     def apply_netem_profile(self, profile: str):
-        """Apply a supported tc/netem profile to all dynamic edge nodes."""
+        """Apply and verify a supported traffic-control profile on every edge node."""
         if profile == "hard_partition":
             return self._action_response(
                 action="apply_netem_profile",
@@ -795,38 +870,86 @@ class DockerManager:
                 message="hard_partition uses iptables partition controls",
                 profile=profile,
             )
-        if profile != "degraded_300ms_10loss":
+        if profile not in NETWORK_PROFILE_SETTINGS:
             return self._action_response(
                 action="apply_netem_profile",
                 target="mesh",
                 status="failed",
-                message=f"Unsupported netem profile: {profile}",
+                message=f"Unsupported network profile: {profile}",
                 profile=profile,
             )
 
+        commands = build_network_profile_commands(profile)
         results = []
+        applied = True
         for container in self.client.containers.list():
             if "edge-node" not in container.name:
                 continue
-            exit_code, output = container.exec_run(
-                "tc qdisc replace dev eth0 root netem delay 300ms 100ms loss 10%"
-            )
+            command_results = []
+            for command in commands:
+                exit_code, output = container.exec_run(command)
+                decoded = (
+                    output.decode(errors="replace")
+                    if isinstance(output, bytes)
+                    else str(output)
+                )
+                command_results.append(
+                    {
+                        "command": command,
+                        "exit_code": exit_code,
+                        "output": decoded,
+                    }
+                )
+                if exit_code != 0:
+                    applied = False
+                    break
+
+            verification = []
+            if all(item["exit_code"] == 0 for item in command_results):
+                for command in (
+                    "tc qdisc show dev eth0",
+                    "tc class show dev eth0",
+                ):
+                    exit_code, output = container.exec_run(command)
+                    decoded = (
+                        output.decode(errors="replace")
+                        if isinstance(output, bytes)
+                        else str(output)
+                    )
+                    expected_kind = "netem" if "qdisc" in command else "htb"
+                    verified = exit_code == 0 and expected_kind in decoded.lower()
+                    verification.append(
+                        {
+                            "command": command,
+                            "exit_code": exit_code,
+                            "output": decoded,
+                            "verified": verified,
+                        }
+                    )
+                    if not verified:
+                        applied = False
+
             results.append(
                 {
                     "node": container.name,
-                    "exit_code": exit_code,
-                    "output": output.decode(errors="replace")
-                    if isinstance(output, bytes)
-                    else str(output),
+                    "commands": command_results,
+                    "verification": verification,
                 }
             )
 
+        if not results:
+            applied = False
         return self._action_response(
             action="apply_netem_profile",
             target="mesh",
-            status="applied",
-            message=f"Applied {profile}",
+            status="applied" if applied else "failed",
+            message=(
+                f"Applied and verified {profile}"
+                if applied
+                else f"Failed to apply {profile} to every edge node"
+            ),
             profile=profile,
+            settings=dict(NETWORK_PROFILE_SETTINGS[profile]),
             results=results,
         )
 

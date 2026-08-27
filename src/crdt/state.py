@@ -33,7 +33,11 @@ class NodeState:
     """
 
     def __init__(
-        self, node_id, event_id_retention_limit=100, delta_log_limit: int | None = 1000
+        self,
+        node_id,
+        event_id_retention_limit=100,
+        delta_log_limit: int | None = 1000,
+        sync_mode: str = "true_delta",
     ):
         self.node_id = node_id
         self.version = 0
@@ -43,6 +47,7 @@ class NodeState:
         self.pn_counters = {}  # key -> PNCounter
         self.sets = {}  # key -> ORSet
         self.event_id_retention_limit = event_id_retention_limit
+        self.sync_mode = sync_mode
         self.event_ids = []
         self.delta_seq = 0
         self.delta_log = []
@@ -101,8 +106,10 @@ class NodeState:
 
         self._record_first_seen(tracking_id, data.get("evaluation_submitted_at"))
 
-        delta_state = self._build_delta_state(stored_in, event_id)
-        self.record_delta(delta_state)
+        if self.sync_mode == "true_delta":
+            self.record_delta(self._build_delta_state(stored_in, event_id))
+        elif self.sync_mode == "naive_key_delta":
+            self.record_delta(self._build_key_delta_state(stored_in, event_id))
 
         self.version += 1
         self.updated_at = datetime.utcnow()
@@ -146,10 +153,46 @@ class NodeState:
             )
         return delta_state
 
+    def _build_key_delta_state(self, stored_in, event_id):
+        """Build a key-level delta containing the full changed CRDT values."""
+        delta_state = NodeState(
+            self.node_id,
+            self.event_id_retention_limit,
+            delta_log_limit=self.delta_log_limit,
+        )
+        counter_key = stored_in.get("counter_key")
+        if counter_key and counter_key in self.counters:
+            delta_state.counters[counter_key] = GCounter.from_dict(
+                self.counters[counter_key].to_dict()
+            )
+        register_key = stored_in.get("register_key")
+        if register_key and register_key in self.registers:
+            delta_state.registers[register_key] = LWWRegister.from_dict(
+                self.registers[register_key].to_dict()
+            )
+        pn_counter_key = stored_in.get("pn_counter_key")
+        if pn_counter_key and pn_counter_key in self.pn_counters:
+            delta_state.pn_counters[pn_counter_key] = PNCounter.from_dict(
+                self.pn_counters[pn_counter_key].to_dict()
+            )
+        set_key = stored_in.get("set_key")
+        if set_key and set_key in self.sets:
+            delta_state.sets[set_key] = ORSet.from_dict(self.sets[set_key].to_dict())
+        delta_state.event_ids = [event_id]
+        tracking_id = stored_in.get("tracking_id")
+        if tracking_id and tracking_id in self.first_seen_tracking:
+            delta_state.first_seen_tracking[tracking_id] = dict(
+                self.first_seen_tracking[tracking_id]
+            )
+        return delta_state
+
     def record_delta(self, delta_state: "NodeState") -> int:
         self.delta_seq += 1
         self.delta_log.append(
-            {"seq": self.delta_seq, "state": delta_state.to_delta_dict()}
+            {
+                "seq": self.delta_seq,
+                "state": delta_state.to_delta_dict(),
+            }
         )
         if self.delta_log_limit and len(self.delta_log) > self.delta_log_limit:
             self.delta_log = self.delta_log[-self.delta_log_limit :]
@@ -377,29 +420,45 @@ class NodeState:
             },
         }
 
-    def merge(self, other):
-        """Merge another node's state. All CRDTs merge independently.
-        Only bumps version if state actually changed."""
-        old_root = self.merkle_root()
+    @staticmethod
+    def _counter_has_new_counts(local, remote) -> bool:
+        return any(
+            count > local.counts.get(node_id, 0)
+            for node_id, count in remote.counts.items()
+        )
 
-        # merge G-Counters
+    def _merge_components(self, other: "NodeState") -> bool:
+        """Join another state and report whether semantic CRDT state changed."""
+        changed = False
+
         for key, counter in other.counters.items():
             if key not in self.counters:
                 self.counters[key] = GCounter(
                     self.node_id, description=counter.description
                 )
                 self.counters[key].counts = {}
+                changed = True
+            elif self._counter_has_new_counts(self.counters[key], counter):
+                changed = True
             self.counters[key].merge(counter)
 
-        # merge LWW-Registers
         for key, reg in other.registers.items():
             if key not in self.registers:
                 self.registers[key] = LWWRegister(
                     self.node_id, description=reg.description
                 )
+                changed = True
+            else:
+                local_order = (
+                    self.registers[key]._timestamp,
+                    self.registers[key]._writer_id,
+                    self.registers[key]._event_id,
+                )
+                remote_order = (reg._timestamp, reg._writer_id, reg._event_id)
+                if remote_order > local_order:
+                    changed = True
             self.registers[key].merge(reg)
 
-        # merge PN-Counters
         for key, pnc in other.pn_counters.items():
             if key not in self.pn_counters:
                 self.pn_counters[key] = PNCounter(
@@ -407,18 +466,36 @@ class NodeState:
                 )
                 self.pn_counters[key]._p.counts = {}
                 self.pn_counters[key]._n.counts = {}
+                changed = True
+            elif self._counter_has_new_counts(
+                self.pn_counters[key]._p, pnc._p
+            ) or self._counter_has_new_counts(self.pn_counters[key]._n, pnc._n):
+                changed = True
             self.pn_counters[key].merge(pnc)
 
-        # merge OR-Sets
         for key, orset in other.sets.items():
             if key not in self.sets:
                 self.sets[key] = ORSet(self.node_id, description=orset.description)
+                changed = True
+            else:
+                local = self.sets[key]
+                has_new_add = any(
+                    not tags.issubset(local._elements.get(element, set()))
+                    for element, tags in orset._elements.items()
+                )
+                has_new_remove = any(
+                    not tags.issubset(local._removed.get(element, set()))
+                    for element, tags in orset._removed.items()
+                )
+                if has_new_add or has_new_remove:
+                    changed = True
             self.sets[key].merge(orset)
 
-        # merge recent event_ids without letting serialized state grow unbounded
-        for eid in other.event_ids:
-            if eid not in self.event_ids:
-                self.event_ids.append(eid)
+        known_event_ids = set(self.event_ids)
+        for event_id in other.event_ids:
+            if event_id not in known_event_ids:
+                self.event_ids.append(event_id)
+                known_event_ids.add(event_id)
         if (
             self.event_id_retention_limit
             and len(self.event_ids) > self.event_id_retention_limit
@@ -426,6 +503,12 @@ class NodeState:
             self.event_ids = self.event_ids[-self.event_id_retention_limit :]
         self._merge_first_seen_tracking(other)
 
+        return changed
+
+    def merge(self, other):
+        """Merge another node's state and update the local state version once."""
+        old_root = self.merkle_root()
+        self._merge_components(other)
         if self.merkle_root() != old_root:
             self.version += 1
             self.updated_at = datetime.utcnow()
@@ -488,6 +571,7 @@ class NodeState:
             "node_id": self.node_id,
             "version": self.version,
             "updated_at": self.updated_at.isoformat(),
+            "sync_mode": self.sync_mode,
             "counters": {k: v.to_dict() for k, v in self.counters.items()},
             "registers": {k: v.to_dict() for k, v in self.registers.items()},
             "pn_counters": {k: v.to_dict() for k, v in self.pn_counters.items()},
@@ -522,7 +606,14 @@ class NodeState:
             "current_gossip_round": self.current_gossip_round,
         }
 
-    def get_deltas_since(self, since_seq: int) -> dict:
+    def get_deltas_since(self, since_seq: int, mode: str = "true_delta") -> dict:
+        if mode not in {"naive_key_delta", "true_delta"}:
+            raise ValueError(f"unsupported delta mode: {mode}")
+        if (
+            self.sync_mode in {"naive_key_delta", "true_delta"}
+            and mode != self.sync_mode
+        ):
+            raise ValueError(f"requested {mode} deltas from a {self.sync_mode} node")
         since_seq = max(int(since_seq or 0), 0)
         if not self.delta_log:
             return {
@@ -543,31 +634,47 @@ class NodeState:
                 "deltas": [],
             }
 
+        deltas = []
+        for item in self.delta_log:
+            if item["seq"] <= since_seq:
+                continue
+            deltas.append(
+                {
+                    "seq": item["seq"],
+                    "state": item["state"],
+                }
+            )
         return {
             "node_id": self.node_id,
             "from_seq": since_seq,
             "to_seq": self.delta_seq,
             "has_gap": False,
-            "deltas": [item for item in self.delta_log if item["seq"] > since_seq],
+            "deltas": deltas,
         }
 
     def apply_delta_payload(self, payload: dict) -> int:
         if payload.get("has_gap"):
             return 0
 
-        applied = 0
+        old_root = self.merkle_root()
+        changed_deltas = []
         for item in payload.get("deltas", []):
             state_data = item.get("state")
             if not isinstance(state_data, dict):
                 continue
             incoming = NodeState.from_dict(state_data)
-            old_root = self.merkle_root()
-            self.merge(incoming)
-            if self.merkle_root() == old_root:
-                continue
-            self.record_delta(incoming)
-            applied += 1
-        return applied
+            if self._merge_components(incoming):
+                changed_deltas.append(incoming)
+
+        if self.merkle_root() == old_root:
+            return 0
+
+        self.version += 1
+        self.updated_at = datetime.utcnow()
+        if self.sync_mode in {"naive_key_delta", "true_delta"}:
+            for incoming in changed_deltas:
+                self.record_delta(incoming)
+        return len(changed_deltas)
 
     @classmethod
     def from_dict(cls, data):
@@ -575,6 +682,7 @@ class NodeState:
             data["node_id"],
             data.get("event_id_retention_limit", 100),
             delta_log_limit=data.get("delta_log_limit", 1000),
+            sync_mode=data.get("sync_mode", "true_delta"),
         )
         s.version = data.get("version", 0)
         s.updated_at = datetime.fromisoformat(

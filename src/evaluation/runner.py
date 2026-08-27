@@ -13,25 +13,41 @@ import aiohttp
 import structlog
 from pydantic import BaseModel, Field
 
+from src.services.docker_manager import NETWORK_PROFILE_SETTINGS
+
 log = structlog.get_logger()
 
-NETWORK_PROFILES = {"hard_partition", "degraded_300ms_10loss"}
+NETWORK_PROFILES = {"hard_partition", *NETWORK_PROFILE_SETTINGS}
 OBSERVABILITY_MODES = {"off", "light", "full"}
-SYNC_MODES = {"full_state", "true_delta", "centralized"}
+SYNC_MODES = {
+    "full_state",
+    "optimized_full_state",
+    "naive_key_delta",
+    "true_delta",
+    "centralized",
+}
 SCENARIOS = {"baseline", "partition_heal", "high_load"}
 DEFAULT_EVENT_ID_RETENTION_LIMIT = 100
 DEFAULT_DELTA_LOG_LIMIT = 1000
 
 CSV_HEADER = [
     "run_id",
+    "condition_id",
+    "sweep",
     "case_id",
     "repetition",
     "scenario_seed",
+    "repetition_seed",
     "implementation",
     "sync_mode",
     "event_id_retention_limit",
     "delta_log_limit",
     "network_profile",
+    "network_delay_ms",
+    "network_jitter_ms",
+    "network_loss_percent",
+    "network_bandwidth_mbps",
+    "network_rules_verified",
     "dashboard_observability",
     "docker_cpus",
     "docker_memory",
@@ -118,6 +134,8 @@ CSV_HEADER = [
 
 class EvalScenarioConfig(BaseModel):
     case_id: str | None = None
+    condition_id: str | None = None
+    sweep: str | None = None
     node_counts: list[int] = Field(default=[5, 10])
     events_per_node: int = Field(default=5)
     partition_splits: list[float] = Field(default=[0.5, 0.7, 0.8])
@@ -140,11 +158,22 @@ class EvalScenarioConfig(BaseModel):
     node_readiness_timeout_seconds: float = Field(default=30.0, ge=1.0)
     partition_events_per_node: int = Field(default=3, ge=0)
 
+    def effective_event_id_retention_limit(self) -> int:
+        if self.sync_mode == "full_state":
+            return 0
+        return self.event_id_retention_limit
+
+    def seed_for_repetition(self, repetition: int) -> int | None:
+        if self.scenario_seed is None:
+            return None
+        return self.scenario_seed + repetition - 1
+
     def implementation_label(self) -> str:
+        retention_limit = self.effective_event_id_retention_limit()
         retention = (
             "unbounded_retention"
-            if self.event_id_retention_limit <= 0
-            else f"retention_{self.event_id_retention_limit}"
+            if retention_limit <= 0
+            else f"retention_{retention_limit}"
         )
         base = f"{self.sync_mode}_{retention}_{self.network_profile}"
         if self.delta_log_limit != DEFAULT_DELTA_LOG_LIMIT:
@@ -237,6 +266,7 @@ class EvaluationRunner:
         self._resource_samples = []
         self._resource_stop = None
         self._resource_task = None
+        self._network_profile_receipt = {}
 
     async def _collect_resource_sample(self) -> None:
         if not hasattr(self.docker_mgr, "resource_snapshot"):
@@ -348,10 +378,17 @@ class EvaluationRunner:
         if cfg.dashboard_observability not in OBSERVABILITY_MODES:
             raise ValueError("dashboard_observability must be off, light, or full")
         if cfg.sync_mode not in SYNC_MODES:
-            raise ValueError("sync_mode must be full_state, true_delta, or centralized")
+            supported = ", ".join(sorted(SYNC_MODES))
+            raise ValueError(f"sync_mode must be one of: {supported}")
         if cfg.network_profile not in NETWORK_PROFILES:
+            supported = ", ".join(sorted(NETWORK_PROFILES))
+            raise ValueError(f"network_profile must be one of: {supported}")
+        if (
+            cfg.sync_mode == "optimized_full_state"
+            and cfg.event_id_retention_limit <= 0
+        ):
             raise ValueError(
-                "network_profile must be hard_partition or degraded_300ms_10loss"
+                "optimized_full_state requires a positive event_id_retention_limit"
             )
         if cfg.event_id_retention_limit < 0:
             raise ValueError("event_id_retention_limit must be zero or greater")
@@ -1170,7 +1207,7 @@ class EvaluationRunner:
                 self.docker_mgr.create_node,
                 node_id=f"node-{index + 1}",
                 sync_mode=cfg.sync_mode,
-                event_id_retention_limit=cfg.event_id_retention_limit,
+                event_id_retention_limit=cfg.effective_event_id_retention_limit(),
                 delta_log_limit=cfg.delta_log_limit,
                 observability_mode=cfg.dashboard_observability,
                 cpu_limit=cfg.docker_cpus,
@@ -1240,13 +1277,40 @@ class EvaluationRunner:
         return {
             "run_id": run_id,
             "case_id": cfg.case_id or "",
+            "condition_id": cfg.condition_id or "",
+            "sweep": cfg.sweep or "",
             "repetition": repetition,
             "scenario_seed": cfg.scenario_seed,
+            "repetition_seed": cfg.seed_for_repetition(repetition),
             "implementation": cfg.implementation_label(),
             "sync_mode": cfg.sync_mode,
-            "event_id_retention_limit": cfg.event_id_retention_limit,
+            "event_id_retention_limit": cfg.effective_event_id_retention_limit(),
             "delta_log_limit": cfg.delta_log_limit,
             "network_profile": cfg.network_profile,
+            "network_delay_ms": (
+                NETWORK_PROFILE_SETTINGS.get(cfg.network_profile, {}).get(
+                    "delay_ms", ""
+                )
+            ),
+            "network_jitter_ms": (
+                NETWORK_PROFILE_SETTINGS.get(cfg.network_profile, {}).get(
+                    "jitter_ms", ""
+                )
+            ),
+            "network_loss_percent": (
+                NETWORK_PROFILE_SETTINGS.get(cfg.network_profile, {}).get(
+                    "loss_percent", ""
+                )
+            ),
+            "network_bandwidth_mbps": (
+                NETWORK_PROFILE_SETTINGS.get(cfg.network_profile, {}).get(
+                    "bandwidth_mbps", ""
+                )
+            ),
+            "network_rules_verified": event_result.get(
+                "network_rules_verified",
+                self._network_profile_receipt.get("status") == "applied",
+            ),
             "dashboard_observability": cfg.dashboard_observability,
             "docker_cpus": cfg.docker_cpus or "",
             "docker_memory": cfg.docker_memory or "",
@@ -1308,7 +1372,6 @@ class EvaluationRunner:
 
     async def run(self, cfg: EvalScenarioConfig, run_id: str | None = None):
         run_id = run_id or self.reserve_run()
-        rng = random.Random(cfg.scenario_seed)
 
         self.state["running"] = True
         self.state["run_id"] = run_id
@@ -1339,12 +1402,19 @@ class EvaluationRunner:
                 session, nodes, cfg.node_readiness_timeout_seconds
             )
             await self.reset_runtime(session, nodes, gateways)
+            self._network_profile_receipt = {}
             if cfg.network_profile != "hard_partition" and hasattr(
                 self.docker_mgr, "apply_netem_profile"
             ):
-                await asyncio.to_thread(
+                receipt = await asyncio.to_thread(
                     self.docker_mgr.apply_netem_profile, cfg.network_profile
                 )
+                if receipt.get("status") != "applied":
+                    raise RuntimeError(
+                        receipt.get("message")
+                        or f"failed to apply network profile {cfg.network_profile}"
+                    )
+                self._network_profile_receipt = receipt
             await self._start_resource_sampling()
             return nodes, gateways
 
@@ -1375,6 +1445,7 @@ class EvaluationRunner:
                         )
 
                     for repetition in range(1, cfg.repetitions + 1):
+                        rng = random.Random(cfg.seed_for_repetition(repetition))
                         if cfg.warm_topology:
                             nodes, gateways = warm_nodes, warm_gateways
                         else:
@@ -1409,6 +1480,7 @@ class EvaluationRunner:
                                 concurrency=cfg.event_concurrency,
                                 rng=rng,
                                 central_url=central_url,
+                                offered_rate=cfg.offered_rate_per_second,
                             )
                             if central_url:
                                 metrics = await self.wait_for_central_metrics(
@@ -1484,6 +1556,15 @@ class EvaluationRunner:
                                     )
                                 except Exception:
                                     fault_receipt = {}
+                            if fault_receipt.get("status") not in {
+                                "split_brain",
+                                "partitioned",
+                            }:
+                                await asyncio.to_thread(self.docker_mgr.heal_all)
+                                raise RuntimeError(
+                                    fault_receipt.get("message")
+                                    or "failed to apply partition rules"
+                                )
                             partition_events = await self.send_events(
                                 session,
                                 nodes,
@@ -1523,6 +1604,7 @@ class EvaluationRunner:
                             combined_events["partition_group_b"] = (
                                 fault_receipt.get("group_b") or []
                             )
+                            combined_events["network_rules_verified"] = True
                             combined_events["fault_applied_at_unix_s"] = round(
                                 fault_applied_at, 6
                             )

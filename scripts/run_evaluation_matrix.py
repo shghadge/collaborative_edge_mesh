@@ -8,6 +8,11 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from src.evaluation.runner import NETWORK_PROFILES, SYNC_MODES
+from src.services.docker_manager import NETWORK_PROFILE_SETTINGS
+
 
 def _csv_list_int(value: str) -> list[int]:
     return [int(part.strip()) for part in value.split(",") if part.strip()]
@@ -107,7 +112,7 @@ def main() -> int:
     parser.add_argument("--base-url", default="http://localhost:8000")
     parser.add_argument(
         "--sync-mode",
-        choices=["full_state", "true_delta", "centralized"],
+        choices=sorted(SYNC_MODES),
         default="true_delta",
     )
     parser.add_argument("--event-id-retention-limit", type=int, default=100)
@@ -124,7 +129,11 @@ def main() -> int:
     parser.add_argument("--poll-interval-seconds", type=float, default=2)
     parser.add_argument("--event-concurrency", type=int, default=25)
     parser.add_argument("--offered-rate-per-second", type=float)
-    parser.add_argument("--network-profile", default="hard_partition")
+    parser.add_argument(
+        "--network-profile",
+        choices=sorted(NETWORK_PROFILES),
+        default="hard_partition",
+    )
     parser.add_argument("--docker-cpus", type=float)
     parser.add_argument("--docker-memory")
     parser.add_argument(
@@ -137,6 +146,8 @@ def main() -> int:
     )
     parser.add_argument("--node-readiness-timeout-seconds", type=float, default=30.0)
     parser.add_argument("--case-id")
+    parser.add_argument("--condition-id")
+    parser.add_argument("--sweep")
     parser.add_argument(
         "--resume",
         action="store_true",
@@ -155,9 +166,11 @@ def main() -> int:
     partition_splits = _csv_list_float(args.partition_splits)
     scenarios = _csv_list_str(args.scenarios)
     warm_topology = not args.cold_topology
+    effective_event_retention = (
+        0 if args.sync_mode == "full_state" else args.event_id_retention_limit
+    )
     implementation_label = (
-        f"{args.sync_mode}_retention_{args.event_id_retention_limit}_"
-        f"{args.network_profile}"
+        f"{args.sync_mode}_retention_{effective_event_retention}_{args.network_profile}"
     )
     if args.delta_log_limit != 1000:
         delta_label = (
@@ -175,9 +188,11 @@ def main() -> int:
 
     expected_manifest = {
         "case_id": args.case_id,
+        "condition_id": args.condition_id,
+        "sweep": args.sweep,
         "implementation_label": implementation_label,
         "sync_mode": args.sync_mode,
-        "event_id_retention_limit": args.event_id_retention_limit,
+        "event_id_retention_limit": effective_event_retention,
         "delta_log_limit": args.delta_log_limit,
         "node_counts": node_counts,
         "events_per_node": args.events_per_node,
@@ -191,6 +206,7 @@ def main() -> int:
         "partition_events_per_node": args.partition_events_per_node,
         "event_concurrency": args.event_concurrency,
         "network_profile": args.network_profile,
+        "network_settings": NETWORK_PROFILE_SETTINGS.get(args.network_profile),
         "offered_rate_per_second": args.offered_rate_per_second,
         "docker_cpus": args.docker_cpus,
         "docker_memory": args.docker_memory,
@@ -213,6 +229,8 @@ def main() -> int:
 
     payload = {
         "case_id": args.case_id,
+        "condition_id": args.condition_id,
+        "sweep": args.sweep,
         "node_counts": node_counts,
         "events_per_node": args.events_per_node,
         "partition_splits": partition_splits,
@@ -242,7 +260,7 @@ def main() -> int:
         run_id = started.get("run_id")
         last_status_line = None
         while True:
-            status = _json_request("GET", f"{base_url}/evaluation/status")
+            status = _json_request("GET", f"{base_url}/evaluation/status", timeout=600)
             run_id = run_id or status.get("run_id")
             if status.get("error"):
                 print(f"evaluation failed: {status['error']}", file=sys.stderr)

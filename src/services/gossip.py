@@ -19,6 +19,7 @@ MAX_PACKET = 60000
 MAX_GOSSIP_TARGETS = 3
 MAX_RELAY_OBSERVATIONS = 24
 REPAIR_PULL_COOLDOWN_SECONDS = 8.0
+DELTA_SYNC_MODES = {"naive_key_delta", "true_delta"}
 
 
 class GossipService:
@@ -42,6 +43,7 @@ class GossipService:
         self._last_repair_pull_at = {}
         self.stats = self._new_stats()
         self.peer_delta_seq = {}
+        self._delta_pulls_in_flight: set[str] = set()
 
     @staticmethod
     def _new_stats():
@@ -73,6 +75,8 @@ class GossipService:
             "delta_pulls_started": 0,
             "delta_pulls_success": 0,
             "delta_pulls_gap": 0,
+            "delta_pulls_skipped_stale": 0,
+            "delta_pulls_skipped_inflight": 0,
             "delta_bytes_received": 0,
             "delta_deltas_applied": 0,
         }
@@ -239,7 +243,7 @@ class GossipService:
 
             if remote_root != self.state.merkle_root():
                 self.stats["merkle_mismatches"] += 1
-                if self.config.sync_mode == "true_delta":
+                if self.config.sync_mode in DELTA_SYNC_MODES:
                     await self._maybe_pull_delta_from_sender(addr, message)
                 else:
                     await self._maybe_pull_state_from_sender(addr, message)
@@ -294,7 +298,7 @@ class GossipService:
                     theirs=remote_root[:12],
                     their_event_count=message.get("event_count"),
                 )
-                if self.config.sync_mode == "true_delta":
+                if self.config.sync_mode in DELTA_SYNC_MODES:
                     await self._maybe_pull_delta_from_sender(addr, message)
                 else:
                     await self._maybe_pull_state_from_sender(addr, message)
@@ -306,15 +310,32 @@ class GossipService:
             return
 
         sender = message.get("sender", host)
+        since = self.peer_delta_seq.get(sender, 0)
+        advertised_seq = message.get("delta_seq")
+        try:
+            advertised_seq = int(advertised_seq) if advertised_seq is not None else None
+        except (TypeError, ValueError):
+            advertised_seq = None
+
+        if advertised_seq is not None and advertised_seq <= since:
+            self.stats["delta_pulls_skipped_stale"] += 1
+            return
+        if sender in self._delta_pulls_in_flight:
+            self.stats["delta_pulls_skipped_inflight"] += 1
+            return
+
         http_port = message.get("source_http_port")
         try:
             http_port = int(http_port) if http_port is not None else 8000
-        except Exception:
+        except (TypeError, ValueError):
             http_port = 8000
 
-        since = self.peer_delta_seq.get(sender, 0)
-        url = f"http://{host}:{http_port}/state/deltas?since={since}"
+        url = (
+            f"http://{host}:{http_port}/state/deltas"
+            f"?since={since}&mode={self.config.sync_mode}"
+        )
         timeout = aiohttp.ClientTimeout(total=4)
+        self._delta_pulls_in_flight.add(sender)
         self.stats["delta_pulls_started"] += 1
 
         try:
@@ -325,19 +346,22 @@ class GossipService:
                     payload = json.loads(text)
             if payload.get("has_gap"):
                 self.stats["delta_pulls_gap"] += 1
-                await self._maybe_pull_state_from_sender(addr, message)
+                repaired = await self._maybe_pull_state_from_sender(addr, message)
+                if repaired:
+                    to_seq = int(payload.get("to_seq", since) or since)
+                    self.peer_delta_seq[sender] = max(since, to_seq)
                 return
 
             self.state.set_gossip_round(self.stats["broadcast_cycles"])
-            old_root = self.state.merkle_root()
             started = time.time()
             applied = self.state.apply_delta_payload(payload)
             elapsed_ms = (time.time() - started) * 1000
             self.stats["last_merge_ms"] = round(elapsed_ms, 3)
             self.stats["merge_time_ms_total"] += elapsed_ms
             self.stats["delta_deltas_applied"] += applied
-            self.peer_delta_seq[sender] = int(payload.get("to_seq", since) or since)
-            if self.state.merkle_root() != old_root:
+            to_seq = int(payload.get("to_seq", since) or since)
+            self.peer_delta_seq[sender] = max(since, to_seq)
+            if applied:
                 self.stats["merged"] += 1
                 self.stats["last_successful_merge_at"] = time.time()
             self.stats["delta_pulls_success"] += 1
@@ -350,17 +374,19 @@ class GossipService:
         except Exception as error:
             self.stats["repair_pulls_failed"] += 1
             log.debug("delta_pull_failed", peer=host, error=str(error))
+        finally:
+            self._delta_pulls_in_flight.discard(sender)
 
-    async def _maybe_pull_state_from_sender(self, addr, message):
+    async def _maybe_pull_state_from_sender(self, addr, message) -> bool:
         host = addr[0] if addr else None
         if not host:
             self.stats["repair_pulls_failed"] += 1
-            return
+            return False
 
         now = time.time()
         last_pull = self._last_repair_pull_at.get(host, 0.0)
         if (now - last_pull) < REPAIR_PULL_COOLDOWN_SECONDS:
-            return
+            return False
 
         self._last_repair_pull_at[host] = now
         self.stats["repair_pulls_started"] += 1
@@ -368,7 +394,7 @@ class GossipService:
         http_port = message.get("source_http_port")
         try:
             http_port = int(http_port) if http_port is not None else 8000
-        except Exception:
+        except (TypeError, ValueError):
             http_port = 8000
 
         url = f"http://{host}:{http_port}/state"
@@ -398,9 +424,11 @@ class GossipService:
                 state_version=getattr(incoming, "version", None),
                 hop_count=1,
             )
+            return True
         except Exception as error:
             self.stats["repair_pulls_failed"] += 1
             log.debug("repair_pull_failed", peer=host, error=str(error))
+            return False
 
     def _parse_peer(self, peer):
         parts = peer.rsplit(":", 1)
@@ -411,6 +439,7 @@ class GossipService:
         self.peer_observations.clear()
         self._last_repair_pull_at.clear()
         self.peer_delta_seq.clear()
+        self._delta_pulls_in_flight.clear()
         self.stats = self._new_stats()
 
     def get_stats(self):

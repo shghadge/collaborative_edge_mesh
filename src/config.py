@@ -10,7 +10,13 @@ class Config:
         self.gossip_port = int(os.getenv("GOSSIP_PORT", "9000"))
         self.gossip_interval = float(os.getenv("GOSSIP_INTERVAL", "5"))
         self.sync_mode = os.getenv("SYNC_MODE", "full_state").strip().lower()
-        if self.sync_mode not in {"full_state", "true_delta"}:
+        if self.sync_mode not in {
+            "full_state",
+            "optimized_full_state",
+            "naive_key_delta",
+            "true_delta",
+            "centralized",
+        }:
             self.sync_mode = "full_state"
         retention_limit = int(os.getenv("EVENT_ID_RETENTION_LIMIT", "100"))
         delta_log_limit = int(os.getenv("DELTA_LOG_LIMIT", "1000"))

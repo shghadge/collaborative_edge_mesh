@@ -1032,7 +1032,7 @@ async function runEvaluation() {
         'degraded-link': {
             partition_splits: [],
             convergence_wait_seconds: 25,
-            network_profile: 'degraded_300ms_10loss',
+            network_profile: 'degraded',
             dashboard_observability: 'light',
         },
     };

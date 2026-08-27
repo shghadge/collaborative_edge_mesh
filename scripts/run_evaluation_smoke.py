@@ -72,7 +72,7 @@ def main() -> int:
         "--events-per-node",
         str(args.events_per_node),
         "--network-profile",
-        "degraded_300ms_10loss",
+        "degraded",
         "--convergence-wait-seconds",
         str(args.convergence_wait_seconds),
         "--poll-interval-seconds",

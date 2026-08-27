@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field
 
 from src.config import config
 from src.evaluation.runner import EvalScenarioConfig, EvaluationRunner
-from src.services.docker_manager import DockerManager
+from src.services.docker_manager import DockerManager, NETWORK_PROFILE_SETTINGS
 from src.services.observability import SimulatorObservabilityService
 from src.services.simulator_control import SimulatorControlService
 
@@ -763,6 +763,8 @@ async def run_evaluation(cfg: EvalScenarioConfig = None):
         "status": "started",
         "run_id": run_id,
         "case_id": cfg.case_id,
+        "condition_id": cfg.condition_id,
+        "sweep": cfg.sweep,
         "total_steps": total_steps,
         "node_counts": cfg.node_counts,
         "events_per_node": cfg.events_per_node,
@@ -771,9 +773,10 @@ async def run_evaluation(cfg: EvalScenarioConfig = None):
         "partition_splits": partition_splits,
         "implementation": cfg.implementation_label(),
         "sync_mode": cfg.sync_mode,
-        "event_id_retention_limit": cfg.event_id_retention_limit,
+        "event_id_retention_limit": cfg.effective_event_id_retention_limit(),
         "delta_log_limit": cfg.delta_log_limit,
         "network_profile": cfg.network_profile,
+        "network_settings": NETWORK_PROFILE_SETTINGS.get(cfg.network_profile),
         "offered_rate_per_second": cfg.offered_rate_per_second,
         "dashboard_observability": cfg.dashboard_observability,
         "docker_cpus": cfg.docker_cpus,
