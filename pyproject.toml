@@ -1,0 +1,27 @@
+[project]
+name = "collaborative-edge-mesh"
+version = "0.1.0"
+description = "Collaborative Disaster Analytics: Resilient Edge Mesh with CRDT-based State Sync"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "structlog",
+    "pydantic",
+    "aiohttp",
+    "docker",
+    "ruff>=0.15.1",
+    "httpx>=0.28.1",
+    "zeroconf>=0.136.0",
+    "websockets>=16.0",
+    "hypothesis>=6.0.0",
+]
+
+[project.optional-dependencies]
+report = [
+    "matplotlib>=3.8.0",
+    "pandas>=2.0.0",
+    "python-docx>=1.2.0",
+]
+

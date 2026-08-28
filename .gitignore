@@ -1,0 +1,40 @@
+# Python bytecode and local caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.hypothesis/
+.ruff_cache/
+
+# Test and coverage output
+.coverage
+.coverage.*
+htmlcov/
+
+# Local environments and secrets
+.venv/
+venv/
+env/
+ENV/
+.env
+.envrc
+.pypirc
+
+# Python build/package output
+.Python
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Local runtime state
+*.db
+*.db-*
+*.sqlite*
+*.log
+
+# Generated evaluation, report, and dataset artifacts
+/results/
+/docs/
+/archive/
+/final_dataset/

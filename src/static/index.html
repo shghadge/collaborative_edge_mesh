@@ -1,0 +1,829 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <meta
+            name="description"
+            content="Interactive dashboard for monitoring and controlling the collaborative edge mesh network"
+        />
+        <title>Edge Mesh Observatory</title>
+
+        <script src="https://cdn.tailwindcss.com"></script>
+        <script>
+            tailwind.config = {
+                theme: {
+                    extend: {
+                        fontFamily: {
+                            sans: ["Inter", "ui-sans-serif", "system-ui"],
+                            mono: [
+                                "JetBrains Mono",
+                                "ui-monospace",
+                                "monospace",
+                            ],
+                        },
+                        colors: {
+                            panel: "#131a2c",
+                            panelSoft: "#1a2340",
+                        },
+                    },
+                },
+            };
+        </script>
+
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+        <link
+            href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+            rel="stylesheet"
+        />
+        <link rel="stylesheet" href="/style.css" />
+        <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+        <script src="https://d3js.org/d3.v7.min.js"></script>
+    </head>
+    <body
+        class="min-h-screen overflow-hidden bg-slate-950 text-slate-100 font-sans"
+    >
+        <header
+            id="header"
+            class="fixed top-0 left-0 right-0 z-50 border-b border-white/10 bg-slate-900/85 backdrop-blur px-4 py-2"
+        >
+            <div class="flex flex-wrap items-center justify-between gap-3">
+                <div class="flex items-center gap-3">
+                    <div class="logo flex items-center gap-2 text-sky-300">
+                        <svg
+                            width="26"
+                            height="26"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2"
+                        >
+                            <circle cx="12" cy="12" r="3" />
+                            <circle cx="12" cy="4" r="1.5" />
+                            <circle cx="20" cy="12" r="1.5" />
+                            <circle cx="12" cy="20" r="1.5" />
+                            <circle cx="4" cy="12" r="1.5" />
+                            <line x1="12" y1="6" x2="12" y2="9" />
+                            <line x1="14.5" y1="12" x2="18" y2="12" />
+                            <line x1="12" y1="15" x2="12" y2="18" />
+                            <line x1="6" y1="12" x2="9.5" y2="12" />
+                        </svg>
+                        <h1 class="text-sm font-semibold tracking-tight">
+                            Edge Mesh Observatory
+                        </h1>
+                        <a href="/docs" target="_blank" class="badge"
+                            >API Docs</a
+                        >
+                    </div>
+                </div>
+
+                <div class="header-stats flex flex-wrap items-center gap-2">
+                    <div class="stat-pill" id="stat-nodes">
+                        <span class="stat-label">Nodes</span
+                        ><span class="stat-value" id="stat-node-count">0</span>
+                    </div>
+                    <div class="stat-pill" id="stat-convergence">
+                        <span class="stat-label">Convergence</span
+                        ><span class="stat-value" id="stat-convergence-time"
+                            >&mdash;</span
+                        >
+                    </div>
+                    <div class="stat-pill" id="stat-status">
+                        <span class="stat-label">Status</span
+                        ><span class="stat-value" id="stat-network-status"
+                            ><span class="status-dot converged"></span> OK</span
+                        >
+                    </div>
+                    <div class="stat-pill" id="stat-gossip">
+                        <span class="stat-label">Gossip</span
+                        ><span class="stat-value" id="stat-gossip-count"
+                            >0</span
+                        >
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <div
+            class="app-layout mt-[56px] flex h-[calc(100vh-56px)] flex-col lg:flex-row"
+        >
+            <aside
+                class="topology-side w-full lg:w-[48%] lg:min-w-[420px] lg:max-w-[54%] border-b lg:border-b-0 lg:border-r border-white/10 flex flex-col gap-2 p-2 overflow-y-auto"
+            >
+                <section
+                    class="topology-panel-full flex-1 min-h-[38vh] bg-panel rounded-xl border border-white/10"
+                    id="topology-panel"
+                >
+                    <div
+                        class="panel-header flex items-center justify-between border-b border-white/10 px-4 py-2"
+                    >
+                        <h2
+                            class="text-xs uppercase tracking-[0.12em] text-slate-400"
+                        >
+                            Network Topology
+                        </h2>
+                        <div class="panel-actions flex items-center gap-2">
+                            <button
+                                class="btn btn-icon"
+                                onclick="toggleFullscreen()"
+                                title="Fullscreen"
+                                id="btn-fullscreen"
+                            >
+                                ⛶
+                            </button>
+                            <button
+                                class="btn btn-icon"
+                                onclick="refreshAll()"
+                                title="Refresh"
+                                id="btn-refresh"
+                            >
+                                ↻
+                            </button>
+                        </div>
+                    </div>
+                    <div
+                        class="topology-container h-full min-h-[38vh] lg:min-h-0"
+                    >
+                        <svg id="topology-canvas" class="h-full w-full"></svg>
+                    </div>
+                </section>
+
+                <section
+                    class="accordion-panel open rounded-xl border border-white/10 bg-panel"
+                    id="live-metrics-panel"
+                    data-panel-id="live-metrics"
+                >
+                    <div
+                        class="accordion-header flex items-center justify-between gap-2 px-4 py-3 cursor-pointer"
+                        onclick="toggleAccordion(this)"
+                    >
+                        <div class="accordion-title flex items-center gap-2">
+                            <span class="accordion-chevron text-slate-400"
+                                >▾</span
+                            >
+                            <h2
+                                class="text-xs uppercase tracking-[0.12em] text-slate-300"
+                            >
+                                Live Metrics
+                            </h2>
+                        </div>
+                        <div
+                            class="panel-actions flex items-center gap-2"
+                            onclick="event.stopPropagation()"
+                        >
+                            <button
+                                class="btn btn-sm btn-outline"
+                                id="btn-metrics-poll"
+                                onclick="triggerPoll()"
+                                title="Run full backend poll and refresh metrics"
+                            >
+                                Poll Backend
+                            </button>
+                            <span class="badge" id="metrics-update-badge"
+                                >Polling...</span
+                            >
+                        </div>
+                    </div>
+                    <div class="accordion-body border-t border-white/10 p-3">
+                        <div
+                            class="metrics-grid grid grid-cols-1 sm:grid-cols-2 gap-2"
+                        >
+                            <div class="metric-card" id="mc-convergence">
+                                <div class="metric-body">
+                                    <span class="metric-label"
+                                        >Convergence Time</span
+                                    ><span
+                                        class="metric-value"
+                                        id="mv-convergence"
+                                        >&mdash;</span
+                                    ><span class="metric-unit">seconds</span>
+                                </div>
+                            </div>
+                            <div class="metric-card" id="mc-data-loss">
+                                <div class="metric-body">
+                                    <span class="metric-label">Data Loss</span
+                                    ><span
+                                        class="metric-value"
+                                        id="mv-data-loss"
+                                        >0%</span
+                                    ><span class="metric-unit">of events</span>
+                                </div>
+                            </div>
+                            <div class="metric-card" id="mc-gossip">
+                                <div class="metric-body">
+                                    <span class="metric-label"
+                                        >Gossip Messages</span
+                                    ><span class="metric-value" id="mv-gossip"
+                                        >0</span
+                                    ><span class="metric-unit">sent total</span>
+                                </div>
+                            </div>
+                            <div class="metric-card" id="mc-state-size">
+                                <div class="metric-body">
+                                    <span class="metric-label">State Size</span
+                                    ><span
+                                        class="metric-value"
+                                        id="mv-state-size"
+                                        >0 B</span
+                                    ><span class="metric-unit"
+                                        >bytes total</span
+                                    >
+                                </div>
+                            </div>
+                            <div class="metric-card" id="mc-known-status">
+                                <div class="metric-body">
+                                    <span class="metric-label"
+                                        >Known Status</span
+                                    ><span
+                                        class="metric-value"
+                                        id="mv-known-status"
+                                        >Insufficient Coverage</span
+                                    ><span class="metric-unit"
+                                        >confidence-aware</span
+                                    >
+                                </div>
+                            </div>
+                            <div class="metric-card" id="mc-coverage">
+                                <div class="metric-body">
+                                    <span class="metric-label">Coverage</span
+                                    ><span class="metric-value" id="mv-coverage"
+                                        >0%</span
+                                    ><span class="metric-unit"
+                                        >fresh observed nodes</span
+                                    >
+                                </div>
+                            </div>
+                            <div
+                                class="metric-card wide sm:col-span-2"
+                                id="mc-divergence"
+                            >
+                                <div class="metric-body">
+                                    <span class="metric-label"
+                                        >Network Status</span
+                                    ><span
+                                        class="metric-value"
+                                        id="mv-divergence"
+                                        >Converged</span
+                                    ><span
+                                        class="metric-unit"
+                                        id="mv-divergence-detail"
+                                        >All Merkle roots match</span
+                                    >
+                                </div>
+                            </div>
+                        </div>
+                        <p class="mt-2 text-xs text-slate-400">
+                            Status legend: <strong>Known Converged</strong>,
+                            <strong>Known Diverged</strong>,
+                            <strong>Insufficient Coverage</strong>.
+                        </p>
+                    </div>
+                </section>
+            </aside>
+
+            <main
+                class="panels-side flex-1 overflow-y-auto p-3 space-y-2 bg-slate-950/70"
+                id="panels-side"
+            >
+                <section
+                    class="accordion-panel open rounded-xl border border-white/10 bg-panel"
+                    id="gateway-management-panel"
+                    data-panel-id="gateway-management"
+                >
+                    <div
+                        class="accordion-header flex items-center justify-between gap-2 px-4 py-3 cursor-pointer"
+                        onclick="toggleAccordion(this)"
+                    >
+                        <div class="accordion-title flex items-center gap-2">
+                            <span class="accordion-chevron text-slate-400"
+                                >▾</span
+                            >
+                            <h2
+                                class="text-xs uppercase tracking-[0.12em] text-slate-300"
+                            >
+                                Gateway Management
+                            </h2>
+                        </div>
+                        <div
+                            class="panel-actions"
+                            onclick="event.stopPropagation()"
+                        >
+                            <button
+                                class="btn btn-sm"
+                                onclick="createGateway()"
+                                id="btn-add-gateway"
+                            >
+                                + Add Gateway
+                            </button>
+                        </div>
+                    </div>
+                    <div class="accordion-body border-t border-white/10">
+                        <div class="node-list" id="gateway-list">
+                            <div class="empty-state">No gateways running</div>
+                        </div>
+                    </div>
+                </section>
+
+                <section
+                    class="accordion-panel open rounded-xl border border-white/10 bg-panel"
+                    id="node-management-panel"
+                    data-panel-id="node-management"
+                >
+                    <div
+                        class="accordion-header flex items-center justify-between gap-2 px-4 py-3 cursor-pointer"
+                        onclick="toggleAccordion(this)"
+                    >
+                        <div class="accordion-title flex items-center gap-2">
+                            <span class="accordion-chevron text-slate-400"
+                                >▾</span
+                            >
+                            <h2
+                                class="text-xs uppercase tracking-[0.12em] text-slate-300"
+                            >
+                                Node Management
+                            </h2>
+                        </div>
+                        <div
+                            class="panel-actions flex items-center gap-2"
+                            onclick="event.stopPropagation()"
+                        >
+                            <select
+                                id="gateway-selector"
+                                class="gateway-selector rounded border border-white/20 bg-slate-900 px-2 py-1 text-xs text-slate-200"
+                            >
+                                <option value="">Auto (Round-Robin)</option>
+                            </select>
+                            <button
+                                class="btn btn-sm"
+                                onclick="createNode()"
+                                id="btn-add-node"
+                            >
+                                + Add Node
+                            </button>
+                            <input
+                                type="number"
+                                id="batch-node-count"
+                                min="1"
+                                value="3"
+                                class="w-14 rounded border border-white/20 bg-slate-900 px-2 py-1 text-xs text-center text-slate-200"
+                            />
+                            <button
+                                class="btn btn-sm btn-outline"
+                                onclick="
+                                    createNodesBatch(
+                                        document.getElementById(
+                                            'batch-node-count',
+                                        ).value,
+                                    )
+                                "
+                                id="btn-add-batch-nodes"
+                            >
+                                + Add Batch
+                            </button>
+                        </div>
+                    </div>
+                    <div class="accordion-body border-t border-white/10">
+                        <div class="node-list" id="node-list">
+                            <div class="empty-state">No nodes running</div>
+                        </div>
+                        <div
+                            class="partition-controls flex flex-wrap gap-2 border-t border-white/10 p-3"
+                        >
+                            <button
+                                class="btn btn-warning"
+                                onclick="splitBrain()"
+                                id="btn-split-brain"
+                            >
+                                Split Brain
+                            </button>
+                            <button
+                                class="btn btn-success"
+                                onclick="healAll()"
+                                id="btn-heal-all"
+                            >
+                                Heal All
+                            </button>
+                        </div>
+                    </div>
+                </section>
+
+                <section
+                    class="accordion-panel open rounded-xl border border-white/10 bg-panel"
+                    id="event-sender-panel"
+                    data-panel-id="event-sender"
+                >
+                    <div
+                        class="accordion-header flex items-center justify-between gap-2 px-4 py-3 cursor-pointer"
+                        onclick="toggleAccordion(this)"
+                    >
+                        <div class="accordion-title flex items-center gap-2">
+                            <span class="accordion-chevron text-slate-400"
+                                >▾</span
+                            >
+                            <h2
+                                class="text-xs uppercase tracking-[0.12em] text-slate-300"
+                            >
+                                Send Event
+                            </h2>
+                        </div>
+                    </div>
+                    <div class="accordion-body border-t border-white/10 p-4">
+                        <form
+                            id="event-form"
+                            class="event-form space-y-3"
+                            onsubmit="sendEvent(event)"
+                        >
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                <div>
+                                    <label
+                                        for="event-type"
+                                        class="text-[11px] uppercase tracking-widest text-slate-500"
+                                        >Type</label
+                                    ><input
+                                        type="text"
+                                        id="event-type"
+                                        value="temperature"
+                                        required
+                                        class="mt-1 w-full rounded border border-white/15 bg-slate-900 px-3 py-2 text-sm"
+                                    />
+                                </div>
+                                <div>
+                                    <label
+                                        for="event-value"
+                                        class="text-[11px] uppercase tracking-widest text-slate-500"
+                                        >Value</label
+                                    ><input
+                                        type="text"
+                                        id="event-value"
+                                        value="25.0"
+                                        required
+                                        class="mt-1 w-full rounded border border-white/15 bg-slate-900 px-3 py-2 text-sm"
+                                    />
+                                </div>
+                            </div>
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                <div>
+                                    <label
+                                        for="event-category"
+                                        class="text-[11px] uppercase tracking-widest text-slate-500"
+                                        >Category</label
+                                    >
+                                    <select
+                                        id="event-category"
+                                        class="mt-1 w-full rounded border border-white/15 bg-slate-900 px-3 py-2 text-sm"
+                                    >
+                                        <option value="sensor">Sensor</option>
+                                        <option value="resource">
+                                            Resource
+                                        </option>
+                                        <option value="infrastructure">
+                                            Infrastructure
+                                        </option>
+                                        <option value="general" selected>
+                                            General
+                                        </option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label
+                                        for="event-target"
+                                        class="text-[11px] uppercase tracking-widest text-slate-500"
+                                        >Target Node</label
+                                    >
+                                    <select
+                                        id="event-target"
+                                        class="mt-1 w-full rounded border border-white/15 bg-slate-900 px-3 py-2 text-sm"
+                                    >
+                                        <option value="">Any node</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                <div>
+                                    <label
+                                        for="event-location"
+                                        class="text-[11px] uppercase tracking-widest text-slate-500"
+                                        >Location</label
+                                    ><input
+                                        type="text"
+                                        id="event-location"
+                                        value="sensor_a"
+                                        class="mt-1 w-full rounded border border-white/15 bg-slate-900 px-3 py-2 text-sm"
+                                    />
+                                </div>
+                                <div>
+                                    <label
+                                        for="event-operation"
+                                        class="text-[11px] uppercase tracking-widest text-slate-500"
+                                        >Operation</label
+                                    >
+                                    <select
+                                        id="event-operation"
+                                        class="mt-1 w-full rounded border border-white/15 bg-slate-900 px-3 py-2 text-sm"
+                                    >
+                                        <option value="" selected>
+                                            Default
+                                        </option>
+                                        <option value="increment">
+                                            Increment
+                                        </option>
+                                        <option value="decrement">
+                                            Decrement
+                                        </option>
+                                    </select>
+                                </div>
+                            </div>
+                            <button
+                                type="submit"
+                                class="btn btn-primary btn-block"
+                                id="send-event-btn"
+                            >
+                                Send Event
+                            </button>
+                        </form>
+                        <div
+                            id="event-result"
+                            class="event-result hidden"
+                        ></div>
+                    </div>
+                </section>
+
+                <section
+                    class="accordion-panel rounded-xl border border-white/10 bg-panel"
+                    id="charts-panel"
+                    data-panel-id="charts"
+                >
+                    <div
+                        class="accordion-header flex items-center justify-between gap-2 px-4 py-3 cursor-pointer"
+                        onclick="toggleAccordion(this)"
+                    >
+                        <div class="accordion-title flex items-center gap-2">
+                            <span class="accordion-chevron text-slate-400"
+                                >▾</span
+                            >
+                            <h2
+                                class="text-xs uppercase tracking-[0.12em] text-slate-300"
+                            >
+                                Charts
+                            </h2>
+                        </div>
+                    </div>
+                    <div class="accordion-body border-t border-white/10 p-3">
+                        <div
+                            class="charts-grid grid grid-cols-1 xl:grid-cols-3 gap-3"
+                        >
+                            <div class="chart-container">
+                                <h3 class="chart-title">Convergence Time</h3>
+                                <canvas id="chart-convergence"></canvas>
+                            </div>
+                            <div class="chart-container">
+                                <h3 class="chart-title">State Size Growth</h3>
+                                <canvas id="chart-state-size"></canvas>
+                            </div>
+                            <div class="chart-container">
+                                <h3 class="chart-title">Node Count</h3>
+                                <canvas id="chart-node-count"></canvas>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <section
+                    class="accordion-panel rounded-xl border border-white/10 bg-panel"
+                    id="evaluation-panel"
+                    data-panel-id="evaluation"
+                >
+                    <div
+                        class="accordion-header flex items-center justify-between gap-2 px-4 py-3 cursor-pointer"
+                        onclick="toggleAccordion(this)"
+                    >
+                        <div class="accordion-title flex items-center gap-2">
+                            <span class="accordion-chevron text-slate-400"
+                                >▾</span
+                            >
+                            <h2
+                                class="text-xs uppercase tracking-[0.12em] text-slate-300"
+                            >
+                                Evaluation Suite
+                            </h2>
+                        </div>
+                        <span class="badge" id="eval-status-badge">Idle</span>
+                    </div>
+                    <div
+                        class="accordion-body border-t border-white/10 p-3 space-y-3"
+                    >
+                        <div class="eval-config flex flex-wrap items-end gap-3">
+                            <div class="form-group">
+                                <label
+                                    for="eval-node-counts"
+                                    class="text-[11px] uppercase tracking-widest text-slate-500"
+                                    >Node Counts</label
+                                ><input
+                                    type="text"
+                                    id="eval-node-counts"
+                                    value="5"
+                                    class="mt-1 w-36 rounded border border-white/15 bg-slate-900 px-2 py-1 text-sm"
+                                />
+                            </div>
+                            <div class="form-group">
+                                <label
+                                    for="eval-events-per-node"
+                                    class="text-[11px] uppercase tracking-widest text-slate-500"
+                                    >Events / Node</label
+                                ><input
+                                    type="number"
+                                    id="eval-events-per-node"
+                                    value="5"
+                                    min="1"
+                                    max="50"
+                                    class="mt-1 w-28 rounded border border-white/15 bg-slate-900 px-2 py-1 text-sm"
+                                />
+                            </div>
+                            <div class="form-group">
+                                <label
+                                    for="eval-scenario-preset"
+                                    class="text-[11px] uppercase tracking-widest text-slate-500"
+                                    >Scenario Preset</label
+                                ><select
+                                    id="eval-scenario-preset"
+                                    class="mt-1 w-40 rounded border border-white/15 bg-slate-900 px-2 py-1 text-sm"
+                                >
+                                    <option value="quick" selected>quick</option>
+                                    <option value="standard">standard</option>
+                                    <option value="degraded-link">degraded-link</option>
+                                </select>
+                            </div>
+                            <div
+                                class="eval-actions flex items-center gap-2 ml-auto"
+                            >
+                                <button
+                                    class="btn btn-primary"
+                                    onclick="runEvaluation()"
+                                    id="btn-run-eval"
+                                >
+                                    Run Evaluation
+                                </button>
+                                <button
+                                    class="btn btn-outline"
+                                    onclick="downloadEvaluation()"
+                                    id="btn-download-eval"
+                                    disabled
+                                >
+                                    Download CSV
+                                </button>
+                            </div>
+                        </div>
+                        <p class="text-xs text-slate-400">
+                            Live dashboard metrics are cached for demo display; downloaded evaluation CSV is the measurement source.
+                        </p>
+                        <div
+                            class="eval-progress-wrap hidden"
+                            id="eval-progress-wrap"
+                        >
+                            <div class="eval-progress-bar">
+                                <div
+                                    class="eval-progress-fill"
+                                    id="eval-progress-fill"
+                                    style="width: 0%"
+                                ></div>
+                            </div>
+                            <div class="eval-step-label" id="eval-step-label">
+                                Starting...
+                            </div>
+                        </div>
+                        <div class="table-wrap" id="eval-results-wrap">
+                            <table
+                                id="eval-results-table"
+                                class="w-full text-xs"
+                            >
+                                <thead>
+                                    <tr>
+                                        <th>Scenario</th>
+                                        <th>Stage</th>
+                                        <th>Mode</th>
+                                        <th>Split</th>
+                                        <th>Nodes</th>
+                                        <th>Writes</th>
+                                        <th>Success</th>
+                                        <th>Conv.</th>
+                                        <th>Timeout</th>
+                                        <th>Missing @ Cutoff</th>
+                                        <th>Staleness</th>
+                                        <th>Sync Bytes</th>
+                                        <th>B/Event</th>
+                                        <th>Repairs</th>
+                                        <th>State Size</th>
+                                        <th>Status</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="eval-results-tbody">
+                                    <tr>
+                                        <td colspan="16" class="empty-cell">
+                                            No evaluation data - click Run
+                                            Evaluation to start
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </section>
+
+                <section
+                    class="accordion-panel rounded-xl border border-white/10 bg-panel"
+                    id="per-node-panel"
+                    data-panel-id="per-node"
+                >
+                    <div
+                        class="accordion-header flex items-center justify-between gap-2 px-4 py-3 cursor-pointer"
+                        onclick="toggleAccordion(this)"
+                    >
+                        <div class="accordion-title flex items-center gap-2">
+                            <span class="accordion-chevron text-slate-400"
+                                >▾</span
+                            >
+                            <h2
+                                class="text-xs uppercase tracking-[0.12em] text-slate-300"
+                            >
+                                Per-Node Stats
+                            </h2>
+                        </div>
+                    </div>
+                    <div class="accordion-body border-t border-white/10 p-3">
+                        <div class="table-wrap">
+                            <table id="per-node-table" class="w-full text-xs">
+                                <thead>
+                                    <tr>
+                                        <th>Node</th>
+                                        <th>Events</th>
+                                        <th>Gossip Sent</th>
+                                        <th>Peers</th>
+                                        <th>State Size</th>
+                                        <th>Merkle</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="per-node-tbody">
+                                    <tr>
+                                        <td colspan="6" class="empty-cell">
+                                            Waiting for data...
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </section>
+
+                <section
+                    class="accordion-panel rounded-xl border border-white/10 bg-panel"
+                    id="event-log-panel"
+                    data-panel-id="event-log"
+                >
+                    <div
+                        class="accordion-header flex items-center justify-between gap-2 px-4 py-3 cursor-pointer"
+                        onclick="toggleAccordion(this)"
+                    >
+                        <div class="accordion-title flex items-center gap-2">
+                            <span class="accordion-chevron text-slate-400"
+                                >▾</span
+                            >
+                            <h2
+                                class="text-xs uppercase tracking-[0.12em] text-slate-300"
+                            >
+                                Event Log
+                            </h2>
+                        </div>
+                        <span class="badge" id="event-log-count">0 events</span>
+                    </div>
+                    <div class="accordion-body border-t border-white/10 p-3">
+                        <div class="table-wrap">
+                            <table id="event-log-table" class="w-full text-xs">
+                                <thead>
+                                    <tr>
+                                        <th>Time</th>
+                                        <th>Node</th>
+                                        <th>Type</th>
+                                        <th>Category</th>
+                                        <th>State Size</th>
+                                        <th>Merkle</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="event-log-tbody">
+                                    <tr>
+                                        <td colspan="6" class="empty-cell">
+                                            No events sent yet
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </section>
+            </main>
+        </div>
+
+        <div id="toast-container"></div>
+        <script src="/app.js"></script>
+    </body>
+</html>
