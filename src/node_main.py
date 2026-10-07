@@ -4,13 +4,11 @@ Edge node entry point. Starts the HTTP intake, UDP gossip, and mDNS discovery se
 
 from datetime import datetime
 
-import json
 import asyncio
 import logging
 import signal
 import time
 import structlog
-import aiohttp
 import uvicorn
 
 from src.config import config
@@ -18,7 +16,6 @@ from src.crdt import NodeState
 from src.hash_chain import HashChainLog
 from src.services import IntakeService, GossipService, PeerDiscovery
 from fastapi import Request
-from fastapi.responses import JSONResponse
 
 logging.basicConfig(
     format="%(message)s", level=getattr(logging, config.log_level, logging.INFO)
@@ -74,64 +71,6 @@ async def main():
     @intake.app.get("/state/deltas")
     async def state_deltas(since: int = 0, mode: str = "true_delta"):
         return state.get_deltas_since(since, mode=mode)
-
-    @intake.app.post("/evaluation/central-submit")
-    async def central_submit(request: Request):
-        payload = await request.json()
-        central_url = str(payload.get("central_url") or "").rstrip("/")
-        event = payload.get("event")
-        if not central_url or not isinstance(event, dict):
-            return JSONResponse(
-                status_code=422,
-                content={"status": "rejected", "error": "invalid central submission"},
-            )
-
-        event_body = json.dumps(event, separators=(",", ":")).encode()
-        timeout = aiohttp.ClientTimeout(total=5)
-        try:
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.post(
-                    f"{central_url}/gateway/evaluation/central/event",
-                    data=event_body,
-                    headers={"Content-Type": "application/json"},
-                ) as response:
-                    response_body = await response.read()
-                    try:
-                        central_result = json.loads(response_body)
-                    except Exception:
-                        central_result = {"status": "invalid_response"}
-                    return JSONResponse(
-                        status_code=response.status,
-                        content={
-                            "status": central_result.get("status", "rejected"),
-                            "event_id": central_result.get("event_id"),
-                            "central_request_bytes": len(event_body),
-                            "central_response_bytes": len(response_body),
-                        },
-                    )
-        except Exception as error:
-            return JSONResponse(
-                status_code=503,
-                content={"status": "unavailable", "error": str(error)},
-            )
-
-    @intake.app.get("/evaluation/central-health")
-    async def central_health(central_url: str):
-        timeout = aiohttp.ClientTimeout(total=2)
-        try:
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.get(
-                    f"{central_url.rstrip('/')}/gateway/evaluation/central/health"
-                ) as response:
-                    return JSONResponse(
-                        status_code=response.status,
-                        content={"status": "ok" if response.status < 400 else "error"},
-                    )
-        except Exception as error:
-            return JSONResponse(
-                status_code=503,
-                content={"status": "unavailable", "error": str(error)},
-            )
 
     @intake.app.post("/evaluation/reset")
     async def evaluation_reset():
@@ -197,19 +136,14 @@ async def main():
         await shutdown.wait()
         raise asyncio.CancelledError()
 
-    gossip_enabled = config.sync_mode != "centralized"
     try:
-        if gossip_enabled:
-            await discovery.start()
-            await asyncio.gather(server.serve(), gossip.start(), wait_shutdown())
-        else:
-            await asyncio.gather(server.serve(), wait_shutdown())
+        await discovery.start()
+        await asyncio.gather(server.serve(), gossip.start(), wait_shutdown())
     except asyncio.CancelledError:
         pass
     finally:
-        if gossip_enabled:
-            await gossip.stop()
-            await discovery.stop()
+        await gossip.stop()
+        await discovery.stop()
         log.info("node_stopped", node_id=config.node_id)
 
 

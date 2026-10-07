@@ -1,0 +1,22 @@
+# Overlay for the rerun (scripts/run_paper_rerun.py).
+# The node image and network names are hard-coded to the
+# `collaborative_edge_mesh` project in src/services/docker_manager.py, so this
+# overlay reuses that project name, labels the images built from this tree, and
+# keeps the gateway data in its own volume.
+name: collaborative_edge_mesh
+
+services:
+  gateway:
+    build:
+      context: .
+      labels:
+        edge_rerun.code: collaborative_edge_mesh_old
+  simulator:
+    build:
+      context: .
+      labels:
+        edge_rerun.code: collaborative_edge_mesh_old
+
+volumes:
+  gateway-data:
+    name: paper_rerun_gateway-data

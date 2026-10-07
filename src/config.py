@@ -15,7 +15,6 @@ class Config:
             "optimized_full_state",
             "naive_key_delta",
             "true_delta",
-            "centralized",
         }:
             self.sync_mode = "full_state"
         retention_limit = int(os.getenv("EVENT_ID_RETENTION_LIMIT", "100"))

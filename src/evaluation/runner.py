@@ -24,7 +24,6 @@ SYNC_MODES = {
     "optimized_full_state",
     "naive_key_delta",
     "true_delta",
-    "centralized",
 }
 SCENARIOS = {"baseline", "partition_heal", "high_load"}
 DEFAULT_EVENT_ID_RETENTION_LIMIT = 100
@@ -90,7 +89,6 @@ CSV_HEADER = [
     "per_node_missing_tracking_ids",
     "missing_at_cutoff_pct",
     "gateway_staleness_seconds",
-    "recovery_time_s",
     "sync_bytes_total",
     "gossip_summary_sent_bytes",
     "gossip_summary_received_bytes",
@@ -99,8 +97,6 @@ CSV_HEADER = [
     "semantic_state_bytes",
     "evaluation_metadata_state_bytes",
     "nonsemantic_state_metadata_bytes",
-    "central_request_bytes",
-    "central_response_bytes",
     "bytes_per_accepted_event",
     "avg_state_bytes_per_known_event",
     "repair_pull_count",
@@ -482,7 +478,6 @@ class EvaluationRunner:
         category="sensor",
         concurrency=25,
         rng: random.Random,
-        central_url: str | None = None,
         offered_rate: float | None = None,
     ):
         started_at = time.perf_counter()
@@ -495,8 +490,6 @@ class EvaluationRunner:
             "tracking_ids": [],
             "failed_request_latencies_ms": [],
             "request_latencies_ms": [],
-            "central_request_bytes": 0,
-            "central_response_bytes": 0,
             "first_submitted_at": None,
             "last_submitted_at": None,
         }
@@ -518,7 +511,7 @@ class EvaluationRunner:
             node_url = target.get("internal_url") or target.get("url")
             submitted_at = time.time()
             if not node_url:
-                return "error", None, submitted_at, None, 0, 0
+                return "error", None, submitted_at, None
 
             event_type = event_types[i % len(event_types)]
             tracking_id = str(uuid.UUID(int=rng.getrandbits(128)))
@@ -534,67 +527,32 @@ class EvaluationRunner:
                     "evaluation_submitted_at": submitted_at,
                 },
             }
-            request_url = f"{node_url}/event"
-            request_payload = payload
-            if central_url:
-                request_url = f"{node_url}/evaluation/central-submit"
-                request_payload = {"central_url": central_url, "event": payload}
 
             request_started = time.perf_counter()
             try:
                 async with semaphore:
                     async with session.post(
-                        request_url, json=request_payload
+                        f"{node_url}/event", json=payload
                     ) as response:
                         try:
                             response_data = await response.json()
                         except Exception:
                             response_data = {}
                         latency_ms = (time.perf_counter() - request_started) * 1000
-                        central_request_bytes = int(
-                            response_data.get("central_request_bytes", 0)
-                        )
-                        central_response_bytes = int(
-                            response_data.get("central_response_bytes", 0)
-                        )
                         status = response_data.get("status")
                         if response.status < 400 and status != "duplicate":
-                            return (
-                                "accepted",
-                                tracking_id,
-                                submitted_at,
-                                latency_ms,
-                                central_request_bytes,
-                                central_response_bytes,
-                            )
-                        if status == "duplicate":
-                            outcome = "duplicate"
-                        else:
-                            outcome = "rejected"
-                        return (
-                            outcome,
-                            tracking_id,
-                            submitted_at,
-                            latency_ms,
-                            central_request_bytes,
-                            central_response_bytes,
-                        )
+                            return "accepted", tracking_id, submitted_at, latency_ms
+                        outcome = "duplicate" if status == "duplicate" else "rejected"
+                        return outcome, tracking_id, submitted_at, latency_ms
             except Exception:
-                return "error", tracking_id, submitted_at, None, 0, 0
+                return "error", tracking_id, submitted_at, None
 
         submissions = [
             _send_one(i, nodes[i % len(nodes)]) for i in range(count * len(nodes))
         ]
-        for (
-            status,
-            tracking_id,
-            submitted_at,
-            latency_ms,
-            central_request_bytes,
-            central_response_bytes,
-        ) in await asyncio.gather(*submissions):
-            result["central_request_bytes"] += central_request_bytes
-            result["central_response_bytes"] += central_response_bytes
+        for status, tracking_id, submitted_at, latency_ms in await asyncio.gather(
+            *submissions
+        ):
             if (
                 result["first_submitted_at"] is None
                 or submitted_at < result["first_submitted_at"]
@@ -655,151 +613,6 @@ class EvaluationRunner:
                     continue
             if not polled:
                 log.warning("evaluation_gateway_poll_failed", gateway=gw.get("name"))
-
-    @staticmethod
-    def _central_gateway_url(gateways) -> str:
-        if not gateways:
-            raise RuntimeError("centralized baseline requires one gateway")
-        gateway = gateways[0]
-        central_url = gateway.get("url") or gateway.get("external_url")
-        if not central_url:
-            raise RuntimeError("centralized baseline gateway has no URL")
-        return str(central_url).rstrip("/")
-
-    async def wait_for_central_metrics(
-        self,
-        session,
-        gateways,
-        cfg,
-        event_result,
-    ):
-        central_url = self._central_gateway_url(gateways)
-        accepted_ids = set(event_result.get("tracking_ids") or [])
-        started = time.time()
-        deadline = started + cfg.convergence_wait_seconds
-        central_state = {}
-        while True:
-            try:
-                async with session.get(
-                    f"{central_url}/gateway/evaluation/central/state"
-                ) as response:
-                    if response.status < 400:
-                        central_state = await response.json()
-            except Exception:
-                central_state = {}
-
-            stored_ids = set(central_state.get("event_ids") or [])
-            missing_ids = accepted_ids - stored_ids
-            if not missing_ids or time.time() >= deadline:
-                break
-            await asyncio.sleep(cfg.poll_interval_seconds)
-
-        elapsed = round(time.time() - started, 3)
-        stored_ids = set(central_state.get("event_ids") or [])
-        missing_ids = accepted_ids - stored_ids
-        accepted_count = len(accepted_ids)
-        fully_stored_count = accepted_count - len(missing_ids)
-        coverage = (
-            round((fully_stored_count / accepted_count) * 100, 1)
-            if accepted_count
-            else 100.0
-        )
-        state_size = int(central_state.get("state_size_bytes", 0))
-        central_request_bytes = int(event_result.get("central_request_bytes", 0))
-        central_response_bytes = int(event_result.get("central_response_bytes", 0))
-        converged = not missing_ids
-        await self._collect_resource_sample()
-        return {
-            "convergence_time_s": elapsed if converged else None,
-            "converged_within_timeout": converged,
-            "convergence_wait_seconds": cfg.convergence_wait_seconds,
-            "missing_at_cutoff_count": len(missing_ids),
-            "missing_at_cutoff_pct": round((len(missing_ids) / accepted_count) * 100, 2)
-            if accepted_count
-            else 0.0,
-            "gateway_staleness_seconds": 0.0,
-            "time_to_last_node_s": None,
-            "rounds_to_last_node": None,
-            "tracking_coverage_percent": coverage,
-            "accepted_tracking_ids_count": accepted_count,
-            "fully_observed_tracking_ids_count": fully_stored_count,
-            "missing_tracking_ids_count": len(missing_ids),
-            "per_node_missing_tracking_ids": "{}",
-            "sync_bytes_total": central_request_bytes + central_response_bytes,
-            "gossip_summary_sent_bytes": 0,
-            "gossip_summary_received_bytes": 0,
-            "full_state_repair_bytes": 0,
-            "delta_repair_bytes": 0,
-            "semantic_state_bytes": state_size,
-            "evaluation_metadata_state_bytes": 0,
-            "nonsemantic_state_metadata_bytes": 0,
-            "central_request_bytes": central_request_bytes,
-            "central_response_bytes": central_response_bytes,
-            "repair_pull_count": 0,
-            "gossip_messages_sent": 0,
-            "total_state_size_bytes": state_size,
-            "avg_state_size_bytes": state_size,
-            "avg_state_bytes_per_known_event": round(
-                state_size / max(accepted_count, 1), 2
-            ),
-            "known_status": "known_converged" if converged else "known_diverged",
-            "coverage_percent": coverage,
-            "is_converged": converged,
-            "unique_merkle_roots": 0,
-            "semantic_state_converged": converged,
-            "unique_semantic_states": 1 if central_state else 0,
-            "max_events": len(stored_ids),
-            "min_events": len(stored_ids),
-            "delta_pulls_started": 0,
-            "delta_pulls_success": 0,
-            "delta_pulls_gap": 0,
-            "delta_deltas_applied": 0,
-            "delta_bytes_received": 0,
-        }
-
-    async def wait_for_central_access(
-        self,
-        session,
-        nodes,
-        central_url: str,
-        timeout_seconds: float,
-    ) -> float | None:
-        pending = {
-            node.get("node_id"): node.get("internal_url") or node.get("url")
-            for node in nodes
-        }
-        pending = {
-            node_id: node_url
-            for node_id, node_url in pending.items()
-            if node_id and node_url
-        }
-        started = time.time()
-        deadline = started + timeout_seconds
-        while pending and time.time() < deadline:
-
-            async def probe(node_id, node_url):
-                try:
-                    async with session.get(
-                        f"{node_url}/evaluation/central-health",
-                        params={"central_url": central_url},
-                    ) as response:
-                        if response.status < 400:
-                            return node_id
-                except Exception:
-                    return None
-                return None
-
-            ready = await asyncio.gather(
-                *(probe(node_id, node_url) for node_id, node_url in pending.items())
-            )
-            for node_id in ready:
-                if node_id:
-                    pending.pop(node_id, None)
-            if pending:
-                await asyncio.sleep(0.25)
-        if pending:
-            return None
-        return round(time.time() - started, 3)
 
     async def collect_metrics(
         self,
@@ -1452,11 +1265,6 @@ class EvaluationRunner:
                             nodes, gateways = await self.recreate_nodes(
                                 session, node_count, cfg
                             )
-                        central_url = (
-                            self._central_gateway_url(gateways)
-                            if cfg.sync_mode == "centralized"
-                            else None
-                        )
 
                         if "baseline" in scenarios:
                             self._set_progress(
@@ -1479,25 +1287,16 @@ class EvaluationRunner:
                                 cfg.events_per_node,
                                 concurrency=cfg.event_concurrency,
                                 rng=rng,
-                                central_url=central_url,
                                 offered_rate=cfg.offered_rate_per_second,
                             )
-                            if central_url:
-                                metrics = await self.wait_for_central_metrics(
-                                    session,
-                                    gateways,
-                                    cfg,
-                                    baseline_events,
-                                )
-                            else:
-                                metrics = await self.wait_for_metrics(
-                                    session,
-                                    nodes,
-                                    gateways,
-                                    cfg,
-                                    baseline_events["accepted"],
-                                    tracking_ids=baseline_events["tracking_ids"],
-                                )
+                            metrics = await self.wait_for_metrics(
+                                session,
+                                nodes,
+                                gateways,
+                                cfg,
+                                baseline_events["accepted"],
+                                tracking_ids=baseline_events["tracking_ids"],
+                            )
                             self._append_result(
                                 self._row_base(
                                     cfg,
@@ -1537,25 +1336,16 @@ class EvaluationRunner:
                                 cfg.events_per_node,
                                 concurrency=cfg.event_concurrency,
                                 rng=rng,
-                                central_url=central_url,
                             )
                             fault_receipt = {}
-                            if central_url:
-                                fault_applied_at = time.time()
+                            await self.poll_all_gateways(session, gateways)
+                            fault_applied_at = time.time()
+                            try:
                                 fault_receipt = await asyncio.to_thread(
-                                    self.docker_mgr.partition_from_gateway,
-                                    split,
-                                    central_url,
+                                    self.docker_mgr.create_split_brain, split
                                 )
-                            else:
-                                await self.poll_all_gateways(session, gateways)
-                                fault_applied_at = time.time()
-                                try:
-                                    fault_receipt = await asyncio.to_thread(
-                                        self.docker_mgr.create_split_brain, split
-                                    )
-                                except Exception:
-                                    fault_receipt = {}
+                            except Exception:
+                                fault_receipt = {}
                             if fault_receipt.get("status") not in {
                                 "split_brain",
                                 "partitioned",
@@ -1571,7 +1361,6 @@ class EvaluationRunner:
                                 cfg.partition_events_per_node,
                                 concurrency=cfg.event_concurrency,
                                 rng=rng,
-                                central_url=central_url,
                             )
                             await asyncio.sleep(cfg.partition_wait_seconds)
                             try:
@@ -1582,14 +1371,6 @@ class EvaluationRunner:
                             await self.wait_for_nodes_ready(
                                 session, nodes, cfg.node_readiness_timeout_seconds
                             )
-                            recovery_time_s = None
-                            if central_url:
-                                recovery_time_s = await self.wait_for_central_access(
-                                    session,
-                                    nodes,
-                                    central_url,
-                                    cfg.node_readiness_timeout_seconds,
-                                )
                             combined_events = {
                                 "attempted": pre_events["attempted"]
                                 + partition_events["attempted"],
@@ -1617,14 +1398,6 @@ class EvaluationRunner:
                             combined_events["duplicates"] = (
                                 pre_events["duplicates"]
                                 + partition_events["duplicates"]
-                            )
-                            combined_events["central_request_bytes"] = (
-                                pre_events["central_request_bytes"]
-                                + partition_events["central_request_bytes"]
-                            )
-                            combined_events["central_response_bytes"] = (
-                                pre_events["central_response_bytes"]
-                                + partition_events["central_response_bytes"]
                             )
                             combined_events["rejected"] = (
                                 pre_events["rejected"] + partition_events["rejected"]
@@ -1654,24 +1427,15 @@ class EvaluationRunner:
                             combined_events["accepted_throughput_events_s"] = (
                                 combined_events["accepted"] / submission_duration
                             )
-                            if central_url:
-                                metrics = await self.wait_for_central_metrics(
-                                    session,
-                                    gateways,
-                                    cfg,
-                                    combined_events,
-                                )
-                                metrics["recovery_time_s"] = recovery_time_s
-                            else:
-                                expected_events = combined_events["accepted"]
-                                metrics = await self.wait_for_metrics(
-                                    session,
-                                    nodes,
-                                    gateways,
-                                    cfg,
-                                    expected_events,
-                                    tracking_ids=combined_events["tracking_ids"],
-                                )
+                            expected_events = combined_events["accepted"]
+                            metrics = await self.wait_for_metrics(
+                                session,
+                                nodes,
+                                gateways,
+                                cfg,
+                                expected_events,
+                                tracking_ids=combined_events["tracking_ids"],
+                            )
                             self._append_result(
                                 self._row_base(
                                     cfg,
@@ -1709,25 +1473,16 @@ class EvaluationRunner:
                                 category="resource",
                                 concurrency=cfg.event_concurrency,
                                 rng=rng,
-                                central_url=central_url,
                                 offered_rate=cfg.offered_rate_per_second,
                             )
-                            if central_url:
-                                metrics = await self.wait_for_central_metrics(
-                                    session,
-                                    gateways,
-                                    cfg,
-                                    heavy_events,
-                                )
-                            else:
-                                metrics = await self.wait_for_metrics(
-                                    session,
-                                    nodes,
-                                    gateways,
-                                    cfg,
-                                    heavy_events["accepted"],
-                                    tracking_ids=heavy_events["tracking_ids"],
-                                )
+                            metrics = await self.wait_for_metrics(
+                                session,
+                                nodes,
+                                gateways,
+                                cfg,
+                                heavy_events["accepted"],
+                                tracking_ids=heavy_events["tracking_ids"],
+                            )
                             self._append_result(
                                 self._row_base(
                                     cfg,

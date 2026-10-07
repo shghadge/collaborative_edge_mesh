@@ -814,52 +814,6 @@ class DockerManager:
             results=results,
         )
 
-    def partition_from_gateway(self, majority_ratio: float, gateway_url: str) -> dict:
-        """Block the minority client group from the centralized baseline."""
-        from urllib.parse import urlparse
-
-        gateway_host = urlparse(gateway_url).hostname
-        if not gateway_host:
-            return self._action_response(
-                action="partition_from_gateway",
-                target="gateway",
-                status="failed",
-                message="Gateway URL has no host",
-            )
-
-        nodes = sorted(
-            [c for c in self.client.containers.list() if "edge-node" in c.name],
-            key=lambda container: container.name,
-        )
-        if len(nodes) < 2:
-            return self._action_response(
-                action="partition_from_gateway",
-                target="gateway",
-                status="failed",
-                message="Need at least 2 nodes",
-            )
-
-        ratio = max(0.0, min(float(majority_ratio), 1.0))
-        split_index = round(len(nodes) * ratio)
-        split_index = max(1, min(split_index, len(nodes) - 1))
-        connected = nodes[:split_index]
-        disconnected = nodes[split_index:]
-        for container in disconnected:
-            container.exec_run(f"iptables -A OUTPUT -d {gateway_host} -j DROP")
-            container.exec_run(f"iptables -A INPUT -s {gateway_host} -j DROP")
-            self.isolated_nodes.add(container.name)
-
-        return self._action_response(
-            action="partition_from_gateway",
-            target="gateway",
-            status="partitioned",
-            message="Disconnected selected clients from the centralized baseline",
-            partition_ratio=ratio,
-            group_a=[container.name for container in connected],
-            group_b=[container.name for container in disconnected],
-            gateway_host=gateway_host,
-        )
-
     def apply_netem_profile(self, profile: str):
         """Apply and verify a supported traffic-control profile on every edge node."""
         if profile == "hard_partition":

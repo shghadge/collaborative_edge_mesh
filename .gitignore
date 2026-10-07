@@ -33,8 +33,9 @@ dist/
 *.sqlite*
 *.log
 
-# Generated evaluation, report, and dataset artifacts
-/results/
+
+/results/*
+!/results/paper_rerun_10x/
 /docs/
 /archive/
 /final_dataset/

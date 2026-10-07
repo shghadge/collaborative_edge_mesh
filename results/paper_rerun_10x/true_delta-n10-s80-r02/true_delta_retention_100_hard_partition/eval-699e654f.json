@@ -1,0 +1,39 @@
+{
+  "run_id": "eval-699e654f",
+  "case_id": "true_delta-n10-s80-r02",
+  "condition_id": "n10-s80-r02",
+  "sweep": "paper_rerun_10x",
+  "implementation_label": "true_delta_retention_100_hard_partition",
+  "sync_mode": "true_delta",
+  "event_id_retention_limit": 100,
+  "delta_log_limit": 1000,
+  "node_counts": [
+    10
+  ],
+  "events_per_node": 15,
+  "partition_splits": [
+    0.8
+  ],
+  "repetitions": 1,
+  "scenario_seed": 9102,
+  "scenarios": [
+    "partition_heal"
+  ],
+  "convergence_wait_seconds": 25.0,
+  "partition_wait_seconds": 8.0,
+  "poll_interval_seconds": 2.0,
+  "partition_events_per_node": 3,
+  "event_concurrency": 25,
+  "network_profile": "hard_partition",
+  "network_settings": null,
+  "offered_rate_per_second": null,
+  "docker_cpus": null,
+  "docker_memory": null,
+  "dashboard_observability": "off",
+  "warm_topology": false,
+  "node_readiness_timeout_seconds": 30.0,
+  "started_at": "2026-10-05T21:55:39.629008+00:00",
+  "finished_at": "2026-10-05T21:56:12.501370+00:00",
+  "csv_path": "/home/shubham/290_copy/collaborative_edge_mesh_old/results/paper_rerun_10x/true_delta-n10-s80-r02/true_delta_retention_100_hard_partition/eval-699e654f.csv",
+  "results_path": "/home/shubham/290_copy/collaborative_edge_mesh_old/results/paper_rerun_10x/true_delta-n10-s80-r02/true_delta_retention_100_hard_partition/eval-699e654f-results.json"
+}

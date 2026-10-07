@@ -15,7 +15,7 @@ After `make docker-rebuild`:
 ## Setup
 
 ```bash
-cd /home/shubham/290_copy/collaborative_edge_mesh
+cd collaborative_edge_mesh
 uv sync
 ```
 
@@ -129,36 +129,31 @@ uv run python scripts/run_evaluation_matrix.py \
 
 Supported synchronization modes are `full_state`, `optimized_full_state`, `naive_key_delta`, and `true_delta`. Supported network profiles are `clean_lan`, `constrained_wifi`, `degraded`, `severe`, and `hard_partition`.
 
-## Run the Complete Experiment Matrix
+## AIBThings Fig. 3 Rerun (Partition-Heal, 10 Repetitions)
 
-Generate the 1,760 selected configurations. Each configuration contains 30 repetitions, producing 52,800 expected result rows:
+This branch contains the experiment behind the revised Fig. 3 and Table II of the AIBThings 2026 paper (#297): 4 synchronization methods × 5/10/15 nodes × 50/50, 70/30, 80/20 partitions × 10 repetitions = 360 runs.
 
-```bash
-uv run python scripts/generate_experiment_matrix.py \
-  --repetitions 30 \
-  --base-seed 7301 \
-  --out scripts/final_experiment_matrix.csv
-```
+Each run uses freshly created containers, each limited to 1 CPU and 500 MiB of memory (`DOCKER_CPUS` and `DOCKER_MEMORY` in `scripts/run_paper_rerun.py`). Every node receives 15 events, then an iptables partition is applied and every node receives 3 more events. The partition is held for 8 seconds and then removed. Convergence is checked every 2 seconds from the heal, with a 25-second budget. Repetition `r` uses seed `9100 + r` for all four methods.
 
-Validate the matrix without starting experiments:
+Run it in resumable batches:
 
 ```bash
-uv run python scripts/run_reviewer_matrix.py \
-  scripts/final_experiment_matrix.csv \
-  --dry-run \
-  --require-complete
+uv run python scripts/run_paper_rerun.py up                    # build images from this tree and start simulator + gateway
+uv run python scripts/run_paper_rerun.py run --max-minutes 60  # stop starting new runs after 60 minutes; rerun to resume
+uv run python scripts/run_paper_rerun.py status                # completed runs per configuration
+uv run python scripts/run_paper_rerun.py summarize             # mean/SD tables
+uv run python scripts/plot_paper_rerun_figure.py               # Fig. 3 with standard-deviation error bars
+uv run python scripts/run_paper_rerun.py down                  # stop all containers
 ```
 
-Run the complete matrix:
+Results are in `results/paper_rerun_10x/`:
 
-```bash
-uv run python scripts/run_reviewer_matrix.py \
-  scripts/final_experiment_matrix.csv \
-  --out results/final_experiment \
-  --require-complete
-```
-
-The runner executes configurations one at a time and supports resuming completed configurations. Use `--no-resume` to force a configuration to run again.
+| File | Contents |
+|---|---|
+| `<method>-n<nodes>-s<split>-r<rep>/` | Raw output of one run: result CSV, run manifest, and full results JSON |
+| `all_runs.csv` | All 360 runs, one row each: method, nodes, split, convergence time, sync bytes, missing events, seed |
+| `summary.csv`, `summary.md` | Mean, sample standard deviation, and median for each of the 36 configurations |
+| `fig3_rerun.png` | Revised Fig. 3 |
 
 ## Inspect a Running Experiment
 
@@ -195,6 +190,6 @@ The project follows a minimal command policy:
 
 Core components:
 - **FastAPI** HTTP server for event ingestion and state queries
-- **UDP Gossip** service broadcasting state to peers every 5 seconds
+- **UDP Gossip** service sending Merkle-root summaries to up to 3 peers every 5 seconds; differing nodes pull state or deltas over HTTP
 - **Hash-chain log** for tamper-evident auditing
 - **Merkle root** computation for quick divergence detection

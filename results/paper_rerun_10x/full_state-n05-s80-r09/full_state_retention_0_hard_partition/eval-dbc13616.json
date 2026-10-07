@@ -1,0 +1,39 @@
+{
+  "run_id": "eval-dbc13616",
+  "case_id": "full_state-n05-s80-r09",
+  "condition_id": "n05-s80-r09",
+  "sweep": "paper_rerun_10x",
+  "implementation_label": "full_state_retention_0_hard_partition",
+  "sync_mode": "full_state",
+  "event_id_retention_limit": 0,
+  "delta_log_limit": 1000,
+  "node_counts": [
+    5
+  ],
+  "events_per_node": 15,
+  "partition_splits": [
+    0.8
+  ],
+  "repetitions": 1,
+  "scenario_seed": 9109,
+  "scenarios": [
+    "partition_heal"
+  ],
+  "convergence_wait_seconds": 25.0,
+  "partition_wait_seconds": 8.0,
+  "poll_interval_seconds": 2.0,
+  "partition_events_per_node": 3,
+  "event_concurrency": 25,
+  "network_profile": "hard_partition",
+  "network_settings": null,
+  "offered_rate_per_second": null,
+  "docker_cpus": null,
+  "docker_memory": null,
+  "dashboard_observability": "off",
+  "warm_topology": false,
+  "node_readiness_timeout_seconds": 30.0,
+  "started_at": "2026-10-06T01:16:42.301571+00:00",
+  "finished_at": "2026-10-06T01:17:10.490451+00:00",
+  "csv_path": "/home/shubham/290_copy/collaborative_edge_mesh_old/results/paper_rerun_10x/full_state-n05-s80-r09/full_state_retention_0_hard_partition/eval-dbc13616.csv",
+  "results_path": "/home/shubham/290_copy/collaborative_edge_mesh_old/results/paper_rerun_10x/full_state-n05-s80-r09/full_state_retention_0_hard_partition/eval-dbc13616-results.json"
+}
