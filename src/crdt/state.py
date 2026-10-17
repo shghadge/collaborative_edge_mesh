@@ -20,6 +20,8 @@ from .lww_register import LWWRegister
 from .pncounter import PNCounter
 from .orset import ORSet
 
+DELTA_SYNC_MODES = {"naive_key_delta", "true_delta"}
+
 
 class NodeState:
     """
@@ -49,7 +51,9 @@ class NodeState:
         self.event_id_retention_limit = event_id_retention_limit
         self.sync_mode = sync_mode
         self.event_ids = []
-        self.delta_seq = 0
+        # Highest contiguous mutation sequence held per origin node.
+        self.delta_vv: dict[str, int] = {}
+        # Entries: {"ranges": {origin: [first_seq, last_seq]}, "state": delta dict}.
         self.delta_log = []
         self.delta_log_limit = (
             delta_log_limit if delta_log_limit and delta_log_limit > 0 else None
@@ -66,7 +70,7 @@ class NodeState:
         self.pn_counters.clear()
         self.sets.clear()
         self.event_ids.clear()
-        self.delta_seq = 0
+        self.delta_vv.clear()
         self.delta_log.clear()
         self.first_seen_tracking.clear()
         self.current_gossip_round = 0
@@ -186,17 +190,21 @@ class NodeState:
             )
         return delta_state
 
+    @property
+    def delta_seq(self) -> int:
+        """Sequence number of the latest local mutation."""
+        return self.delta_vv.get(self.node_id, 0)
+
     def record_delta(self, delta_state: "NodeState") -> int:
-        self.delta_seq += 1
-        self.delta_log.append(
-            {
-                "seq": self.delta_seq,
-                "state": delta_state.to_delta_dict(),
-            }
-        )
+        seq = self.delta_seq + 1
+        self.delta_vv[self.node_id] = seq
+        self._append_delta_log({self.node_id: [seq, seq]}, delta_state.to_delta_dict())
+        return seq
+
+    def _append_delta_log(self, ranges: dict, state_data: dict):
+        self.delta_log.append({"ranges": ranges, "state": state_data})
         if self.delta_log_limit and len(self.delta_log) > self.delta_log_limit:
             self.delta_log = self.delta_log[-self.delta_log_limit :]
-        return self.delta_seq
 
     def set_gossip_round(self, round_number: int):
         self.current_gossip_round = max(int(round_number or 0), 0)
@@ -509,6 +517,10 @@ class NodeState:
         """Merge another node's state and update the local state version once."""
         old_root = self.merkle_root()
         self._merge_components(other)
+        # A full state already contains every mutation its version vector covers.
+        for origin, seq in other.delta_vv.items():
+            if seq > self.delta_vv.get(origin, 0):
+                self.delta_vv[origin] = seq
         if self.merkle_root() != old_root:
             self.version += 1
             self.updated_at = datetime.utcnow()
@@ -585,7 +597,7 @@ class NodeState:
             ),
             "first_seen_tracking": dict(self.first_seen_tracking),
             "current_gossip_round": self.current_gossip_round,
-            "delta_seq": self.delta_seq,
+            "delta_vv": dict(self.delta_vv),
             "delta_log_limit": self.delta_log_limit,
             "merkle_root": self.merkle_root(),
             "state_summary": self.summary(),
@@ -606,75 +618,108 @@ class NodeState:
             "current_gossip_round": self.current_gossip_round,
         }
 
-    def get_deltas_since(self, since_seq: int, mode: str = "true_delta") -> dict:
-        if mode not in {"naive_key_delta", "true_delta"}:
+    def get_deltas_for(self, remote_vv: dict, mode: str = "true_delta") -> dict:
+        """Return everything a peer holding ``remote_vv`` is missing.
+
+        Missing log entries are joined into one delta group. When the retained
+        log no longer covers a missing range, the full state is returned inline
+        with ``fallback="gap"`` so the peer repairs in the same round trip.
+        """
+        if mode not in DELTA_SYNC_MODES:
             raise ValueError(f"unsupported delta mode: {mode}")
-        if (
-            self.sync_mode in {"naive_key_delta", "true_delta"}
-            and mode != self.sync_mode
-        ):
+        if self.sync_mode in DELTA_SYNC_MODES and mode != self.sync_mode:
             raise ValueError(f"requested {mode} deltas from a {self.sync_mode} node")
-        since_seq = max(int(since_seq or 0), 0)
-        if not self.delta_log:
-            return {
-                "node_id": self.node_id,
-                "from_seq": since_seq,
-                "to_seq": self.delta_seq,
-                "has_gap": False,
-                "deltas": [],
-            }
-
-        first_seq = self.delta_log[0]["seq"]
-        if since_seq < first_seq - 1:
-            return {
-                "node_id": self.node_id,
-                "from_seq": since_seq,
-                "to_seq": self.delta_seq,
-                "has_gap": True,
-                "deltas": [],
-            }
-
-        deltas = []
-        for item in self.delta_log:
-            if item["seq"] <= since_seq:
-                continue
-            deltas.append(
-                {
-                    "seq": item["seq"],
-                    "state": item["state"],
-                }
-            )
-        return {
-            "node_id": self.node_id,
-            "from_seq": since_seq,
-            "to_seq": self.delta_seq,
-            "has_gap": False,
-            "deltas": deltas,
+        remote_vv = {str(origin): int(seq) for origin, seq in (remote_vv or {}).items()}
+        missing_after = {
+            origin: remote_vv.get(origin, 0)
+            for origin, seq in self.delta_vv.items()
+            if seq > remote_vv.get(origin, 0)
         }
+        response = {"node_id": self.node_id, "delta_vv": dict(self.delta_vv)}
+        if not missing_after:
+            return {**response, "state": None}
 
-    def apply_delta_payload(self, payload: dict) -> int:
-        if payload.get("has_gap"):
+        selected = [
+            entry
+            for entry in self.delta_log
+            if any(
+                origin in missing_after and last > missing_after[origin]
+                for origin, (_, last) in entry["ranges"].items()
+            )
+        ]
+        if not self._log_covers(selected, missing_after):
+            return {**response, "fallback": "gap", "full_state": self.to_dict()}
+
+        group = NodeState(
+            self.node_id,
+            self.event_id_retention_limit,
+            delta_log_limit=None,
+            sync_mode=self.sync_mode,
+        )
+        for entry in selected:
+            group._merge_components(NodeState.from_dict(entry["state"]))
+        return {**response, "state": group.to_delta_dict()}
+
+    def _log_covers(self, entries: list[dict], missing_after: dict[str, int]) -> bool:
+        """Check that ``entries`` hold every sequence after each missing frontier."""
+        for origin, since in missing_after.items():
+            covered = since
+            for first, last in sorted(
+                entry["ranges"][origin]
+                for entry in entries
+                if origin in entry["ranges"]
+            ):
+                if first > covered + 1:
+                    break
+                covered = max(covered, last)
+            if covered < self.delta_vv[origin]:
+                return False
+        return True
+
+    def apply_delta_payload(self, payload: dict, requested_vv: dict) -> int:
+        """Join a ``get_deltas_for`` response requested with ``requested_vv``.
+
+        Returns the number of remote mutations that were new to this replica.
+        An applied delta group is appended to the local log with its origin
+        ranges so it can be relayed without being renumbered.
+        """
+        remote_vv = {
+            str(origin): int(seq)
+            for origin, seq in (payload.get("delta_vv") or {}).items()
+        }
+        if payload.get("full_state"):
+            newly_covered = sum(
+                max(seq - self.delta_vv.get(origin, 0), 0)
+                for origin, seq in remote_vv.items()
+            )
+            self.merge(NodeState.from_dict(payload["full_state"]))
+            return newly_covered
+
+        # The group covers every sequence after the frontier this replica requested.
+        ranges = {
+            origin: [requested_vv.get(origin, 0) + 1, seq]
+            for origin, seq in remote_vv.items()
+            if seq > requested_vv.get(origin, 0)
+        }
+        newly_covered = sum(
+            max(last - self.delta_vv.get(origin, 0), 0)
+            for origin, (_, last) in ranges.items()
+        )
+        state_data = payload.get("state")
+        if not state_data or not newly_covered:
             return 0
 
         old_root = self.merkle_root()
-        changed_deltas = []
-        for item in payload.get("deltas", []):
-            state_data = item.get("state")
-            if not isinstance(state_data, dict):
-                continue
-            incoming = NodeState.from_dict(state_data)
-            if self._merge_components(incoming):
-                changed_deltas.append(incoming)
-
-        if self.merkle_root() == old_root:
-            return 0
-
-        self.version += 1
-        self.updated_at = datetime.utcnow()
-        if self.sync_mode in {"naive_key_delta", "true_delta"}:
-            for incoming in changed_deltas:
-                self.record_delta(incoming)
-        return len(changed_deltas)
+        self._merge_components(NodeState.from_dict(state_data))
+        for origin, (_, last) in ranges.items():
+            if last > self.delta_vv.get(origin, 0):
+                self.delta_vv[origin] = last
+        if self.sync_mode in DELTA_SYNC_MODES:
+            self._append_delta_log(ranges, state_data)
+        if self.merkle_root() != old_root:
+            self.version += 1
+            self.updated_at = datetime.utcnow()
+        return newly_covered
 
     @classmethod
     def from_dict(cls, data):
@@ -706,5 +751,7 @@ class NodeState:
         )
         s.first_seen_tracking = dict(data.get("first_seen_tracking", {}))
         s.current_gossip_round = int(data.get("current_gossip_round", 0) or 0)
-        s.delta_seq = int(data.get("delta_seq", 0) or 0)
+        s.delta_vv = {
+            str(origin): int(seq) for origin, seq in data.get("delta_vv", {}).items()
+        }
         return s

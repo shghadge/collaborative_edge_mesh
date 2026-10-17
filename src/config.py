@@ -15,7 +15,6 @@ class Config:
             "optimized_full_state",
             "naive_key_delta",
             "true_delta",
-            "centralized",
         }:
             self.sync_mode = "full_state"
         retention_limit = int(os.getenv("EVENT_ID_RETENTION_LIMIT", "100"))
@@ -26,35 +25,6 @@ class Config:
         self.data_dir = os.getenv("DATA_DIR", "/data")
         self.log_level = os.getenv("LOG_LEVEL", "INFO")
         self.assigned_gateway = os.getenv("ASSIGNED_GATEWAY", "")
-        self.runtime_mode = self._parse_runtime_mode(
-            os.getenv("RUNTIME_MODE", "simulation")
-        )
-        self.observability_mode = (
-            os.getenv(
-                "OBSERVABILITY_MODE",
-                "full" if self.runtime_mode in {"simulation", "debug"} else "light",
-            )
-            .strip()
-            .lower()
-        )
-        if self.observability_mode not in {"off", "light", "full"}:
-            self.observability_mode = "full"
-        self.observability_cache_ttl_seconds = max(
-            float(os.getenv("OBSERVABILITY_CACHE_TTL_SECONDS", "5")), 0.0
-        )
-        self.observability_timeseries_cache_ttl_seconds = max(
-            float(
-                os.getenv(
-                    "OBSERVABILITY_TIMESERIES_CACHE_TTL_SECONDS",
-                    "2" if self.observability_mode == "full" else "20",
-                )
-            ),
-            0.0,
-        )
-        self.observability_push_interval_seconds = max(
-            float(os.getenv("OBSERVABILITY_PUSH_INTERVAL_SECONDS", "3")), 1.0
-        )
-
         self.enable_heal_state_push = self._bool_env("ENABLE_HEAL_STATE_PUSH", False)
 
         self.gateway_visibility_freshness_seconds = max(
@@ -71,7 +41,6 @@ class Config:
         # comma-separated list like "edge-node-1:8000,edge-node-2:8000"
         raw_edge_nodes = os.getenv("EDGE_NODES", "")
         self.edge_nodes = [p.strip() for p in raw_edge_nodes.split(",") if p.strip()]
-        self.deep_observability_enabled = self.observability_mode == "full"
 
     @staticmethod
     def _bool_env(name: str, default: bool = False) -> bool:
@@ -79,12 +48,6 @@ class Config:
         if value is None:
             return default
         return value.strip().lower() in {"1", "true", "yes", "on"}
-
-    def _parse_runtime_mode(self, value: str) -> str:
-        runtime_mode = value.strip().lower()
-        if runtime_mode not in {"normal", "simulation", "debug"}:
-            return "simulation"
-        return runtime_mode
 
 
 config = Config()

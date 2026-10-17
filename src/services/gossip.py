@@ -9,6 +9,7 @@ import aiohttp
 
 from ..config import Config
 from ..crdt import NodeState
+from ..crdt.state import DELTA_SYNC_MODES
 
 log = structlog.get_logger()
 
@@ -19,7 +20,14 @@ MAX_PACKET = 60000
 MAX_GOSSIP_TARGETS = 3
 MAX_RELAY_OBSERVATIONS = 24
 REPAIR_PULL_COOLDOWN_SECONDS = 8.0
-DELTA_SYNC_MODES = {"naive_key_delta", "true_delta"}
+
+
+def _tracking_bytes(state_data: dict | None) -> int:
+    """Wire bytes of evaluation arrival-tracking metadata inside a state payload."""
+    tracking = (state_data or {}).get("first_seen_tracking")
+    if not tracking:
+        return 0
+    return len(json.dumps(tracking, ensure_ascii=False, separators=(",", ":")).encode())
 
 
 class GossipService:
@@ -42,7 +50,6 @@ class GossipService:
         self.peer_observations = {}
         self._last_repair_pull_at = {}
         self.stats = self._new_stats()
-        self.peer_delta_seq = {}
         self._delta_pulls_in_flight: set[str] = set()
 
     @staticmethod
@@ -78,7 +85,9 @@ class GossipService:
             "delta_pulls_skipped_stale": 0,
             "delta_pulls_skipped_inflight": 0,
             "delta_bytes_received": 0,
+            "delta_request_bytes_sent": 0,
             "delta_deltas_applied": 0,
+            "tracking_bytes_received": 0,
         }
 
     async def start(self):
@@ -169,7 +178,7 @@ class GossipService:
             "source_http_port": self.config.http_port,
             "merkle_root": self.state.merkle_root(),
             "state_version": self.state.version,
-            "delta_seq": self.state.delta_seq,
+            "delta_vv": self.state.delta_vv,
             "event_count": self.state.get_event_count(),
             "state_summary": self.state.summary(),
             "peer_observations": observed_peers,
@@ -310,16 +319,18 @@ class GossipService:
             return
 
         sender = message.get("sender", host)
-        since = self.peer_delta_seq.get(sender, 0)
-        advertised_seq = message.get("delta_seq")
-        try:
-            advertised_seq = int(advertised_seq) if advertised_seq is not None else None
-        except (TypeError, ValueError):
-            advertised_seq = None
-
-        if advertised_seq is not None and advertised_seq <= since:
-            self.stats["delta_pulls_skipped_stale"] += 1
-            return
+        advertised_vv = message.get("delta_vv")
+        if isinstance(advertised_vv, dict):
+            try:
+                has_unseen = any(
+                    int(seq) > self.state.delta_vv.get(str(origin), 0)
+                    for origin, seq in advertised_vv.items()
+                )
+            except (TypeError, ValueError):
+                has_unseen = True
+            if not has_unseen:
+                self.stats["delta_pulls_skipped_stale"] += 1
+                return
         if sender in self._delta_pulls_in_flight:
             self.stats["delta_pulls_skipped_inflight"] += 1
             return
@@ -330,38 +341,37 @@ class GossipService:
         except (TypeError, ValueError):
             http_port = 8000
 
-        url = (
-            f"http://{host}:{http_port}/state/deltas"
-            f"?since={since}&mode={self.config.sync_mode}"
-        )
+        url = f"http://{host}:{http_port}/state/deltas"
+        requested_vv = dict(self.state.delta_vv)
+        body = json.dumps({"vv": requested_vv, "mode": self.config.sync_mode})
         timeout = aiohttp.ClientTimeout(total=4)
         self._delta_pulls_in_flight.add(sender)
         self.stats["delta_pulls_started"] += 1
 
         try:
             async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.get(url) as response:
+                async with session.post(
+                    url, data=body, headers={"Content-Type": "application/json"}
+                ) as response:
+                    self.stats["delta_request_bytes_sent"] += len(body.encode())
                     text = await response.text()
                     self.stats["delta_bytes_received"] += len(text.encode())
                     payload = json.loads(text)
-            if payload.get("has_gap"):
+            self.stats["tracking_bytes_received"] += _tracking_bytes(
+                payload.get("state") or payload.get("full_state")
+            )
+            if payload.get("fallback") == "gap":
                 self.stats["delta_pulls_gap"] += 1
-                repaired = await self._maybe_pull_state_from_sender(addr, message)
-                if repaired:
-                    to_seq = int(payload.get("to_seq", since) or since)
-                    self.peer_delta_seq[sender] = max(since, to_seq)
-                return
 
             self.state.set_gossip_round(self.stats["broadcast_cycles"])
+            old_version = self.state.version
             started = time.time()
-            applied = self.state.apply_delta_payload(payload)
+            applied = self.state.apply_delta_payload(payload, requested_vv)
             elapsed_ms = (time.time() - started) * 1000
             self.stats["last_merge_ms"] = round(elapsed_ms, 3)
             self.stats["merge_time_ms_total"] += elapsed_ms
             self.stats["delta_deltas_applied"] += applied
-            to_seq = int(payload.get("to_seq", since) or since)
-            self.peer_delta_seq[sender] = max(since, to_seq)
-            if applied:
+            if self.state.version != old_version:
                 self.stats["merged"] += 1
                 self.stats["last_successful_merge_at"] = time.time()
             self.stats["delta_pulls_success"] += 1
@@ -406,6 +416,7 @@ class GossipService:
                     text = await response.text()
                     self.stats["repair_bytes_received"] += len(text.encode())
                     data = json.loads(text)
+            self.stats["tracking_bytes_received"] += _tracking_bytes(data)
             incoming = NodeState.from_dict(data)
             self.state.set_gossip_round(self.stats["broadcast_cycles"])
             old_root = self.state.merkle_root()
@@ -438,7 +449,6 @@ class GossipService:
         """Clear scenario-scoped gossip observations and counters."""
         self.peer_observations.clear()
         self._last_repair_pull_at.clear()
-        self.peer_delta_seq.clear()
         self._delta_pulls_in_flight.clear()
         self.stats = self._new_stats()
 

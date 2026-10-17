@@ -8,14 +8,15 @@ import json
 import logging
 import os
 import random
+import re
 import signal
 import uuid
-from typing import Optional, Any, Dict, Set
+from typing import Optional, Any, Dict
 
 import aiohttp
 import structlog
 import uvicorn
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -23,7 +24,6 @@ from pydantic import BaseModel, Field
 from src.config import config
 from src.evaluation.runner import EvalScenarioConfig, EvaluationRunner
 from src.services.docker_manager import DockerManager, NETWORK_PROFILE_SETTINGS
-from src.services.observability import SimulatorObservabilityService
 from src.services.simulator_control import SimulatorControlService
 
 logging.basicConfig(
@@ -51,11 +51,6 @@ except Exception as error:
     docker_mgr = None
 
 control_service = None
-
-# --- WebSocket state ---
-_ws_clients: Set[WebSocket] = set()
-
-observability = None
 
 
 # --- Models ---
@@ -239,50 +234,6 @@ async def _sync_gateways_with_nodes(force: bool = False):
 
 async def _proxy_gateway_request(method: str, path: str, params: Optional[dict] = None):
     return await control_service.proxy_gateway_request(method, path, params=params)
-
-
-async def _post_gateway_event_tracking(record: dict) -> None:
-    try:
-        gateways = await _discover_gateways()
-    except Exception as error:
-        log.debug("event_tracking_gateway_discovery_failed", error=str(error))
-        return
-
-    timeout = aiohttp.ClientTimeout(total=3)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        for gateway in gateways:
-            for base_url in _candidate_urls(
-                gateway.get("url"),
-                f"http://{gateway.get('name')}:8000" if gateway.get("name") else None,
-                gateway.get("external_url"),
-            ):
-                try:
-                    async with session.post(
-                        f"{base_url}/gateway/event-tracking",
-                        json=record,
-                    ) as response:
-                        if response.status < 400:
-                            return
-                except Exception as error:
-                    log.debug(
-                        "event_tracking_post_failed",
-                        gateway=gateway.get("name"),
-                        url=base_url,
-                        error=str(error),
-                    )
-
-
-def _get_observability() -> SimulatorObservabilityService:
-    global observability
-    if observability is None:
-        observability = SimulatorObservabilityService(
-            config=config,
-            discover_gateways=_discover_gateways,
-            list_nodes=list_nodes,
-            list_gateways=list_gateways,
-            proxy_gateway_request=_proxy_gateway_request,
-        )
-    return observability
 
 
 # --- Gateway Management ---
@@ -625,49 +576,12 @@ async def send_event(req: SendEventRequest, target_node: Optional[str] = None):
                         body,
                     )
 
-                # Also get current state size and merkle root
-                state_info = {}
-                try:
-                    async with session.get(f"{node_url}/state/merkle") as merkle_resp:
-                        state_info = await merkle_resp.json()
-                except Exception:
-                    pass
-
-                try:
-                    async with session.get(f"{node_url}/state") as state_resp:
-                        state_data = await state_resp.json()
-                        state_info["state_size_bytes"] = len(json.dumps(state_data))
-                except Exception:
-                    pass
-
-                event_tracking_id = body.get("tracking_id") or tracking_id
-                await _post_gateway_event_tracking(
-                    {
-                        "tracking_id": event_tracking_id,
-                        "node_id": target.get("node_id") or target.get("name"),
-                        "event_type": req.type,
-                        "category": req.category,
-                        "state_size_bytes": state_info.get("state_size_bytes")
-                        or body.get("state_size_bytes"),
-                        "merkle_root_after": state_info.get("merkle_root")
-                        or body.get("merkle_root_after"),
-                        "metadata": {
-                            "target_node": target.get("name"),
-                            "location": req.location,
-                            "operation": req.operation,
-                            "source": "dashboard",
-                        },
-                    }
-                )
-
                 return {
                     "status": "sent",
-                    "tracking_id": event_tracking_id,
+                    "tracking_id": body.get("tracking_id") or tracking_id,
                     "target_node": target.get("name"),
                     "node_id": target.get("node_id"),
                     "event_response": body,
-                    "state_size_bytes": state_info.get("state_size_bytes"),
-                    "merkle_root_after": state_info.get("merkle_root"),
                 }
         except HTTPException:
             raise
@@ -678,22 +592,6 @@ async def send_event(req: SendEventRequest, target_node: Optional[str] = None):
                 f"Failed to send event to {target.get('name')}",
                 str(error),
             )
-
-
-# --- Metrics APIs ---
-
-
-@app.get("/metrics/live")
-async def live_metrics():
-    """Aggregate dashboard metrics with mode-aware observability cost."""
-    _require_docker()
-    return await _get_observability().get_live_metrics(force_refresh=False)
-
-
-@app.get("/metrics/timeseries")
-async def metrics_timeseries(metric: str = "state_size_bytes", limit: int = 100):
-    """Get time-series chart data from the gateway."""
-    return await _get_observability().get_timeseries(metric=metric, limit=limit)
 
 
 # --- Gateway Proxy ---
@@ -753,9 +651,7 @@ async def run_evaluation(cfg: EvalScenarioConfig = None):
     except ValueError as error:
         raise _api_error(400, "INVALID_EVALUATION_CONFIG", str(error))
 
-    partition_splits = (
-        cfg.partition_splits if cfg.network_profile == "hard_partition" else []
-    )
+    partition_splits = evaluation_runner.active_partition_splits(cfg)
     total_steps = evaluation_runner.planned_steps(cfg)
     run_id = evaluation_runner.reserve_run()
     asyncio.create_task(evaluation_runner.run(cfg, run_id=run_id))
@@ -778,9 +674,10 @@ async def run_evaluation(cfg: EvalScenarioConfig = None):
         "network_profile": cfg.network_profile,
         "network_settings": NETWORK_PROFILE_SETTINGS.get(cfg.network_profile),
         "offered_rate_per_second": cfg.offered_rate_per_second,
-        "dashboard_observability": cfg.dashboard_observability,
         "docker_cpus": cfg.docker_cpus,
         "docker_memory": cfg.docker_memory,
+        "resource_mode": cfg.resource_mode,
+        "resource_profile": cfg.resource_profile,
         "warm_topology": cfg.warm_topology,
         "node_readiness_timeout_seconds": cfg.node_readiness_timeout_seconds,
         "partition_events_per_node": cfg.partition_events_per_node,
@@ -803,10 +700,17 @@ async def download_evaluation():
         )
     from fastapi.responses import Response
 
+    results = evaluation_runner.state["results"]
+    case_id = str(results[0].get("case_id") or "") if results else ""
+    safe_case_id = re.sub(r"[^A-Za-z0-9._-]+", "-", case_id).strip("._-")
+    safe_run_id = re.sub(
+        r"[^A-Za-z0-9._-]+", "-", str(evaluation_runner.state["run_id"] or "run")
+    ).strip("._-")
+    filename = f"{safe_case_id or 'evaluation'}-{safe_run_id or 'run'}.csv"
     return Response(
         content=csv_data,
         media_type="text/csv",
-        headers={"Content-Disposition": "attachment; filename=evaluation_results.csv"},
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 
@@ -819,59 +723,6 @@ async def evaluation_results():
     }
 
 
-# --- WebSocket ---
-
-
-@app.websocket("/ws")
-async def websocket_endpoint(ws: WebSocket):
-    await ws.accept()
-    _ws_clients.add(ws)
-    log.info("ws_client_connected", total=len(_ws_clients))
-    try:
-        while True:
-            # Keep connection alive; ignore client messages
-            await ws.receive_text()
-    except WebSocketDisconnect:
-        pass
-    finally:
-        _ws_clients.discard(ws)
-        log.info("ws_client_disconnected", total=len(_ws_clients))
-
-
-async def _ws_broadcast(data: dict):
-    """Broadcast JSON data to all connected WebSocket clients."""
-    if not _ws_clients:
-        return
-    msg = json.dumps(data)
-    dead = []
-    for ws in _ws_clients:
-        try:
-            await ws.send_text(msg)
-        except Exception:
-            dead.append(ws)
-    for ws in dead:
-        _ws_clients.discard(ws)
-
-
-async def _ws_broadcast_loop():
-    """Background loop: push metrics to WebSocket clients periodically."""
-    while True:
-        await asyncio.sleep(config.observability_push_interval_seconds)
-        if not _ws_clients:
-            continue
-        try:
-            payload = {}
-
-            if docker_mgr:
-                payload = await _get_observability().build_ws_payload()
-
-            if payload:
-                payload["type"] = "update"
-                await _ws_broadcast(payload)
-        except Exception as e:
-            log.debug("ws_broadcast_error", error=str(e))
-
-
 static_dir = os.path.join(os.path.dirname(__file__), "static")
 app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")
 
@@ -882,7 +733,6 @@ app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")
 async def main():
     shutdown = asyncio.Event()
     loop = asyncio.get_event_loop()
-    _get_observability()
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, shutdown.set)
 
@@ -897,7 +747,7 @@ async def main():
         raise asyncio.CancelledError()
 
     try:
-        await asyncio.gather(server.serve(), _ws_broadcast_loop(), wait_shutdown())
+        await asyncio.gather(server.serve(), wait_shutdown())
     except asyncio.CancelledError:
         pass
     finally:

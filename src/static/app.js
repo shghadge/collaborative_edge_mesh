@@ -1,1206 +1,899 @@
-/* ═══════════════════════════════════════════════════════════
-   Edge Mesh Observatory — Dashboard JS
-   ═══════════════════════════════════════════════════════════ */
+(() => {
+    "use strict";
 
-// --- State ---
-let nodes = [];
-let gateways = [];
-let liveMetrics = {};
-let eventLog = [];
-let charts = {};
-let pollInterval = null;
-let ws = null;
-let wsConnected = false;
-const POLL_MS = 10000; // Fallback poll (slower since WS handles real-time)
-let lastTimeseriesFetchMs = 0;
+    const STATUS_POLL_MS = 1000;
 
-// --- Init ---
-document.addEventListener('DOMContentLoaded', () => {
-    initCharts();
-    refreshAll();
-    connectWebSocket();
-    // Keep live metrics fresh even with WebSocket; use full polling only as fallback.
-    pollInterval = setInterval(() => {
-        fetchLiveMetrics();
-        if (!wsConnected) {
-            pollData();
+    const labels = {
+        syncMode: {
+            full_state: "Full state",
+            optimized_full_state: "Optimized full state",
+            naive_key_delta: "Naive key delta",
+            true_delta: "True delta",
+        },
+        scenario: {
+            baseline: "Baseline",
+            partition_heal: "Partition and heal",
+            high_load: "High load",
+        },
+        network: {
+            clean_lan: "Clean LAN",
+            constrained_wifi: "Constrained Wi-Fi",
+            degraded: "Degraded",
+            severe: "Severe",
+        },
+    };
+
+    const elements = {
+        form: document.getElementById("experiment-form"),
+        fieldset: document.getElementById("config-fields"),
+        runButton: document.getElementById("run-button"),
+        runGuard: document.getElementById("run-guard"),
+        formErrors: document.getElementById("form-errors"),
+        caseId: document.getElementById("case-id"),
+        nodeCount: document.getElementById("node-count"),
+        repetitions: document.getElementById("repetitions"),
+        scenarioSeed: document.getElementById("scenario-seed"),
+        syncMode: document.getElementById("sync-mode"),
+        scenario: document.getElementById("scenario"),
+        networkProfile: document.getElementById("network-profile"),
+        eventsPerNode: document.getElementById("events-per-node"),
+        offeredRate: document.getElementById("offered-rate"),
+        offeredRateField: document.getElementById("offered-rate-field"),
+        partitionFields: document.getElementById("partition-fields"),
+        partitionSplits: document.getElementById("partition-splits"),
+        partitionDuration: document.getElementById("partition-duration"),
+        partitionEvents: document.getElementById("partition-events"),
+        eventConcurrency: document.getElementById("event-concurrency"),
+        dockerCpus: document.getElementById("docker-cpus"),
+        dockerMemory: document.getElementById("docker-memory"),
+        resourceMode: document.getElementById("resource-mode"),
+        resourceProfile: document.getElementById("resource-profile"),
+        resourcePreview: document.getElementById("resource-preview"),
+        resourcePreviewCounts: document.getElementById("resource-preview-counts"),
+        resourcePreviewTotal: document.getElementById("resource-preview-total"),
+        convergenceCutoff: document.getElementById("convergence-cutoff"),
+        pollInterval: document.getElementById("poll-interval"),
+        retentionField: document.getElementById("retention-field"),
+        eventRetention: document.getElementById("event-retention"),
+        retentionHelp: document.getElementById("retention-help"),
+        deltaLogField: document.getElementById("delta-log-field"),
+        deltaLogLimit: document.getElementById("delta-log-limit"),
+        reviewNarrative: document.getElementById("review-narrative"),
+        expectedRows: document.getElementById("expected-rows"),
+        reviewList: document.getElementById("review-list"),
+        preflightState: document.getElementById("preflight-state"),
+        apiState: document.getElementById("api-state"),
+        apiStateLabel: document.getElementById("api-state-label"),
+        runState: document.getElementById("run-state"),
+        activeRunId: document.getElementById("active-run-id"),
+        currentStep: document.getElementById("current-step"),
+        progressTrack: document.getElementById("progress-track"),
+        progressBar: document.getElementById("progress-bar"),
+        progressCount: document.getElementById("progress-count"),
+        progressRepetition: document.getElementById("progress-repetition"),
+        progressScenario: document.getElementById("progress-scenario"),
+        progressResults: document.getElementById("progress-results"),
+        runMessage: document.getElementById("run-message"),
+        resultsPanel: document.getElementById("results-panel"),
+        resultContext: document.getElementById("result-context"),
+        metricGrid: document.getElementById("metric-grid"),
+        rowCount: document.getElementById("row-count"),
+        resultsBody: document.getElementById("results-body"),
+        downloadCsv: document.getElementById("download-csv"),
+    };
+
+    const state = {
+        running: false,
+        pollTimer: null,
+        runId: null,
+        latestStatus: null,
+    };
+
+    function setApiState(mode, text) {
+        elements.apiState.classList.remove("is-ready", "is-running", "is-error");
+        if (mode) elements.apiState.classList.add(`is-${mode}`);
+        elements.apiStateLabel.textContent = text;
+    }
+
+
+    function updateConditionals(changedControl = null) {
+        const partitionSelected = elements.scenario.value === "partition_heal";
+        const fullStateSelected = elements.syncMode.value === "full_state";
+        const trueDeltaSelected = elements.syncMode.value === "true_delta";
+        const heterogeneousResources = elements.resourceMode.value === "heterogeneous";
+
+        elements.partitionFields.hidden = !partitionSelected;
+        elements.partitionSplits.disabled = !partitionSelected;
+        elements.partitionDuration.disabled = !partitionSelected;
+        elements.partitionEvents.disabled = !partitionSelected;
+
+        elements.offeredRateField.hidden = partitionSelected;
+        elements.offeredRate.disabled = partitionSelected;
+
+        if (fullStateSelected) {
+            if (elements.eventRetention.value !== "0") {
+                elements.eventRetention.dataset.retainedValue = elements.eventRetention.value;
+            }
+            elements.eventRetention.value = "0";
+            elements.eventRetention.disabled = true;
+            elements.retentionHelp.textContent = "Full state keeps the complete event history.";
+        } else {
+            if (elements.eventRetention.disabled) {
+                elements.eventRetention.value = elements.eventRetention.dataset.retainedValue || "100";
+            }
+            elements.eventRetention.disabled = false;
+            elements.retentionHelp.textContent =
+                elements.syncMode.value === "optimized_full_state"
+                    ? "Optimized full state needs a value above 0."
+                    : "Use 0 to keep all event IDs.";
         }
-    }, POLL_MS);
-});
 
-// --- WebSocket ---
-function connectWebSocket() {
-    try {
-        const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-        ws = new WebSocket(`${protocol}://${window.location.host}/ws`);
+        elements.deltaLogField.hidden = !trueDeltaSelected;
+        elements.deltaLogLimit.disabled = !trueDeltaSelected;
 
-        ws.onopen = () => {
-            wsConnected = true;
-            console.log('WebSocket connected');
+        if (changedControl === elements.resourceMode) {
+            if (heterogeneousResources) {
+                elements.dockerCpus.dataset.uniformValue = elements.dockerCpus.value;
+                elements.dockerMemory.dataset.uniformValue = elements.dockerMemory.value;
+                elements.dockerCpus.value = "0.5";
+                elements.dockerMemory.value = "512m";
+            } else {
+                elements.dockerCpus.value = elements.dockerCpus.dataset.uniformValue || "1";
+                elements.dockerMemory.value = elements.dockerMemory.dataset.uniformValue || "512m";
+            }
+        }
+        elements.resourceProfile.disabled = !heterogeneousResources;
+        elements.dockerCpus.disabled = heterogeneousResources;
+        elements.dockerMemory.disabled = heterogeneousResources;
+        elements.resourcePreview.hidden = !heterogeneousResources;
+        if (heterogeneousResources) {
+            const nodeCount = Number(elements.nodeCount.value);
+            if (Number.isSafeInteger(nodeCount) && nodeCount > 0 && nodeCount % 5 === 0) {
+                const blocks = nodeCount / 5;
+                elements.resourcePreviewCounts.textContent =
+                    `${blocks * 2} low · ${blocks * 2} medium · ${blocks} high`;
+                elements.resourcePreviewTotal.textContent =
+                    `Total: ${nodeCount * 0.5} CPU · ${nodeCount * 512} MiB`;
+            } else {
+                elements.resourcePreviewCounts.textContent = "Use 5, 10, 15, or another multiple of 5";
+                elements.resourcePreviewTotal.textContent = "Each five-node block uses 2.5 CPU · 2560 MiB";
+            }
+        }
+    }
+
+    function clearInvalidStates() {
+        elements.form.querySelectorAll('[aria-invalid="true"]').forEach((control) => {
+            control.removeAttribute("aria-invalid");
+        });
+    }
+
+    function collectConfiguration() {
+        clearInvalidStates();
+        const errors = [];
+
+        const addError = (control, message) => {
+            errors.push({ control, message });
+            control?.setAttribute("aria-invalid", "true");
         };
 
-        ws.onmessage = (event) => {
-            try {
-                const data = JSON.parse(event.data);
-                if (data.type === 'update') {
-                    if (data.nodes) {
-                        nodes = data.nodes;
-                        renderNodes();
-                        renderTopology();
-                        updateEventTargetSelector();
-                    }
-                    if (data.gateways) {
-                        gateways = data.gateways;
-                        renderGateways();
-                        updateGatewaySelector();
-                    }
-                    if (data.metrics) {
-                        liveMetrics = data.metrics;
-                        renderMetrics();
-                        updateCharts();
-                    }
+        const requiredInteger = (control, label, minimum = null) => {
+            if (control.value.trim() === "") {
+                addError(control, `${label} is required.`);
+                return null;
+            }
+            const value = Number(control.value);
+            if (!Number.isSafeInteger(value)) {
+                addError(control, `${label} must be an integer.`);
+                return null;
+            }
+            if (minimum !== null && value < minimum) {
+                addError(control, `${label} must be ${minimum} or greater.`);
+                return null;
+            }
+            return value;
+        };
+
+        const positiveNumber = (control, label) => {
+            const value = Number(control.value);
+            if (!Number.isFinite(value) || value <= 0) {
+                addError(control, `${label} must be greater than 0.`);
+                return null;
+            }
+            return value;
+        };
+
+        const optionalPositiveNumber = (control, label) => {
+            if (control.value.trim() === "") return null;
+            return positiveNumber(control, label);
+        };
+
+        const caseId = elements.caseId.value.trim();
+        if (!caseId) addError(elements.caseId, "Case name is required.");
+
+        const nodeCount = requiredInteger(elements.nodeCount, "Nodes", 1);
+        const resourceMode = elements.resourceMode.value;
+        const resourceProfile =
+            resourceMode === "heterogeneous" ? elements.resourceProfile.value : null;
+        if (
+            resourceMode === "heterogeneous" &&
+            nodeCount !== null &&
+            nodeCount % 5 !== 0
+        ) {
+            addError(
+                elements.nodeCount,
+                "Mixed edge devices require 5, 10, 15, or another multiple of 5 nodes.",
+            );
+        }
+        const repetitions = requiredInteger(elements.repetitions, "Runs", 1);
+        const scenarioSeed = requiredInteger(elements.scenarioSeed, "First seed");
+        const eventsPerNode = requiredInteger(elements.eventsPerNode, "Events per node", 1);
+        const eventConcurrency = requiredInteger(elements.eventConcurrency, "Concurrent requests", 1);
+        const convergenceWait = positiveNumber(elements.convergenceCutoff, "Convergence timeout");
+        const pollInterval = positiveNumber(elements.pollInterval, "Sample interval");
+        const dockerCpus =
+            resourceMode === "heterogeneous"
+                ? 0.5
+                : positiveNumber(elements.dockerCpus, "CPU limit");
+
+        const dockerMemory =
+            resourceMode === "heterogeneous"
+                ? "512m"
+                : elements.dockerMemory.value.trim().toLowerCase();
+        const memoryPattern = /^(?:\d+(?:\.\d+)?|\.\d+)(?:[kmgt]i?b?|b)$/i;
+        if (
+            resourceMode === "uniform" &&
+            (!memoryPattern.test(dockerMemory) || Number.parseFloat(dockerMemory) <= 0)
+        ) {
+            addError(elements.dockerMemory, "Memory must be a positive Docker size such as 512m or 1g.");
+        }
+
+        const syncMode = elements.syncMode.value;
+        const scenario = elements.scenario.value;
+        const networkProfile = elements.networkProfile.value;
+        const isPartition = scenario === "partition_heal";
+
+        let eventRetention = 0;
+        if (syncMode !== "full_state") {
+            eventRetention = requiredInteger(elements.eventRetention, "Event IDs kept", 0);
+            if (syncMode === "optimized_full_state" && eventRetention !== null && eventRetention <= 0) {
+                addError(elements.eventRetention, "Optimized full state needs an event ID value above 0.");
+            }
+        }
+
+        let deltaLogLimit = 1000;
+        if (syncMode === "true_delta") {
+            deltaLogLimit = requiredInteger(elements.deltaLogLimit, "Delta records kept", 0);
+        }
+
+        const offeredRate = isPartition
+            ? null
+            : optionalPositiveNumber(elements.offeredRate, "Offered rate");
+
+        let partitionSplits = [];
+        let partitionDuration = null;
+        let partitionEvents = null;
+        if (isPartition) {
+            const rawParts = elements.partitionSplits.value.split(",");
+            if (!elements.partitionSplits.value.trim() || rawParts.some((part) => !part.trim())) {
+                addError(elements.partitionSplits, "Enter one or more comma-separated partition splits.");
+            } else {
+                partitionSplits = rawParts.map((part) => Number(part.trim()));
+                if (partitionSplits.some((split) => !Number.isFinite(split) || split <= 0 || split >= 1)) {
+                    addError(elements.partitionSplits, "Every partition split must be a decimal greater than 0 and less than 1.");
                 }
-            } catch (e) {
-                console.warn('WebSocket message parse error', e);
             }
-        };
-
-        ws.onclose = () => {
-            wsConnected = false;
-            console.log('WebSocket disconnected, retrying in 3s...');
-            setTimeout(connectWebSocket, 3000);
-        };
-
-        ws.onerror = () => {
-            wsConnected = false;
-            ws.close();
-        };
-    } catch (e) {
-        wsConnected = false;
-        console.warn('WebSocket not available, using polling fallback');
-    }
-}
-
-// --- API Helpers ---
-async function api(method, path, body = null) {
-    const opts = {
-        method,
-        headers: { 'Content-Type': 'application/json' },
-    };
-    if (body) opts.body = JSON.stringify(body);
-    const res = await fetch(path, opts);
-    const data = await res.json();
-    if (!res.ok) {
-        const msg = data.message || data.detail?.message || JSON.stringify(data);
-        throw new Error(msg);
-    }
-    return data;
-}
-
-function toast(message, type = 'info') {
-    const container = document.getElementById('toast-container');
-    const el = document.createElement('div');
-    el.className = `toast ${type}`;
-    el.textContent = message;
-    container.appendChild(el);
-    setTimeout(() => {
-        el.classList.add('out');
-        setTimeout(() => el.remove(), 300);
-    }, 3500);
-}
-
-// --- Refresh ---
-async function refreshAll() {
-    await Promise.allSettled([
-        fetchGateways(),
-        fetchNodes(),
-        fetchLiveMetrics(),
-        fetchTimeseries(),
-    ]);
-}
-
-async function pollData() {
-    await Promise.allSettled([
-        fetchGateways(),
-        fetchNodes(),
-        fetchLiveMetrics(),
-    ]);
-}
-
-// --- Gateways ---
-async function fetchGateways() {
-    try {
-        gateways = await api('GET', '/gateways');
-        renderGateways();
-        updateGatewaySelector();
-    } catch (e) {
-        // Docker may not be ready
-    }
-}
-
-function renderGateways() {
-    const container = document.getElementById('gateway-list');
-    if (!container) return;
-
-    if (!gateways.length) {
-        container.innerHTML = '<div class="empty-state">No gateways running</div>';
-        return;
-    }
-
-    container.innerHTML = gateways.map(g => {
-        const assignedCount = g.assigned_nodes ? g.assigned_nodes.length : 0;
-        return `
-            <div class="node-item">
-                <span class="node-dot running"></span>
-                <span class="node-name" style="color: #ed8936;">${g.name}</span>
-                <span class="node-id">port ${g.host_port} &middot; ${assignedCount} nodes</span>
-                <div class="node-actions">
-                    <button class="btn btn-sm btn-outline" onclick="removeGateway('${g.name}')">✕</button>
-                </div>
-            </div>
-        `;
-    }).join('');
-}
-
-async function createGateway() {
-    try {
-        const result = await api('POST', '/gateways');
-        toast(`Created ${result.gateway_id || result.container}`, 'success');
-        await fetchGateways();
-        await fetchNodes();
-    } catch (e) {
-        toast(`Create failed: ${e.message}`, 'error');
-    }
-}
-
-async function removeGateway(gatewayId) {
-    try {
-        await api('DELETE', `/gateways/${gatewayId}`);
-        toast(`Removed ${gatewayId}`, 'info');
-        await fetchGateways();
-        await fetchNodes();
-    } catch (e) {
-        toast(`Remove failed: ${e.message}`, 'error');
-    }
-}
-
-// --- Nodes ---
-async function fetchNodes() {
-    try {
-        nodes = await api('GET', '/nodes');
-        renderNodes();
-        renderTopology();
-        updateNodeSelector();
-        const statEl = document.getElementById('stat-node-count');
-        if (statEl) statEl.textContent = nodes.length;
-    } catch (e) {
-        // Docker may not be ready
-    }
-}
-
-function renderNodes() {
-    const container = document.getElementById('node-list');
-    if (!nodes.length) {
-        container.innerHTML = '<div class="empty-state">No nodes running</div>';
-        return;
-    }
-
-    const activeGateways = gateways || [];
-
-    container.innerHTML = nodes.map(n => {
-        const statusClass = n.isolated ? 'isolated' : (n.status === 'running' ? 'running' : 'stopped');
-        const statusLabel = n.isolated ? 'isolated' : n.status;
-        const gwLabel = n.assigned_gateway ? ` &middot; ${n.assigned_gateway}` : '';
-
-        const optionsHtml = ['<option value="">Auto (Round-Robin)</option>', ...activeGateways.map(g => `<option value="${g.name}" ${g.name === n.assigned_gateway ? 'selected' : ''}>${g.name}</option>`)].join('');
-
-        return `
-            <div class="node-item">
-                <span class="node-dot ${statusClass}"></span>
-                <span class="node-name">${n.name}</span>
-                <span class="node-id">${n.node_id} &middot; ${statusLabel}${gwLabel}</span>
-                <div class="node-actions" style="display: flex; gap: 6px; align-items: center;">
-                    <select onchange="changeNodeGateway('${n.node_id}', this.value)" style="font-size: 11px; padding: 2px 4px; border-radius: 4px; border: 1px solid var(--border-color); background: var(--surface); color: var(--text-secondary);">
-                        ${optionsHtml}
-                    </select>
-                    ${n.isolated
-                ? `<button class="btn btn-sm btn-success" onclick="healNode('${n.node_id}')">Heal</button>`
-                : `<button class="btn btn-sm btn-warning" onclick="isolateNode('${n.node_id}')">Isolate</button>`
-            }
-                    <button class="btn btn-sm" onclick="removeNode('${n.node_id}')">✕</button>
-                </div>
-            </div>
-        `;
-    }).join('');
-}
-
-function updateNodeSelector() {
-    const select = document.getElementById('event-target');
-    if (!select) return;
-    const current = select.value;
-    select.innerHTML = '<option value="">Any node</option>' +
-        nodes.map(n => `<option value="${n.node_id}" ${n.node_id === current ? 'selected' : ''}>${n.name} (${n.node_id})</option>`).join('');
-}
-
-function updateGatewaySelector() {
-    const selects = document.querySelectorAll('.gateway-selector');
-    selects.forEach(select => {
-        const current = select.value;
-        let html = '<option value="">Auto (Round-Robin)</option>';
-        if (gateways) {
-            gateways.forEach(g => {
-                html += `<option value="${g.name}" ${g.name === current ? 'selected' : ''}>${g.name}</option>`;
-            });
+            partitionDuration = positiveNumber(elements.partitionDuration, "Failure time");
+            partitionEvents = requiredInteger(elements.partitionEvents, "Events per node during failure", 0);
         }
-        select.innerHTML = html;
-    });
-}
 
-// --- Node Actions ---
-async function createNode() {
-    try {
-        const gwSelect = document.getElementById('gateway-selector');
-        const query = gwSelect && gwSelect.value ? `?assigned_gateway=${encodeURIComponent(gwSelect.value)}` : '';
-        const result = await api('POST', `/nodes${query}`);
-        toast(`Created ${result.container || result.node_id}`, 'success');
-        await fetchNodes();
-    } catch (e) {
-        toast(`Create failed: ${e.message}`, 'error');
-    }
-}
-
-async function createNodesBatch(count) {
-    try {
-        const gwSelect = document.getElementById('gateway-selector');
-        const query = gwSelect && gwSelect.value ? `&assigned_gateway=${encodeURIComponent(gwSelect.value)}` : '';
-        const result = await api('POST', `/nodes/batch?count=${count}${query}`);
-        toast(`Created ${result.created_count} nodes`, 'success');
-        await fetchNodes();
-    } catch (e) {
-        toast(`Batch create failed: ${e.message}`, 'error');
-    }
-}
-
-async function changeNodeGateway(nodeId, gatewayName) {
-    try {
-        await api('PUT', `/nodes/${nodeId}/gateway`, { assigned_gateway: gatewayName });
-        toast(`Reassigned ${nodeId} to ${gatewayName || 'Auto'}`, 'info');
-        await fetchNodes();
-    } catch (e) {
-        toast(`Reassign failed: ${e.message}`, 'error');
-    }
-}
-
-async function removeNode(nodeId) {
-    try {
-        await api('DELETE', `/nodes/${nodeId}`);
-        toast(`Removed ${nodeId}`, 'info');
-        await fetchNodes();
-    } catch (e) {
-        toast(`Remove failed: ${e.message}`, 'error');
-    }
-}
-
-async function isolateNode(nodeId) {
-    try {
-        await api('POST', `/nodes/${nodeId}/partition`);
-        toast(`Isolated ${nodeId}`, 'info');
-        await fetchNodes();
-    } catch (e) {
-        toast(`Isolate failed: ${e.message}`, 'error');
-    }
-}
-
-async function healNode(nodeId) {
-    try {
-        await api('DELETE', `/nodes/${nodeId}/partition`);
-        toast(`Healed ${nodeId}`, 'success');
-        await fetchNodes();
-    } catch (e) {
-        toast(`Heal failed: ${e.message}`, 'error');
-    }
-}
-
-async function splitBrain() {
-    try {
-        const result = await api('POST', '/partition/split-brain');
-        toast('Split brain created', 'info');
-        await fetchNodes();
-    } catch (e) {
-        toast(`Split brain failed: ${e.message}`, 'error');
-    }
-}
-
-async function healAll() {
-    try {
-        await api('POST', '/partition/heal-all');
-        toast('All nodes healed', 'success');
-        await fetchNodes();
-    } catch (e) {
-        toast(`Heal all failed: ${e.message}`, 'error');
-    }
-}
-
-async function triggerPoll() {
-    try {
-        await api('POST', '/gateway/poll');
-        toast('Poll triggered', 'info');
-        await fetchLiveMetrics();
-    } catch (e) {
-        toast(`Poll failed: ${e.message}`, 'error');
-    }
-}
-
-// --- Event Sending ---
-async function sendEvent(e) {
-    e.preventDefault();
-    const btn = document.getElementById('send-event-btn');
-    btn.disabled = true;
-
-    const type = document.getElementById('event-type').value;
-    const value = document.getElementById('event-value').value;
-    const category = document.getElementById('event-category').value;
-    const targetNode = document.getElementById('event-target').value;
-    const location = document.getElementById('event-location').value;
-    const operation = document.getElementById('event-operation').value;
-
-    // Parse value (number or string)
-    let parsedValue = value;
-    if (!isNaN(value) && value.trim() !== '') {
-        parsedValue = parseFloat(value);
-    }
-
-    try {
-        const url = targetNode
-            ? `/event/send?target_node=${encodeURIComponent(targetNode)}`
-            : '/event/send';
-
-        const result = await api('POST', url, {
-            type,
-            value: parsedValue,
-            category,
-            location: location || undefined,
-            operation: operation || undefined,
-        });
-
-        // Add to local event log
-        eventLog.unshift({
-            timestamp: new Date().toISOString(),
-            node: result.target_node || result.node_id,
-            type,
-            category,
-            state_size_bytes: result.state_size_bytes,
-            merkle_root: result.merkle_root_after,
-            tracking_id: result.tracking_id,
-        });
-        renderEventLog();
-
-        // Show result
-        const resultEl = document.getElementById('event-result');
-        resultEl.classList.remove('hidden', 'error');
-        resultEl.textContent = `✓ Sent to ${result.target_node} | tracking: ${result.tracking_id?.substring(0, 8)}... | state: ${result.state_size_bytes || '?'} bytes`;
-
-        toast(`Event sent to ${result.target_node}`, 'success');
-    } catch (e) {
-        const resultEl = document.getElementById('event-result');
-        resultEl.classList.remove('hidden');
-        resultEl.classList.add('error');
-        resultEl.textContent = `✕ Failed: ${e.message}`;
-        toast(`Event send failed: ${e.message}`, 'error');
-    } finally {
-        btn.disabled = false;
-    }
-}
-
-// --- Live Metrics ---
-async function fetchLiveMetrics() {
-    try {
-        liveMetrics = await api('GET', '/metrics/live');
-        renderLiveMetrics();
-        renderPerNodeStats();
-    } catch (e) {
-        // Gateway may not be ready
-    }
-}
-
-function renderMetrics() {
-    renderLiveMetrics();
-    renderPerNodeStats();
-}
-
-function renderLiveMetrics() {
-    const m = liveMetrics;
-
-    // Convergence time
-    const convTime = m.convergence_time_seconds;
-    const convergenceEl = document.getElementById('mv-convergence');
-    const headerConvergenceEl = document.getElementById('stat-convergence-time');
-    if (convergenceEl) {
-        convergenceEl.textContent =
-            convTime !== null && convTime !== undefined ? `${convTime}s` : '—';
-    }
-    if (headerConvergenceEl) {
-        headerConvergenceEl.textContent =
-            convTime !== null && convTime !== undefined ? `${convTime}s` : '—';
-    }
-
-    // Data loss
-    const dl = m.data_loss_percent;
-    const dataLossEl = document.getElementById('mv-data-loss');
-    if (dataLossEl) {
-        dataLossEl.textContent = dl !== null && dl !== undefined ? `${dl}%` : '—';
-    }
-
-    // Gossip
-    const gossipEl = document.getElementById('mv-gossip');
-    const headerGossipEl = document.getElementById('stat-gossip-count');
-    if (gossipEl) {
-        gossipEl.textContent = (m.total_gossip_messages_sent || 0).toLocaleString();
-    }
-    if (headerGossipEl) {
-        headerGossipEl.textContent = m.total_gossip_messages_sent || 0;
-    }
-
-    // State size
-    const totalSize = m.total_state_size_bytes || 0;
-    const stateSizeEl = document.getElementById('mv-state-size');
-    if (stateSizeEl) {
-        stateSizeEl.textContent = formatBytes(totalSize);
-    }
-
-    // Confidence-aware status and coverage
-    const knownStatusRaw = (m.known_status || 'unknown_partial').toLowerCase();
-    const knownStatusText =
-        knownStatusRaw === 'known_converged' ? 'Known Converged' :
-        knownStatusRaw === 'known_diverged' ? 'Known Diverged' :
-        'Insufficient Coverage';
-    const coveragePct = m.coverage_percent !== null && m.coverage_percent !== undefined
-        ? Number(m.coverage_percent)
-        : 0;
-    const knownStatusEl = document.getElementById('mv-known-status');
-    const coverageEl = document.getElementById('mv-coverage');
-    if (knownStatusEl) {
-        knownStatusEl.textContent = knownStatusText;
-    }
-    if (coverageEl) {
-        coverageEl.textContent = `${coveragePct.toFixed(1)}%`;
-    }
-
-    // Network status
-    const knownStatus = knownStatusRaw;
-    const isDivergent = knownStatus === 'known_diverged';
-    const statusEl = document.getElementById('mv-divergence');
-    const detailEl = document.getElementById('mv-divergence-detail');
-    const headerStatusEl = document.getElementById('stat-network-status');
-    const coverageText = `${coveragePct.toFixed(1)}% coverage`;
-
-    if (!statusEl || !detailEl || !headerStatusEl) {
-        return;
-    }
-
-    const divergenceCard = document.getElementById('mc-divergence');
-    const knownStatusCard = document.getElementById('mc-known-status');
-    if (divergenceCard) {
-        divergenceCard.classList.remove('status-converged', 'status-diverged', 'status-partial');
-    }
-    if (knownStatusCard) {
-        knownStatusCard.classList.remove('status-converged', 'status-diverged', 'status-partial');
-    }
-
-    if (knownStatus === 'unknown_partial') {
-        statusEl.textContent = 'Insufficient Coverage';
-        statusEl.style.color = '#d69e2e';
-        detailEl.textContent = coverageText;
-        headerStatusEl.innerHTML = '<span class="status-dot partial"></span> Partial';
-        if (divergenceCard) divergenceCard.classList.add('status-partial');
-        if (knownStatusCard) knownStatusCard.classList.add('status-partial');
-    } else if (isDivergent) {
-        statusEl.textContent = 'Divergent';
-        statusEl.style.color = 'var(--accent-red)';
-        detailEl.textContent = `Diverged for ${m.divergence_duration_seconds || 0}s · ${coverageText}`;
-        headerStatusEl.innerHTML = '<span class="status-dot divergent"></span> Divergent';
-        if (divergenceCard) divergenceCard.classList.add('status-diverged');
-        if (knownStatusCard) knownStatusCard.classList.add('status-diverged');
-    } else {
-        statusEl.textContent = 'Converged';
-        statusEl.style.color = 'var(--accent-green)';
-        detailEl.textContent = `Known converged · ${coverageText}`;
-        headerStatusEl.innerHTML = '<span class="status-dot converged"></span> OK';
-        if (divergenceCard) divergenceCard.classList.add('status-converged');
-        if (knownStatusCard) knownStatusCard.classList.add('status-converged');
-    }
-
-    // Update badge
-    const updateBadge = document.getElementById('metrics-update-badge');
-    if (updateBadge) {
-        updateBadge.textContent = `Poll #${m.polls_completed || 0}`;
-    }
-}
-
-function renderPerNodeStats() {
-    const tbody = document.getElementById('per-node-tbody');
-    const perNode = liveMetrics.per_node || [];
-
-    if (!perNode.length) {
-        tbody.innerHTML = '<tr><td colspan="6" class="empty-cell">Waiting for data...</td></tr>';
-        return;
-    }
-
-    tbody.innerHTML = perNode.map(n => `
-        <tr>
-            <td>
-                <span class="node-dot ${n.isolated ? 'isolated' : 'running'}" style="display:inline-block;vertical-align:middle;margin-right:4px;width:6px;height:6px;"></span>
-                ${n.node_id || n.name}
-            </td>
-            <td>${n.event_count ?? '—'}</td>
-            <td>${n.gossip_sent ?? '—'}</td>
-            <td>${n.peers_discovered ?? '—'}</td>
-            <td>${n.state_size_bytes ? formatBytes(n.state_size_bytes) : '—'}</td>
-            <td>${n.merkle_root || '—'}</td>
-        </tr>
-    `).join('');
-}
-
-// --- Event Log ---
-function renderEventLog() {
-    const tbody = document.getElementById('event-log-tbody');
-    const badge = document.getElementById('event-log-count');
-    badge.textContent = `${eventLog.length} event${eventLog.length !== 1 ? 's' : ''}`;
-
-    if (!eventLog.length) {
-        tbody.innerHTML = '<tr><td colspan="6" class="empty-cell">No events sent yet</td></tr>';
-        return;
-    }
-
-    tbody.innerHTML = eventLog.slice(0, 50).map(ev => `
-        <tr>
-            <td>${formatTime(ev.timestamp)}</td>
-            <td>${ev.node}</td>
-            <td>${ev.type}</td>
-            <td>${ev.category}</td>
-            <td>${ev.state_size_bytes ? formatBytes(ev.state_size_bytes) : '—'}</td>
-            <td>${ev.merkle_root ? ev.merkle_root.substring(0, 12) : '—'}</td>
-        </tr>
-    `).join('');
-}
-
-// --- Charts ---
-function initCharts() {
-    const defaults = Chart.defaults;
-    defaults.color = '#8892a4';
-    defaults.borderColor = 'rgba(255, 255, 255, 0.04)';
-    defaults.font.family = "'Inter', system-ui, sans-serif";
-    defaults.font.size = 10;
-
-    const commonOpts = {
-        responsive: true,
-        maintainAspectRatio: false,
-        animation: { duration: 400 },
-        plugins: {
-            legend: { display: false },
-        },
-        scales: {
-            x: {
-                grid: { color: 'rgba(255, 255, 255, 0.03)' },
-                ticks: { maxTicksLimit: 8, font: { size: 9 } },
-            },
-            y: {
-                grid: { color: 'rgba(255, 255, 255, 0.03)' },
-                beginAtZero: true,
-                ticks: { font: { size: 9 } },
-            },
-        },
-    };
-
-    charts.convergence = new Chart(
-        document.getElementById('chart-convergence').getContext('2d'),
-        {
-            type: 'line',
-            data: {
-                labels: [],
-                datasets: [{
-                    label: 'Convergence Time (s)',
-                    data: [],
-                    borderColor: '#63b3ed',
-                    backgroundColor: 'rgba(99, 179, 237, 0.1)',
-                    borderWidth: 2,
-                    pointRadius: 3,
-                    pointBackgroundColor: '#63b3ed',
-                    fill: true,
-                    tension: 0.3,
-                }],
-            },
-            options: { ...commonOpts },
-        }
-    );
-
-    charts.stateSize = new Chart(
-        document.getElementById('chart-state-size').getContext('2d'),
-        {
-            type: 'line',
-            data: {
-                labels: [],
-                datasets: [{
-                    label: 'State Size (bytes)',
-                    data: [],
-                    borderColor: '#b794f4',
-                    backgroundColor: 'rgba(183, 148, 244, 0.1)',
-                    borderWidth: 2,
-                    pointRadius: 3,
-                    pointBackgroundColor: '#b794f4',
-                    fill: true,
-                    tension: 0.3,
-                }],
-            },
-            options: { ...commonOpts },
-        }
-    );
-
-    charts.nodeCount = new Chart(
-        document.getElementById('chart-node-count').getContext('2d'),
-        {
-            type: 'line',
-            data: {
-                labels: [],
-                datasets: [{
-                    label: 'Active Nodes',
-                    data: [],
-                    borderColor: '#68d391',
-                    backgroundColor: 'rgba(104, 211, 145, 0.1)',
-                    borderWidth: 2,
-                    pointRadius: 3,
-                    pointBackgroundColor: '#68d391',
-                    fill: true,
-                    tension: 0.3,
-                    stepped: 'after',
-                }],
-            },
-            options: { ...commonOpts },
-        }
-    );
-}
-
-async function fetchTimeseries() {
-    try {
-        const [convergeData, sizeData, countData] = await Promise.all([
-            api('GET', '/metrics/timeseries?metric=convergence_time&limit=50'),
-            api('GET', '/metrics/timeseries?metric=state_size_bytes&limit=50'),
-            api('GET', '/metrics/timeseries?metric=node_count&limit=50'),
-        ]);
-
-        updateChart(charts.convergence, convergeData);
-        updateChart(charts.stateSize, sizeData);
-        updateChart(charts.nodeCount, countData);
-    } catch (e) {
-        // Gateway or timeseries not ready
-    }
-}
-
-function updateChart(chart, data) {
-    if (!Array.isArray(data)) return;
-    // Data comes in reverse chronological order
-    const reversed = [...data].reverse();
-    chart.data.labels = reversed.map(d => formatTime(d.timestamp));
-    chart.data.datasets[0].data = reversed.map(d => d.value);
-    chart.update('none');
-}
-
-function updateCharts() {
-    const mode = (liveMetrics.observability_mode || '').toLowerCase();
-    const minIntervalMs =
-        mode === 'off' ? 60000 :
-        mode === 'light' ? 20000 :
-        5000;
-    const now = Date.now();
-    if (now - lastTimeseriesFetchMs < minIntervalMs) {
-        return;
-    }
-    lastTimeseriesFetchMs = now;
-    fetchTimeseries();
-}
-
-// --- D3 Topology Canvas ---
-let simulation = null;
-let d3Nodes = [];
-let d3Links = [];
-let lastTopologyFingerprint = '';
-
-function renderTopology() {
-    const svgEl = document.getElementById('topology-canvas');
-    if (!svgEl) return;
-    const container = svgEl.parentElement;
-    const rect = container.getBoundingClientRect();
-    const w = rect.width;
-    const h = rect.height;
-
-    if (w <= 0 || h <= 0) return;
-
-    const svg = d3.select('#topology-canvas')
-        .attr('width', w)
-        .attr('height', h);
-
-    if (!nodes.length && (!gateways || !gateways.length)) {
-        svg.selectAll('*').remove();
-        svg.append('text')
-            .attr('x', w / 2)
-            .attr('y', h / 2)
-            .attr('text-anchor', 'middle')
-            .attr('fill', '#5a6478')
-            .style('font-family', 'Inter, system-ui, sans-serif')
-            .style('font-size', '13px')
-            .text('Create nodes to see the topology');
-        lastTopologyFingerprint = '';
-        return;
-    }
-
-    // Prepare data
-    const activeGateways = gateways || [];
-    const newNodes = [];
-    const newLinks = [];
-    const nodeById = new Map();
-
-    activeGateways.forEach(gw => {
-        const n = { id: gw.name, type: 'gateway', label: gw.name };
-        newNodes.push(n);
-        nodeById.set(n.id, n);
-    });
-
-    nodes.forEach(node => {
-        const n = { id: node.name, type: 'node', label: node.node_id || node.name, isolated: node.isolated };
-        newNodes.push(n);
-        nodeById.set(n.id, n);
-    });
-
-    // links
-    nodes.forEach(node => {
-        if (node.assigned_gateway && nodeById.has(node.assigned_gateway) && !node.isolated) {
-            newLinks.push({ source: node.name, target: node.assigned_gateway, type: 'gateway-link' });
-        }
-    });
-
-
-    for (let i = 0; i < nodes.length; i++) {
-        for (let j = i + 1; j < nodes.length; j++) {
-            const sameGateway =
-                nodes[i].assigned_gateway &&
-                nodes[j].assigned_gateway &&
-                nodes[i].assigned_gateway === nodes[j].assigned_gateway;
-            if (!sameGateway) continue;
-
-            const eitherIsolated = nodes[i].isolated || nodes[j].isolated;
-            if (!eitherIsolated) {
-                newLinks.push({ source: nodes[i].name, target: nodes[j].name, type: 'mesh-link' });
-            } else {
-                newLinks.push({ source: nodes[i].name, target: nodes[j].name, type: 'isolated-link' });
-            }
-        }
-    }
-
-    // Build a fingerprint of the current graph structure to detect changes
-    const nodeFingerprint = newNodes.map(n => `${n.id}:${n.type}:${n.isolated || false}`).sort().join('|');
-    const linkFingerprint = newLinks.map(l => `${l.source}-${l.target}:${l.type}`).sort().join('|');
-    const currentFingerprint = nodeFingerprint + '##' + linkFingerprint;
-    const graphChanged = currentFingerprint !== lastTopologyFingerprint;
-    lastTopologyFingerprint = currentFingerprint;
-
-    // Merge with existing for stable layout
-    const oldNodeById = new Map(d3Nodes.map(d => [d.id, d]));
-    d3Nodes = newNodes.map(n => {
-        const old = oldNodeById.get(n.id);
-        if (old) {
-            n.x = old.x;
-            n.y = old.y;
-            n.vx = old.vx;
-            n.vy = old.vy;
-            n.fx = old.fx;
-            n.fy = old.fy;
-        }
-        return n;
-    });
-    d3Links = newLinks;
-
-    svg.selectAll('*').remove();
-
-    const defs = svg.append('defs');
-    const glowFilter = defs.append('filter').attr('id', 'glow');
-    glowFilter.append('feGaussianBlur').attr('stdDeviation', '4').attr('result', 'coloredBlur');
-    const feMerge = glowFilter.append('feMerge');
-    feMerge.append('feMergeNode').attr('in', 'coloredBlur');
-    feMerge.append('feMergeNode').attr('in', 'SourceGraphic');
-
-    const g = svg.append('g');
-
-    if (!simulation) {
-        simulation = d3.forceSimulation()
-            .force('charge', d3.forceManyBody().strength(d => d.type === 'gateway' ? -600 : -250))
-            .force('center', d3.forceCenter(w / 2, h / 2))
-            .force('collision', d3.forceCollide().radius(d => d.type === 'gateway' ? 40 : 25));
-    } else {
-        simulation.force('center', d3.forceCenter(w / 2, h / 2));
-    }
-
-    simulation.nodes(d3Nodes);
-    simulation.force('link', d3.forceLink(d3Links).id(d => d.id).distance(d => {
-        if (d.type === 'gateway-link') return 80;
-        return 140;
-    }).strength(d => {
-        if (d.type === 'isolated-link') return 0.01;
-        if (d.type === 'gateway-link') return 0.8;
-        return 0.1;
-    }));
-
-    // Only re-energize the simulation when the graph structure actually changed
-    if (graphChanged) {
-        simulation.alpha(0.3).restart();
-    } else {
-        // Just nudge to redraw without drifting
-        simulation.alpha(0).restart();
-    }
-
-    // Draw links
-    const link = g.append('g')
-        .selectAll('line')
-        .data(d3Links)
-        .join('line')
-        .attr('stroke', d => {
-            if (d.type === 'isolated-link') return 'rgba(252, 129, 129, 0.15)';
-            if (d.type === 'gateway-link') return 'rgba(237, 137, 54, 0.5)';
-            return 'rgba(99, 179, 237, 0.2)';
-        })
-        .attr('stroke-dasharray', d => {
-            if (d.type === 'isolated-link' || d.type === 'gateway-link') return '4,4';
-            return null;
-        });
-
-    // Draw nodes
-    const node = g.append('g')
-        .selectAll('g')
-        .data(d3Nodes)
-        .join('g')
-        .call(d3.drag()
-            .on('start', dragstarted)
-            .on('drag', dragged)
-            .on('end', dragended)
-        );
-
-    // Gateway style
-    const gatewaysG = node.filter(d => d.type === 'gateway');
-    gatewaysG.append('rect')
-        .attr('x', -15).attr('y', -15).attr('width', 30).attr('height', 30)
-        .attr('fill', 'rgba(237, 137, 54, 0.2)');
-    gatewaysG.append('rect')
-        .attr('x', -8).attr('y', -8).attr('width', 16).attr('height', 16)
-        .attr('fill', '#ed8936');
-    gatewaysG.append('rect')
-        .attr('x', -2).attr('y', -2).attr('width', 4).attr('height', 4)
-        .attr('fill', '#fbd38d');
-
-    // Edge node style
-    const edgesG = node.filter(d => d.type === 'node');
-
-    edgesG.append('circle')
-        .attr('r', 10)
-        .attr('fill', d => d.isolated ? '#fc8181' : '#63b3ed')
-        .style('filter', 'url(#glow)');
-    edgesG.append('circle')
-        .attr('r', 10)
-        .attr('fill', 'none')
-        .attr('stroke', d => d.isolated ? 'rgba(252, 129, 129, 0.3)' : 'rgba(99, 179, 237, 0.3)')
-        .attr('stroke-width', 8);
-    edgesG.append('circle')
-        .attr('r', 3)
-        .attr('fill', d => d.isolated ? '#fed7d7' : '#bee3f8');
-
-    node.append('text')
-        .attr('y', 25)
-        .attr('text-anchor', 'middle')
-        .attr('fill', d => d.type === 'gateway' ? '#bdc4d1' : '#8892a4')
-        .style('font-family', 'Inter, system-ui, sans-serif')
-        .style('font-size', d => d.type === 'gateway' ? '11px' : '10px')
-        .style('font-weight', d => d.type === 'gateway' ? 'bold' : 'normal')
-        .text(d => d.label.length > 12 ? d.label.substring(0, 12) + '…' : d.label);
-
-    simulation.on('tick', () => {
-        // Enforce bounding box constraints
-        node.attr('transform', d => {
-            const r = d.type === 'gateway' ? 20 : 10;
-            d.x = Math.max(r, Math.min(w - r, d.x));
-            d.y = Math.max(r, Math.min(h - r, d.y));
-            return `translate(${d.x},${d.y})`;
-        });
-
-        link
-            .attr('x1', d => d.source.x)
-            .attr('y1', d => d.source.y)
-            .attr('x2', d => d.target.x)
-            .attr('y2', d => d.target.y);
-    });
-
-    function dragstarted(event) {
-        if (!event.active) simulation.alphaTarget(0.3).restart();
-        event.subject.fx = event.subject.x;
-        event.subject.fy = event.subject.y;
-    }
-
-    function dragged(event) {
-        event.subject.fx = event.x;
-        event.subject.fy = event.y;
-    }
-
-    function dragended(event) {
-        if (!event.active) simulation.alphaTarget(0);
-        event.subject.fx = null;
-        event.subject.fy = null;
-    }
-}
-
-// Re-render topology on window resize
-let resizeTimer;
-window.addEventListener('resize', () => {
-    clearTimeout(resizeTimer);
-    resizeTimer = setTimeout(renderTopology, 150);
-});
-
-function toggleFullscreen() {
-    const topologyPanel = document.getElementById('topology-panel');
-    topologyPanel.classList.toggle('fullscreen');
-
-    setTimeout(() => {
-        if (simulation) {
-            simulation.alpha(0.3).restart();
-        }
-        renderTopology();
-    }, 10);
-}
-
-function toggleAccordion(headerEl) {
-    const panel = headerEl.closest('.accordion-panel');
-    if (panel) {
-        panel.classList.toggle('open');
-        if (panel.classList.contains('open') && panel.id === 'charts-panel') {
-            setTimeout(() => {
-                Object.values(charts).forEach((chart) => {
-                    if (chart && typeof chart.resize === 'function') {
-                        chart.resize();
-                    }
-                });
-            }, 10);
-        }
-    }
-}
-
-// --- Utilities ---
-function formatBytes(bytes) {
-    if (bytes == null || isNaN(bytes)) return '—';
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-}
-
-function formatTime(isoString) {
-    if (!isoString) return '—';
-    try {
-        const d = new Date(isoString);
-        if (isNaN(d.getTime())) return isoString.substring(11, 19);
-        return d.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    } catch {
-        return isoString.substring(11, 19);
-    }
-}
-
-// --- Evaluation Suite ---
-let evalPollTimer = null;
-
-async function runEvaluation() {
-    const btn = document.getElementById('btn-run-eval');
-    const nodeCountsRaw = document.getElementById('eval-node-counts').value;
-    const eventsPerNode = parseInt(document.getElementById('eval-events-per-node').value) || 5;
-    const preset = document.getElementById('eval-scenario-preset').value || 'quick';
-    const presets = {
-        quick: {
-            partition_splits: [0.5],
-            convergence_wait_seconds: 15,
-            network_profile: 'hard_partition',
-            dashboard_observability: 'light',
-        },
-        standard: {
-            partition_splits: [0.5, 0.7, 0.8],
-            convergence_wait_seconds: 25,
-            network_profile: 'hard_partition',
-            dashboard_observability: 'light',
-        },
-        'degraded-link': {
-            partition_splits: [],
-            convergence_wait_seconds: 25,
-            network_profile: 'degraded',
-            dashboard_observability: 'light',
-        },
-    };
-    const selectedPreset = presets[preset] || presets.quick;
-
-    const nodeCounts = nodeCountsRaw.split(',').map(s => parseInt(s.trim())).filter(n => n > 0);
-    if (!nodeCounts.length) {
-        toast('Enter at least one node count', 'error');
-        return;
-    }
-
-    btn.classList.add('running');
-    document.getElementById('btn-download-eval').disabled = true;
-    document.getElementById('eval-progress-wrap').classList.remove('hidden');
-    document.getElementById('eval-progress-fill').style.width = '0%';
-    document.getElementById('eval-step-label').textContent = 'Starting...';
-    document.getElementById('eval-status-badge').textContent = 'Running';
-    document.getElementById('eval-status-badge').className = 'badge badge-warning';
-
-    try {
-        await api('POST', '/evaluation/run', {
-            node_counts: nodeCounts,
+        const expectedRows =
+            Number.isSafeInteger(repetitions) && repetitions > 0
+                ? repetitions * (isPartition ? partitionSplits.length : 1)
+                : 0;
+
+        const payload = {
+            case_id: caseId,
+            node_counts: nodeCount === null ? [] : [nodeCount],
+            sync_mode: syncMode,
+            repetitions,
+            scenario_seed: scenarioSeed,
+            scenarios: [scenario],
             events_per_node: eventsPerNode,
-            partition_splits: selectedPreset.partition_splits,
-            convergence_wait_seconds: selectedPreset.convergence_wait_seconds,
-            network_profile: selectedPreset.network_profile,
-            dashboard_observability: selectedPreset.dashboard_observability,
-            sync_mode: 'true_delta',
-            event_id_retention_limit: 100,
+            partition_splits: isPartition ? partitionSplits : [],
+            network_profile: networkProfile,
+            convergence_wait_seconds: convergenceWait,
+            poll_interval_seconds: pollInterval,
+            event_concurrency: eventConcurrency,
+            event_id_retention_limit: syncMode === "full_state" ? 0 : eventRetention,
+            delta_log_limit: deltaLogLimit,
+            docker_cpus: dockerCpus,
+            docker_memory: dockerMemory,
+            resource_mode: resourceMode,
+            resource_profile: resourceProfile,
+        };
+
+        if (!isPartition) payload.offered_rate_per_second = offeredRate;
+        if (isPartition) {
+            payload.partition_wait_seconds = partitionDuration;
+            payload.partition_events_per_node = partitionEvents;
+        }
+
+        return {
+            errors,
+            expectedRows,
+            isPartition,
+            payload,
+        };
+    }
+
+    function reviewItem(term, description) {
+        const wrapper = document.createElement("div");
+        const dt = document.createElement("dt");
+        const dd = document.createElement("dd");
+        dt.textContent = term;
+        dd.textContent = description;
+        wrapper.append(dt, dd);
+        return wrapper;
+    }
+
+    function renderReview() {
+        const config = collectConfiguration();
+        const payload = config.payload;
+        const nodeText = payload.node_counts[0] || "—";
+        const repetitionText = payload.repetitions || "—";
+        const eventText = payload.events_per_node || "—";
+        const scenarioName = labels.scenario[payload.scenarios[0]] || payload.scenarios[0];
+        const networkName = labels.network[payload.network_profile] || payload.network_profile;
+        const syncName = labels.syncMode[payload.sync_mode] || payload.sync_mode;
+
+        const workloadDescription = config.isPartition
+            ? `${eventText} before + ${payload.partition_events_per_node ?? "—"} during fault per node`
+            : payload.scenarios[0] === "high_load"
+              ? `${eventText} base / ${Number(eventText) * 3 || "—"} executed per node`
+              : `${eventText} per node`;
+
+        elements.reviewNarrative.textContent =
+            `${repetitionText} separate ${Number(repetitionText) === 1 ? "run" : "runs"} will test ` +
+            `${scenarioName.toLowerCase()} across ${nodeText} ${Number(nodeText) === 1 ? "node" : "nodes"} ` +
+            `using ${syncName.toLowerCase()} sync on ${networkName}.`;
+        elements.expectedRows.textContent = String(config.expectedRows);
+
+        const injection = config.isPartition
+            ? "Unpaced"
+            : payload.offered_rate_per_second
+              ? `${payload.offered_rate_per_second} events/s`
+              : `Unpaced · ${payload.event_concurrency ?? "—"} concurrent`;
+        const retention =
+            payload.sync_mode === "full_state"
+                ? "All event IDs"
+                : `${payload.event_id_retention_limit ?? "—"} event IDs`;
+        const delta = payload.sync_mode === "true_delta" ? ` · ${payload.delta_log_limit} delta records` : "";
+        const partition = `Split ${payload.partition_splits.join(", ")} · ${payload.partition_wait_seconds ?? "—"}s`;
+        const resourceDescription =
+            payload.resource_mode === "heterogeneous"
+                ? `Mixed · balanced edge devices · ${Number(nodeText) * 0.5} CPU total · ${Number(nodeText) * 512} MiB total`
+                : `Same per node · ${payload.docker_cpus ?? "—"} CPU · ${payload.docker_memory || "—"}`;
+
+        const summaryItems = [
+            reviewItem(
+                "Batch",
+                `${payload.case_id || "Not named"} · ${nodeText} ${Number(nodeText) === 1 ? "node" : "nodes"} · ${repetitionText} ${Number(repetitionText) === 1 ? "run" : "runs"}`,
+            ),
+            reviewItem("Test", `${syncName} · ${scenarioName} · ${networkName}`),
+            reviewItem("Load", `${workloadDescription} · ${injection}`),
+            reviewItem(
+                "Resources",
+                `${resourceDescription} · ${payload.convergence_wait_seconds ?? "—"}s timeout · ${payload.poll_interval_seconds ?? "—"}s sample`,
+            ),
+        ];
+        if (config.isPartition) summaryItems.push(reviewItem("Failure", partition));
+        if (payload.sync_mode !== "full_state") {
+            summaryItems.push(reviewItem("Data", `${retention}${delta}`));
+        }
+        elements.reviewList.replaceChildren(...summaryItems);
+
+        elements.preflightState.classList.toggle("has-errors", config.errors.length > 0);
+        elements.preflightState.textContent = config.errors.length
+            ? `${config.errors.length} settings ${config.errors.length === 1 ? "issue" : "issues"} to fix before running.`
+            : `Ready · ${config.expectedRows} ${config.expectedRows === 1 ? "row" : "rows"} expected from this setup.`;
+
+        return config;
+    }
+
+    function renderFormErrors(errors) {
+        if (!errors.length) {
+            elements.formErrors.hidden = true;
+            elements.formErrors.replaceChildren();
+            return;
+        }
+
+        const title = document.createElement("strong");
+        title.textContent = "The evaluation did not start. Resolve these settings:";
+        const list = document.createElement("ul");
+        errors.forEach(({ message }) => {
+            const item = document.createElement("li");
+            item.textContent = message;
+            list.appendChild(item);
         });
-        toast('Evaluation started', 'success');
-        startEvalPolling();
-    } catch (e) {
-        toast(`Failed to start: ${e.message}`, 'error');
-        btn.classList.remove('running');
+        elements.formErrors.replaceChildren(title, list);
+        elements.formErrors.hidden = false;
     }
-}
 
-function startEvalPolling() {
-    if (evalPollTimer) clearInterval(evalPollTimer);
-    evalPollTimer = setInterval(pollEvalStatus, 2000);
-}
+    function handleConfigurationChange(event) {
+        updateConditionals(event.target);
+        renderFormErrors([]);
+        renderReview();
+    }
 
-async function pollEvalStatus() {
-    try {
-        const status = await api('GET', '/evaluation/status');
+    function setControlsLocked(locked) {
+        state.running = locked;
+        elements.fieldset.disabled = locked;
+        elements.runButton.disabled = locked;
+        elements.runButton.querySelector("span").textContent = locked ? "Run in progress" : "Run evaluation";
+        elements.runGuard.textContent = locked
+            ? "Settings are locked until this batch finishes."
+            : "Settings lock while the batch is running.";
+        if (!locked) updateConditionals();
+    }
 
-        // Update progress bar
-        const pct = status.total_steps > 0
-            ? Math.round((status.progress / status.total_steps) * 100)
-            : 0;
-        document.getElementById('eval-progress-fill').style.width = pct + '%';
-        document.getElementById('eval-step-label').textContent = status.current_step || '...';
+    async function request(method, path, body = null) {
+        const options = {
+            method,
+            headers: { Accept: "application/json" },
+        };
+        if (body !== null) {
+            options.headers["Content-Type"] = "application/json";
+            options.body = JSON.stringify(body);
+        }
 
-        // Update badge
+        const response = await fetch(path, options);
+        let data = null;
+        try {
+            data = await response.json();
+        } catch (_error) {
+            data = null;
+        }
+
+        if (!response.ok) {
+            const error = new Error(
+                data?.message || data?.detail?.message || `Request failed with status ${response.status}.`,
+            );
+            error.status = response.status;
+            throw error;
+        }
+        return data;
+    }
+
+    function clearPollTimer() {
+        if (state.pollTimer !== null) {
+            window.clearTimeout(state.pollTimer);
+            state.pollTimer = null;
+        }
+    }
+
+    function schedulePoll(delay = STATUS_POLL_MS) {
+        clearPollTimer();
+        state.pollTimer = window.setTimeout(pollStatus, delay);
+    }
+
+    function resetResults() {
+        elements.resultsPanel.hidden = true;
+        elements.metricGrid.replaceChildren();
+        elements.resultsBody.replaceChildren();
+        elements.resultContext.textContent = "";
+        elements.rowCount.textContent = "";
+        setDownloadAvailable(false);
+    }
+
+    function setDownloadAvailable(available) {
+        elements.downloadCsv.classList.toggle("is-disabled", !available);
+        elements.downloadCsv.setAttribute("aria-disabled", String(!available));
+        if (available) {
+            elements.downloadCsv.href = "/evaluation/download";
+        } else {
+            elements.downloadCsv.removeAttribute("href");
+        }
+    }
+
+    async function startEvaluation(event) {
+        event.preventDefault();
+        const config = renderReview();
+        renderFormErrors(config.errors);
+
+        if (config.errors.length) {
+            config.errors[0].control?.focus();
+            return;
+        }
+
+        try {
+            const activeStatus = await request("GET", "/evaluation/status");
+            if (activeStatus.running) {
+                handleStatus(activeStatus, "Another console already started this batch. Attached to its progress.");
+                schedulePoll();
+                return;
+            }
+
+            resetResults();
+            setControlsLocked(true);
+            setApiState("running", "Evaluation running");
+            elements.runState.className = "run-state running";
+            elements.runState.textContent = "Starting";
+            elements.runMessage.className = "run-message";
+            elements.runMessage.textContent = "Preparing fresh containers for the batch.";
+
+            const started = await request("POST", "/evaluation/run", config.payload);
+            state.runId = started.run_id;
+            handleStatus({
+                running: true,
+                run_id: started.run_id,
+                current_step: "Starting",
+                progress: 0,
+                completed_steps: 0,
+                total_steps: started.total_steps,
+                current_repetition: 0,
+                total_repetitions: started.repetitions,
+                current_scenario: started.scenarios?.[0],
+                results_count: 0,
+                has_csv: false,
+                error: null,
+            });
+            schedulePoll(350);
+        } catch (error) {
+            if (error.status === 409) {
+                try {
+                    const status = await request("GET", "/evaluation/status");
+                    handleStatus(status, "Another evaluation started first. Attached to its progress.");
+                    if (status.running) schedulePoll();
+                    return;
+                } catch (_statusError) {
+                    // Fall through to the original conflict message.
+                }
+            }
+
+            setControlsLocked(false);
+            setApiState("error", "Runner unavailable");
+            elements.runState.className = "run-state error";
+            elements.runState.textContent = "Not started";
+            elements.runMessage.className = "run-message is-error";
+            elements.runMessage.textContent = error.message;
+        }
+    }
+
+    function handleStatus(status, messageOverride = null) {
+        state.latestStatus = status;
+        state.runId = status.run_id || state.runId;
+
+        const completed = Number(status.completed_steps ?? status.progress ?? 0);
+        const total = Number(status.total_steps ?? 0);
+        const percent = total > 0 ? Math.min(100, Math.max(0, (completed / total) * 100)) : 0;
+        const runError = status.error ? String(status.error) : "";
+
+        elements.activeRunId.textContent = status.run_id || "Not started";
+        elements.currentStep.textContent = status.current_step || (status.running ? "Preparing" : "Waiting for a configuration");
+        elements.progressBar.style.width = `${percent}%`;
+        elements.progressTrack.setAttribute("aria-valuenow", String(Math.round(percent)));
+        elements.progressCount.textContent = `${completed} / ${total}`;
+        elements.progressRepetition.textContent = status.total_repetitions
+            ? `${status.current_repetition || 0} / ${status.total_repetitions}`
+            : "—";
+        elements.progressScenario.textContent = status.current_scenario
+            ? labels.scenario[status.current_scenario] || status.current_scenario
+            : "—";
+        elements.progressResults.textContent = String(status.results_count ?? 0);
+        elements.runMessage.className = "run-message";
+
         if (status.running) {
-            document.getElementById('eval-status-badge').textContent =
-                `Step ${status.progress + 1}/${status.total_steps}`;
+            setControlsLocked(true);
+            setApiState("running", "Evaluation running");
+            elements.runState.className = "run-state running";
+            elements.runState.textContent = "Running";
+            elements.runMessage.textContent = messageOverride || "The runner is executing this condition. Configuration remains locked.";
+            return;
         }
 
-        // If done, stop polling and fetch results
-        if (!status.running) {
-            clearInterval(evalPollTimer);
-            evalPollTimer = null;
+        setControlsLocked(false);
+        if (runError) {
+            setApiState("error", "Run failed");
+            elements.runState.className = "run-state error";
+            elements.runState.textContent = "Error";
+            elements.runMessage.className = "run-message is-error";
+            elements.runMessage.textContent = runError;
+        } else if (status.has_csv) {
+            setApiState("ready", "Results ready");
+            elements.runState.className = "run-state complete";
+            elements.runState.textContent = "Complete";
+            elements.runMessage.textContent = messageOverride || "The batch completed and its CSV is ready.";
+        } else {
+            setApiState("ready", "Runner ready");
+            elements.runState.className = "run-state idle";
+            elements.runState.textContent = "Idle";
+            elements.runMessage.textContent = messageOverride || "No batch is running.";
+        }
+    }
 
-            const btn = document.getElementById('btn-run-eval');
-            btn.classList.remove('running');
-
-            if (status.error) {
-                document.getElementById('eval-status-badge').textContent = 'Error';
-                document.getElementById('eval-status-badge').className = 'badge badge-error';
-                toast(`Evaluation error: ${status.error}`, 'error');
-            } else {
-                document.getElementById('eval-progress-fill').style.width = '100%';
-                document.getElementById('eval-status-badge').textContent = 'Complete';
-                document.getElementById('eval-status-badge').className = 'badge badge-success';
-                toast('Evaluation complete!', 'success');
+    async function pollStatus() {
+        clearPollTimer();
+        try {
+            const status = await request("GET", "/evaluation/status");
+            handleStatus(status);
+            if (status.running) {
+                schedulePoll();
+            } else if (status.has_csv) {
+                await loadResults();
             }
+        } catch (error) {
+            setApiState("error", "Status unavailable");
+            elements.runMessage.className = "run-message is-error";
+            elements.runMessage.textContent = `Progress check failed: ${error.message}`;
+            if (state.running) schedulePoll(2500);
+        }
+    }
 
-            if (status.has_csv) {
-                document.getElementById('btn-download-eval').disabled = false;
+    function numericValues(rows, key) {
+        return rows
+            .map((row) => {
+                if (row[key] === null || row[key] === undefined || row[key] === "") return null;
+                const value = Number(row[key]);
+                return Number.isFinite(value) ? value : null;
+            })
+            .filter((value) => value !== null);
+    }
+
+    function isTrue(value) {
+        return value === true || value === 1 || String(value).toLowerCase() === "true";
+    }
+
+    function sum(values) {
+        return values.reduce((total, value) => total + value, 0);
+    }
+
+    function percentile(values, proportion) {
+        if (!values.length) return null;
+        const sorted = [...values].sort((a, b) => a - b);
+        if (sorted.length === 1) return sorted[0];
+        const index = (sorted.length - 1) * proportion;
+        const lower = Math.floor(index);
+        const upper = Math.ceil(index);
+        const weight = index - lower;
+        return sorted[lower] * (1 - weight) + sorted[upper] * weight;
+    }
+
+    function formatDecimal(value, digits = 2) {
+        if (value === null || !Number.isFinite(value)) return "—";
+        return new Intl.NumberFormat(undefined, {
+            maximumFractionDigits: digits,
+            minimumFractionDigits: 0,
+        }).format(value);
+    }
+
+    function formatInteger(value) {
+        if (value === null || !Number.isFinite(value)) return "—";
+        return new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }).format(value);
+    }
+
+    function formatBytes(value) {
+        if (value === null || !Number.isFinite(value)) return "—";
+        const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+        let amount = Math.max(0, value);
+        let unitIndex = 0;
+        while (amount >= 1024 && unitIndex < units.length - 1) {
+            amount /= 1024;
+            unitIndex += 1;
+        }
+        return `${formatDecimal(amount, amount >= 100 ? 0 : amount >= 10 ? 1 : 2)} ${units[unitIndex]}`;
+    }
+
+    function metricCard(label, value, detail) {
+        const card = document.createElement("article");
+        card.className = "metric-card";
+        const labelElement = document.createElement("span");
+        labelElement.className = "metric-label";
+        labelElement.textContent = label;
+        const valueElement = document.createElement("strong");
+        valueElement.className = "metric-value";
+        valueElement.textContent = value;
+        const detailElement = document.createElement("span");
+        detailElement.className = "metric-detail";
+        detailElement.textContent = detail;
+        card.append(labelElement, valueElement, detailElement);
+        return card;
+    }
+
+    function renderSummary(rows) {
+        const rowTotal = rows.length;
+        const timedConvergence = rows.filter((row) => isTrue(row.converged_within_timeout)).length;
+        const semanticConvergence = rows.filter((row) => isTrue(row.semantic_state_converged)).length;
+
+        const acceptedTracked = sum(numericValues(rows, "accepted_tracking_ids_count"));
+        const fullyObserved = sum(numericValues(rows, "fully_observed_tracking_ids_count"));
+        const coverageValues = numericValues(rows, "tracking_coverage_percent");
+        const coverage = acceptedTracked > 0
+            ? (fullyObserved / acceptedTracked) * 100
+            : percentile(coverageValues, 0.5);
+        const missingCount = sum(numericValues(rows, "missing_tracking_ids_count"));
+
+        const lastNodeTimes = numericValues(rows, "time_to_last_node_s");
+        const lastNodeMedian = percentile(lastNodeTimes, 0.5);
+        const lastNodeQ1 = percentile(lastNodeTimes, 0.25);
+        const lastNodeQ3 = percentile(lastNodeTimes, 0.75);
+
+        const rowLatencyP95 = numericValues(rows, "write_latency_p95_ms");
+        const latencyMedian = percentile(rowLatencyP95, 0.5);
+        const latencyQ1 = percentile(rowLatencyP95, 0.25);
+        const latencyQ3 = percentile(rowLatencyP95, 0.75);
+        const syncByteValues = numericValues(rows, "sync_bytes_total");
+        const syncBytesMedian = percentile(syncByteValues, 0.5);
+        const syncBytesQ1 = percentile(syncByteValues, 0.25);
+        const syncBytesQ3 = percentile(syncByteValues, 0.75);
+        const bytesPerEventValues = numericValues(rows, "bytes_per_accepted_event");
+        const bytesPerEventMedian = percentile(bytesPerEventValues, 0.5);
+        const cpuPeakValues = numericValues(rows, "cpu_peak_percent");
+        const memoryPeakValues = numericValues(rows, "memory_peak_mib");
+        const cpuPeakMedian = percentile(cpuPeakValues, 0.5);
+        const memoryPeakMedian = percentile(memoryPeakValues, 0.5);
+
+        elements.metricGrid.replaceChildren(
+            metricCard(
+                "Convergence",
+                `${timedConvergence} / ${rowTotal} timed`,
+                `${semanticConvergence} / ${rowTotal} semantically exact`,
+            ),
+            metricCard(
+                "Event coverage",
+                coverage === null ? "—" : `${formatDecimal(coverage, 1)}%`,
+                `${formatInteger(missingCount)} tracking IDs missing`,
+            ),
+            metricCard(
+                "Time to last node",
+                lastNodeMedian === null ? "—" : `${formatDecimal(lastNodeMedian, 3)} s`,
+                lastNodeMedian === null
+                    ? "No complete propagation samples"
+                    : `IQR ${formatDecimal(lastNodeQ1, 3)}–${formatDecimal(lastNodeQ3, 3)} s`,
+            ),
+            metricCard(
+                "Write latency p95",
+                latencyMedian === null ? "—" : `${formatDecimal(latencyMedian, 2)} ms`,
+                latencyMedian === null
+                    ? "No write-latency samples"
+                    : `Median per-run p95 · IQR ${formatDecimal(latencyQ1, 2)}–${formatDecimal(latencyQ3, 2)} ms`,
+            ),
+            metricCard(
+                "Sync traffic",
+                syncBytesMedian === null ? "—" : formatBytes(syncBytesMedian),
+                syncBytesMedian === null
+                    ? "No synchronization samples"
+                    : `Median per run · IQR ${formatBytes(syncBytesQ1)}–${formatBytes(syncBytesQ3)}`,
+            ),
+            metricCard(
+                "Traffic / event",
+                bytesPerEventMedian === null ? "—" : formatBytes(bytesPerEventMedian),
+                "Median per-run bytes per accepted event",
+            ),
+            metricCard(
+                "CPU peak",
+                cpuPeakMedian === null ? "—" : `${formatDecimal(cpuPeakMedian, 2)}%`,
+                "Median of per-run node peaks",
+            ),
+            metricCard(
+                "Memory peak",
+                memoryPeakMedian === null ? "—" : `${formatDecimal(memoryPeakMedian, 2)} MiB`,
+                "Median of per-run node peaks",
+            ),
+        );
+    }
+
+    function tableCell(value, className = "") {
+        const cell = document.createElement("td");
+        cell.textContent = value;
+        if (className) cell.className = className;
+        return cell;
+    }
+
+    function booleanCell(value) {
+        const positive = isTrue(value);
+        return tableCell(positive ? "Yes" : "No", positive ? "boolean-yes" : "boolean-no");
+    }
+
+    function renderRows(rows) {
+        if (!rows.length) {
+            const row = document.createElement("tr");
+            const cell = tableCell("The completed batch did not return result rows.", "empty-row");
+            cell.colSpan = 14;
+            row.appendChild(cell);
+            elements.resultsBody.replaceChildren(row);
+            return;
+        }
+
+        const fragment = document.createDocumentFragment();
+        rows.forEach((result) => {
+            const row = document.createElement("tr");
+            const timeToLast = result.time_to_last_node_s;
+            row.append(
+                tableCell(result.run_id || "—"),
+                tableCell(result.case_id || "—"),
+                tableCell(String(result.repetition ?? "—")),
+                tableCell(labels.scenario[result.scenario] || result.scenario || "—"),
+                tableCell(String(result.node_count ?? "—")),
+                tableCell(formatInteger(Number(result.accepted_events))),
+                tableCell(
+                    result.tracking_coverage_percent === "" || result.tracking_coverage_percent == null
+                        ? "—"
+                        : `${formatDecimal(Number(result.tracking_coverage_percent), 1)}%`,
+                ),
+                booleanCell(result.converged_within_timeout),
+                booleanCell(result.semantic_state_converged),
+                tableCell(timeToLast === "" || timeToLast == null ? "—" : `${formatDecimal(Number(timeToLast), 3)} s`),
+                tableCell(
+                    result.write_latency_p95_ms === "" || result.write_latency_p95_ms == null
+                        ? "—"
+                        : `${formatDecimal(Number(result.write_latency_p95_ms), 2)} ms`,
+                ),
+                tableCell(formatBytes(Number(result.sync_bytes_total))),
+                tableCell(
+                    result.cpu_peak_percent === "" || result.cpu_peak_percent == null
+                        ? "—"
+                        : `${formatDecimal(Number(result.cpu_peak_percent), 2)}%`,
+                ),
+                tableCell(
+                    result.memory_peak_mib === "" || result.memory_peak_mib == null
+                        ? "—"
+                        : `${formatDecimal(Number(result.memory_peak_mib), 2)} MiB`,
+                ),
+            );
+            fragment.appendChild(row);
+        });
+        elements.resultsBody.replaceChildren(fragment);
+    }
+
+    async function loadResults() {
+        try {
+            const data = await request("GET", "/evaluation/results");
+            const rows = Array.isArray(data.results) ? data.results : [];
+            renderSummary(rows);
+            renderRows(rows);
+            elements.resultsPanel.hidden = false;
+            elements.rowCount.textContent = `${rows.length} ${rows.length === 1 ? "row" : "rows"}`;
+
+            const first = rows[0] || {};
+            const caseLabel = first.case_id ? `Case ${first.case_id}` : "Unlabeled case";
+            const runLabel = first.run_id || state.runId || "completed run";
+            elements.resultContext.textContent = `${caseLabel} · ${runLabel}`;
+            setDownloadAvailable(Boolean(data.has_csv));
+            setApiState("ready", "Results ready");
+        } catch (error) {
+            setDownloadAvailable(false);
+            setApiState("error", "Results unavailable");
+            elements.runMessage.className = "run-message is-error";
+            elements.runMessage.textContent = `The run completed, but results could not be loaded: ${error.message}`;
+        }
+    }
+
+    async function restoreRunnerState() {
+        try {
+            const status = await request("GET", "/evaluation/status");
+            handleStatus(status);
+            if (status.running) {
+                schedulePoll(350);
+            } else if (status.has_csv) {
+                await loadResults();
             }
-
-            // Fetch and display results
-            await fetchEvalResults();
+        } catch (error) {
+            setApiState("error", "Runner unavailable");
+            elements.runMessage.className = "run-message is-error";
+            elements.runMessage.textContent = `Runner status could not be loaded: ${error.message}`;
         }
-    } catch (e) {
-        // Silently retry
-    }
-}
-
-async function fetchEvalResults() {
-    try {
-        const data = await api('GET', '/evaluation/results');
-        renderEvalResults(data.results || []);
-        if (data.has_csv) {
-            document.getElementById('btn-download-eval').disabled = false;
-        }
-    } catch (e) {
-        // No results yet
-    }
-}
-
-function renderEvalResults(results) {
-    const tbody = document.getElementById('eval-results-tbody');
-    if (!results.length) {
-        tbody.innerHTML = '<tr><td colspan="16" class="empty-cell">No evaluation data — click Run Evaluation to start</td></tr>';
-        return;
     }
 
-    const scenarioLabels = {
-        baseline: { label: 'Baseline', cls: 'eval-tag-baseline' },
-        baseline_convergence: { label: 'Baseline', cls: 'eval-tag-baseline' },
-        partition_heal: { label: 'Partition', cls: 'eval-tag-partition' },
-        high_load: { label: 'High Load', cls: 'eval-tag-scaling' },
-        scaling_events: { label: 'Scaling', cls: 'eval-tag-scaling' },
-    };
+    elements.eventRetention.dataset.retainedValue = "100";
+    elements.form.addEventListener("input", handleConfigurationChange);
+    elements.form.addEventListener("change", handleConfigurationChange);
+    elements.form.addEventListener("submit", startEvaluation);
+    elements.downloadCsv.addEventListener("click", (event) => {
+        if (elements.downloadCsv.getAttribute("aria-disabled") === "true") event.preventDefault();
+    });
 
-    tbody.innerHTML = results.map(r => {
-        const s = scenarioLabels[r.scenario] || { label: r.scenario, cls: '' };
-        const status = (r.known_status || '').toLowerCase();
-        const rowCls =
-            status === 'known_converged' ? 'eval-row-converged' :
-            status === 'known_diverged' ? 'eval-row-diverged' :
-            '';
-        const convTime = r.convergence_time_s != null ? `${Number(r.convergence_time_s).toFixed(3)}s` : '—';
-        const missing = r.missing_at_cutoff_count != null ? `${r.missing_at_cutoff_count} (${r.missing_at_cutoff_pct ?? 0}%)` : '—';
-        const staleness = r.gateway_staleness_seconds != null ? `${Number(r.gateway_staleness_seconds).toFixed(3)}s` : '—';
-        const writeSuccess = r.write_success_rate != null ? `${(Number(r.write_success_rate) * 100).toFixed(1)}%` : '—';
-        const writes = `${r.accepted_events ?? '—'}/${r.attempted_events ?? '—'}`;
-        const statusLabel =
-            status === 'known_converged' ? 'Known Converged' :
-            status === 'known_diverged' ? 'Known Diverged' :
-            'Insufficient Coverage';
-        const timeout = r.convergence_wait_seconds != null ? `${Number(r.convergence_wait_seconds).toFixed(0)}s` : '—';
-        const bytesPerEvent = r.bytes_per_accepted_event != null && r.bytes_per_accepted_event !== '' ? `${Number(r.bytes_per_accepted_event).toFixed(2)}` : '—';
-        const convergedWithinTimeout = r.converged_within_timeout === true ? 'Yes' : 'No';
-        const statusCls =
-            status === 'known_converged' ? 'eval-status-converged' :
-            status === 'known_diverged' ? 'eval-status-diverged' :
-            'eval-status-partial';
-
-        return `
-            <tr class="${rowCls}">
-                <td><span class="eval-scenario-tag ${s.cls}">${s.label}</span></td>
-                <td>${r.implementation || '—'}</td>
-                <td>${r.sync_mode || '—'}</td>
-                <td>${r.partition_split || '—'}</td>
-                <td>${r.node_count}</td>
-                <td>${writes}</td>
-                <td>${writeSuccess}</td>
-                <td>${convTime}</td>
-                <td>${timeout}</td>
-                <td>${missing}</td>
-                <td>${staleness}</td>
-                <td>${formatBytes(r.sync_bytes_total)}</td>
-                <td>${bytesPerEvent}</td>
-                <td>${r.repair_pull_count ?? '—'}</td>
-                <td>${formatBytes(r.total_state_size_bytes)}</td>
-                <td><span class="eval-status-tag ${statusCls}">${statusLabel}</span><br><span class="text-slate-500">Timeout: ${convergedWithinTimeout}</span></td>
-            </tr>
-        `;
-    }).join('');
-}
-
-function downloadEvaluation() {
-    window.open('/evaluation/download', '_blank');
-}
-
-// Periodically refresh charts (every 15s)
-setInterval(fetchTimeseries, 15000);
+    updateConditionals();
+    renderReview();
+    resetResults();
+    restoreRunnerState();
+})();

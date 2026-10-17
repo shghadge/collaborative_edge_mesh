@@ -37,6 +37,7 @@ class _BlockingResponse(_FakeResponse):
 class _FakeSession:
     def __init__(self, payload: dict):
         self._response = _FakeResponse(payload)
+        self.last_body = None
 
     async def __aenter__(self):
         return self
@@ -44,12 +45,14 @@ class _FakeSession:
     async def __aexit__(self, exc_type, exc, traceback):
         return False
 
-    def get(self, url: str) -> _FakeResponse:
+    def post(self, url: str, data=None, headers=None) -> _FakeResponse:
+        self.last_body = data
         return self._response
 
 
 class _BlockingSession(_FakeSession):
     def __init__(self, payload: dict, started: asyncio.Event, release: asyncio.Event):
+        super().__init__(payload)
         self._response = _BlockingResponse(payload, started, release)
 
 
@@ -62,37 +65,31 @@ class GossipDeltaRepairTests(unittest.IsolatedAsyncioTestCase):
         self.addr = ("10.0.0.2", 9000)
 
     @staticmethod
-    def _message(delta_seq: int) -> dict:
+    def _message(delta_vv: dict) -> dict:
         return {
             "sender": "edge-2",
             "source_http_port": 8000,
-            "delta_seq": delta_seq,
+            "delta_vv": delta_vv,
             "merkle_root": "remote-root",
-            "state_version": delta_seq,
+            "state_version": 1,
         }
 
-    async def test_skips_an_already_processed_sequence(self):
-        self.service.peer_delta_seq["edge-2"] = 7
+    async def test_skips_summary_whose_mutations_are_already_held(self):
+        self.service.state.delta_vv.update({"edge-2": 7, "edge-3": 2})
 
         with patch(
             "src.services.gossip.aiohttp.ClientSession",
             side_effect=AssertionError("stale summary started an HTTP request"),
         ):
             await self.service._maybe_pull_delta_from_sender(
-                self.addr, self._message(7)
+                self.addr, self._message({"edge-2": 7, "edge-3": 1})
             )
 
         self.assertEqual(self.service.stats["delta_pulls_started"], 0)
         self.assertEqual(self.service.stats["delta_pulls_skipped_stale"], 1)
 
     async def test_skips_a_second_pull_while_peer_pull_is_inflight(self):
-        delta_payload = {
-            "node_id": "edge-2",
-            "from_seq": 0,
-            "to_seq": 8,
-            "has_gap": False,
-            "deltas": [],
-        }
+        delta_payload = {"node_id": "edge-2", "delta_vv": {"edge-2": 8}, "state": None}
         started = asyncio.Event()
         release = asyncio.Event()
 
@@ -101,12 +98,14 @@ class GossipDeltaRepairTests(unittest.IsolatedAsyncioTestCase):
             return_value=_BlockingSession(delta_payload, started, release),
         ):
             first_pull = asyncio.create_task(
-                self.service._maybe_pull_delta_from_sender(self.addr, self._message(8))
+                self.service._maybe_pull_delta_from_sender(
+                    self.addr, self._message({"edge-2": 8})
+                )
             )
             await started.wait()
             try:
                 await self.service._maybe_pull_delta_from_sender(
-                    self.addr, self._message(8)
+                    self.addr, self._message({"edge-2": 8})
                 )
             finally:
                 release.set()
@@ -114,92 +113,96 @@ class GossipDeltaRepairTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(self.service.stats["delta_pulls_started"], 1)
         self.assertEqual(self.service.stats["delta_pulls_skipped_inflight"], 1)
-        self.assertEqual(self.service.peer_delta_seq["edge-2"], 8)
 
-    async def test_successful_gap_fallback_advances_peer_frontier(self):
-        gap_payload = {
-            "node_id": "edge-2",
-            "from_seq": 0,
-            "to_seq": 9,
-            "has_gap": True,
-            "deltas": [],
-        }
-        fallback = AsyncMock(return_value=True)
+    async def test_gap_response_repairs_from_inline_full_state(self):
+        source = NodeState("edge-2", delta_log_limit=1)
+        for index in range(3):
+            source.record_event(
+                f"event-{index}",
+                "water_level",
+                {"location": f"bridge-{index}", "value": index},
+                category="sensor",
+            )
+        gap_payload = source.get_deltas_for({})
+        self.assertEqual(gap_payload["fallback"], "gap")
 
-        with (
-            patch(
-                "src.services.gossip.aiohttp.ClientSession",
-                return_value=_FakeSession(gap_payload),
-            ),
-            patch.object(
-                self.service,
-                "_maybe_pull_state_from_sender",
-                fallback,
-            ),
+        with patch(
+            "src.services.gossip.aiohttp.ClientSession",
+            return_value=_FakeSession(gap_payload),
         ):
-            await self.service._maybe_pull_delta_from_sender(
-                self.addr, self._message(9)
-            )
-            await self.service._maybe_pull_delta_from_sender(
-                self.addr, self._message(9)
-            )
+            for _ in range(2):
+                await self.service._maybe_pull_delta_from_sender(
+                    self.addr, self._message(source.delta_vv)
+                )
 
-        self.assertEqual(self.service.peer_delta_seq["edge-2"], 9)
+        self.assertEqual(self.service.state.merkle_root(), source.merkle_root())
         self.assertEqual(self.service.stats["delta_pulls_started"], 1)
         self.assertEqual(self.service.stats["delta_pulls_gap"], 1)
         self.assertEqual(self.service.stats["delta_pulls_skipped_stale"], 1)
-        fallback.assert_awaited_once()
+        self.assertEqual(self.service.stats["repair_pulls_started"], 0)
 
-    async def test_failed_gap_fallback_does_not_advance_peer_frontier(self):
-        gap_payload = {
-            "node_id": "edge-2",
-            "from_seq": 0,
-            "to_seq": 9,
-            "has_gap": True,
-            "deltas": [],
-        }
+    async def test_delta_pull_counts_tracking_metadata_bytes_separately(self):
+        source = NodeState("edge-2")
+        for index in range(3):
+            source.record_event(
+                f"event-{index}",
+                "water_level",
+                {
+                    "location": f"bridge-{index}",
+                    "value": index,
+                    "tracking_id": f"t-{index}",
+                },
+                category="sensor",
+            )
+        payload = source.get_deltas_for({})
+        tracking = payload["state"]["first_seen_tracking"]
+        self.assertEqual(len(tracking), 3)
 
-        with (
-            patch(
-                "src.services.gossip.aiohttp.ClientSession",
-                return_value=_FakeSession(gap_payload),
-            ),
-            patch.object(
-                self.service,
-                "_maybe_pull_state_from_sender",
-                AsyncMock(return_value=False),
-            ),
+        with patch(
+            "src.services.gossip.aiohttp.ClientSession",
+            return_value=_FakeSession(payload),
         ):
             await self.service._maybe_pull_delta_from_sender(
-                self.addr, self._message(9)
+                self.addr, self._message(source.delta_vv)
             )
 
-        self.assertNotIn("edge-2", self.service.peer_delta_seq)
+        expected = len(json.dumps(tracking, separators=(",", ":")).encode())
+        self.assertEqual(self.service.stats["tracking_bytes_received"], expected)
+        self.assertLess(expected, self.service.stats["delta_bytes_received"])
 
-    async def test_naive_key_delta_requests_key_level_payload(self):
+    async def test_failed_pull_is_retried_by_the_next_summary(self):
+        with patch(
+            "src.services.gossip.aiohttp.ClientSession",
+            side_effect=OSError("connection refused"),
+        ):
+            for _ in range(2):
+                await self.service._maybe_pull_delta_from_sender(
+                    self.addr, self._message({"edge-2": 1})
+                )
+
+        self.assertEqual(self.service.stats["delta_pulls_started"], 2)
+        self.assertEqual(self.service.stats["repair_pulls_failed"], 2)
+        self.assertEqual(self.service.state.delta_vv, {})
+
+    async def test_pull_request_sends_local_version_vector_and_mode(self):
         self.service.config.sync_mode = "naive_key_delta"
-        payload = {
-            "node_id": "edge-2",
-            "from_seq": 0,
-            "to_seq": 1,
-            "has_gap": False,
-            "deltas": [],
-        }
-        session = _FakeSession(payload)
+        self.service.state.delta_vv["edge-1"] = 4
+        session = _FakeSession(
+            {"node_id": "edge-2", "delta_vv": {"edge-2": 1}, "state": None}
+        )
 
-        with (
-            patch(
-                "src.services.gossip.aiohttp.ClientSession",
-                return_value=session,
-            ),
-            patch.object(session, "get", wraps=session.get) as get,
+        with patch(
+            "src.services.gossip.aiohttp.ClientSession",
+            return_value=session,
         ):
             await self.service._maybe_pull_delta_from_sender(
-                self.addr, self._message(1)
+                self.addr, self._message({"edge-2": 1})
             )
 
-        request_url = get.call_args.args[0]
-        self.assertIn("mode=naive_key_delta", request_url)
+        self.assertEqual(
+            json.loads(session.last_body),
+            {"vv": {"edge-1": 4}, "mode": "naive_key_delta"},
+        )
 
     async def test_naive_key_delta_summary_uses_delta_repair(self):
         self.service.config.sync_mode = "naive_key_delta"
@@ -221,7 +224,7 @@ class GossipDeltaRepairTests(unittest.IsolatedAsyncioTestCase):
             await self.service._handle(
                 {
                     "type": "state_summary",
-                    **self._message(1),
+                    **self._message({"edge-2": 1}),
                     "peer_observations": [],
                 },
                 self.addr,
@@ -250,7 +253,7 @@ class GossipDeltaRepairTests(unittest.IsolatedAsyncioTestCase):
             await self.service._handle(
                 {
                     "type": "state_summary",
-                    **self._message(1),
+                    **self._message({"edge-2": 1}),
                     "peer_observations": [],
                 },
                 self.addr,

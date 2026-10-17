@@ -10,7 +10,9 @@ from src.evaluation.matrix import (
     EXPECTED_CONDITION_COUNT,
     EXPECTED_SWEEP_COUNTS,
     METHODS,
+    generate_combined_cases,
     generate_experiment_cases,
+    generate_resource_heterogeneity_cases,
     load_experiment_matrix,
     write_experiment_matrix,
 )
@@ -63,6 +65,24 @@ class ExperimentMatrixTests(unittest.TestCase):
             {case["partition_events_per_node"] for case in partition}, {45}
         )
         self.assertEqual({case["partition_wait_seconds"] for case in partition}, {30})
+        self.assertEqual({case["network_profile"] for case in partition}, {"clean_lan"})
+
+    def test_resource_heterogeneity_matrix_pairs_equal_total_budgets(self):
+        cases = generate_resource_heterogeneity_cases(repetitions=10, base_seed=9201)
+
+        self.assertEqual(len(cases), 24)
+        self.assertEqual(sum(int(case["repetitions"]) for case in cases), 240)
+        self.assertEqual({case["node_count"] for case in cases}, {5, 10, 15})
+        self.assertEqual(
+            {case["resource_mode"] for case in cases},
+            {"uniform", "heterogeneous"},
+        )
+        for node_count in (5, 10, 15):
+            node_cases = [case for case in cases if case["node_count"] == node_count]
+            self.assertEqual(len(node_cases), 8)
+            self.assertEqual(len({case["seed"] for case in node_cases}), 1)
+            self.assertEqual({case["docker_cpus"] for case in node_cases}, {0.5})
+            self.assertEqual({case["docker_memory"] for case in node_cases}, {"512m"})
 
     def test_matrix_round_trip_preserves_all_rows(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -92,6 +112,91 @@ class ExperimentMatrixTests(unittest.TestCase):
         self.assertEqual(command[command.index("--sweep") + 1], "scale")
         self.assertEqual(command[command.index("--repetitions") + 1], "30")
         self.assertIn("--resume", command)
+        self.assertEqual(command[command.index("--resource-mode") + 1], "uniform")
+
+
+class CombinedMatrixTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.cases = generate_combined_cases(repetitions=10, seed=11001)
+
+    @staticmethod
+    def _event_total(case):
+        return case["events_per_node"] + case["partition_events_per_node"]
+
+    def test_combined_matrix_has_144_configurations_with_one_shared_seed(self):
+        self.assertEqual(len(self.cases), 144)
+        self.assertEqual(len({case["case_id"] for case in self.cases}), 144)
+        self.assertEqual({case["sweep"] for case in self.cases}, {"combined"})
+        self.assertEqual({case["seed"] for case in self.cases}, {11001})
+        self.assertEqual({case["repetitions"] for case in self.cases}, {10})
+
+        condition_methods = defaultdict(set)
+        for case in self.cases:
+            condition_methods[case["condition_id"]].add(case["sync_mode"])
+        self.assertEqual(len(condition_methods), 36)
+        for methods in condition_methods.values():
+            self.assertEqual(methods, set(METHODS))
+
+    def test_scale_and_load_blocks_cross_every_device_and_partition_level(self):
+        cells = defaultdict(set)
+        for case in self.cases:
+            cells[(case["node_count"], self._event_total(case))].add(
+                (case["resource_mode"], case["partition_split"])
+            )
+
+        self.assertEqual(
+            set(cells),
+            {(5, 90), (10, 90), (15, 30), (15, 90), (15, 180), (15, 300)},
+        )
+        expected_levels = {
+            (resource_mode, split)
+            for resource_mode in ("uniform", "heterogeneous")
+            for split in ("", 0.5, 0.8)
+        }
+        for levels in cells.values():
+            self.assertEqual(levels, expected_levels)
+
+    def test_partition_cells_split_total_events_into_equal_halves(self):
+        for case in self.cases:
+            if case["partition_split"] == "":
+                self.assertEqual(case["scenario"], "baseline")
+                self.assertEqual(case["partition_events_per_node"], 0)
+                self.assertEqual(case["partition_wait_seconds"], 0)
+            else:
+                self.assertEqual(case["scenario"], "partition_heal")
+                self.assertEqual(
+                    case["events_per_node"], case["partition_events_per_node"]
+                )
+                self.assertEqual(case["partition_wait_seconds"], 30)
+            self.assertIn(self._event_total(case), {30, 90, 180, 300})
+
+    def test_fixed_settings_rate_network_and_device_profiles(self):
+        for case in self.cases:
+            self.assertEqual(case["offered_rate_per_second"], 10 * case["node_count"])
+            self.assertEqual(case["network_profile"], "clean_lan")
+            self.assertEqual(case["docker_cpus"], 0.5)
+            self.assertEqual(case["docker_memory"], "512m")
+            expected_profile = (
+                "balanced_edge_v1" if case["resource_mode"] == "heterogeneous" else ""
+            )
+            self.assertEqual(case["resource_profile"], expected_profile)
+
+    def test_run_order_is_deterministic_and_not_in_factor_order(self):
+        case_ids = [case["case_id"] for case in self.cases]
+        self.assertNotEqual(case_ids, sorted(case_ids))
+        adjacent_same_condition = sum(
+            left["condition_id"] == right["condition_id"]
+            for left, right in zip(self.cases, self.cases[1:])
+        )
+        self.assertLess(adjacent_same_condition, len(self.cases) // 4)
+        self.assertEqual(
+            case_ids,
+            [
+                case["case_id"]
+                for case in generate_combined_cases(repetitions=10, seed=11001)
+            ],
+        )
 
 
 if __name__ == "__main__":

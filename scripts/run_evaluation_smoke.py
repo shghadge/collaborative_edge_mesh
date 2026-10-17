@@ -53,9 +53,6 @@ def main() -> int:
     parser.add_argument("--events-per-node", type=int, default=2)
     parser.add_argument("--convergence-wait-seconds", type=float, default=12)
     parser.add_argument("--poll-interval-seconds", type=float, default=1)
-    parser.add_argument(
-        "--dashboard-observability", choices=["off", "light", "full"], default="light"
-    )
     args = parser.parse_args()
 
     command = [
@@ -77,8 +74,6 @@ def main() -> int:
         str(args.convergence_wait_seconds),
         "--poll-interval-seconds",
         str(args.poll_interval_seconds),
-        "--dashboard-observability",
-        args.dashboard_observability,
         "--out",
         args.out,
     ]

@@ -40,12 +40,16 @@ def _merge_full_mesh(nodes: list[NodeState]) -> None:
                 target.merge(snapshot)
 
 
+def _pull(target: NodeState, source: NodeState) -> int:
+    requested_vv = dict(target.delta_vv)
+    return target.apply_delta_payload(source.get_deltas_for(requested_vv), requested_vv)
+
+
 def _replay_all_deltas(nodes: list[NodeState]) -> None:
     for source in nodes:
-        payload = source.get_deltas_since(0)
         for target in nodes:
             if target is not source:
-                target.apply_delta_payload(payload)
+                _pull(target, source)
 
 
 def _roots(nodes: list[NodeState]) -> set[str]:
@@ -114,7 +118,7 @@ class ProtocolSimulationTests(unittest.TestCase):
         )
         remote_advertised_root = remote.merkle_root()
 
-        local.apply_delta_payload(remote.get_deltas_since(0))
+        _pull(local, remote)
 
         self.assertNotEqual(local.merkle_root(), remote_advertised_root)
         self.assertEqual(local.get_event_count("water_level"), 2)
@@ -153,7 +157,7 @@ class ProtocolSimulationTests(unittest.TestCase):
             {"edge-1": 1, "edge-2": 1},
         )
 
-    def test_delta_log_gap_signals_full_state_fallback_needed(self):
+    def test_delta_log_gap_returns_full_state_inline(self):
         source = NodeState("edge-1", delta_log_limit=2)
         for index in range(4):
             source.record_event(
@@ -162,12 +166,33 @@ class ProtocolSimulationTests(unittest.TestCase):
                 {"location": "bridge", "value": index},
                 category="sensor",
             )
+        replica = NodeState("edge-2")
 
-        payload = source.get_deltas_since(0)
+        payload = source.get_deltas_for({})
 
-        self.assertTrue(payload["has_gap"])
-        self.assertEqual(payload["deltas"], [])
-        self.assertEqual(source.apply_delta_payload(payload), 0)
+        self.assertEqual(payload["fallback"], "gap")
+        self.assertEqual(replica.apply_delta_payload(payload, {}), 4)
+        self.assertEqual(replica.merkle_root(), source.merkle_root())
+        self.assertEqual(replica.delta_vv, {"edge-1": 4})
+
+    def test_replica_repaired_by_full_state_reports_gap_to_later_peers(self):
+        source = NodeState("edge-1", delta_log_limit=2)
+        for index in range(4):
+            source.record_event(
+                f"event-{index}",
+                "water_level",
+                {"location": f"bridge-{index}", "value": index},
+                category="sensor",
+            )
+        relay = NodeState("edge-2")
+        sink = NodeState("edge-3")
+        _pull(relay, source)
+
+        payload = relay.get_deltas_for({})
+
+        self.assertEqual(payload["fallback"], "gap")
+        self.assertEqual(sink.apply_delta_payload(payload, {}), 4)
+        self.assertEqual(sink.merkle_root(), source.merkle_root())
 
     def test_orset_remove_converges_through_delta_replay(self):
         source = NodeState("edge-1")
@@ -179,8 +204,7 @@ class ProtocolSimulationTests(unittest.TestCase):
             {"location": "road-9", "value": "blocked"},
             category="infrastructure",
         )
-        replica.apply_delta_payload(source.get_deltas_since(0))
-        last_seen = source.delta_seq
+        _pull(replica, source)
 
         source.record_event(
             "hazard-remove",
@@ -189,7 +213,7 @@ class ProtocolSimulationTests(unittest.TestCase):
             category="infrastructure",
             operation="remove",
         )
-        replica.apply_delta_payload(source.get_deltas_since(last_seen))
+        _pull(replica, source)
 
         self.assertEqual(replica.merkle_root(), source.merkle_root())
         self.assertNotIn("road-9", replica.sets["hazards:road_status"].value)

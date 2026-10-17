@@ -58,11 +58,10 @@ def _case_command(
         case["seed"].strip(),
         "--repetitions",
         case["repetitions"].strip(),
-        "--dashboard-observability",
-        case["observability"].strip(),
         "--case-id",
         case["case_id"].strip(),
-        "--cold-topology",
+        "--resource-mode",
+        case["resource_mode"].strip() or "uniform",
         "--out",
         str(out_dir / case["case_id"].strip()),
     ]
@@ -70,6 +69,8 @@ def _case_command(
         command.extend(["--docker-cpus", case["docker_cpus"].strip()])
     if case["docker_memory"].strip():
         command.extend(["--docker-memory", case["docker_memory"].strip()])
+    if case["resource_profile"].strip():
+        command.extend(["--resource-profile", case["resource_profile"].strip()])
     if case["offered_rate_per_second"].strip():
         command.extend(
             [

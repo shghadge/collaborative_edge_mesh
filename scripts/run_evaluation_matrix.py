@@ -11,6 +11,7 @@ from urllib.request import Request, urlopen
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.evaluation.runner import NETWORK_PROFILES, SYNC_MODES
+from src.evaluation.resources import DEFAULT_RESOURCE_PROFILE, RESOURCE_PROFILES
 from src.services.docker_manager import NETWORK_PROFILE_SETTINGS
 
 
@@ -132,12 +133,18 @@ def main() -> int:
     parser.add_argument(
         "--network-profile",
         choices=sorted(NETWORK_PROFILES),
-        default="hard_partition",
+        default="clean_lan",
     )
     parser.add_argument("--docker-cpus", type=float)
     parser.add_argument("--docker-memory")
     parser.add_argument(
-        "--dashboard-observability", default="off", choices=["off", "light", "full"]
+        "--resource-mode",
+        choices=["uniform", "heterogeneous"],
+        default="uniform",
+    )
+    parser.add_argument(
+        "--resource-profile",
+        choices=sorted(RESOURCE_PROFILES),
     )
     parser.add_argument(
         "--cold-topology",
@@ -166,6 +173,11 @@ def main() -> int:
     partition_splits = _csv_list_float(args.partition_splits)
     scenarios = _csv_list_str(args.scenarios)
     warm_topology = not args.cold_topology
+    effective_resource_profile = (
+        args.resource_profile or DEFAULT_RESOURCE_PROFILE
+        if args.resource_mode == "heterogeneous"
+        else None
+    )
     effective_event_retention = (
         0 if args.sync_mode == "full_state" else args.event_id_retention_limit
     )
@@ -179,6 +191,8 @@ def main() -> int:
             else f"delta_log_{args.delta_log_limit}"
         )
         implementation_label = f"{implementation_label}_{delta_label}"
+    if args.resource_mode == "heterogeneous":
+        implementation_label += f"_{effective_resource_profile}"
     if args.docker_cpus:
         implementation_label += (
             f"_cpu_{args.docker_cpus:g}_mem_{args.docker_memory or 'default'}"
@@ -210,7 +224,8 @@ def main() -> int:
         "offered_rate_per_second": args.offered_rate_per_second,
         "docker_cpus": args.docker_cpus,
         "docker_memory": args.docker_memory,
-        "dashboard_observability": args.dashboard_observability,
+        "resource_mode": args.resource_mode,
+        "resource_profile": effective_resource_profile,
         "warm_topology": warm_topology,
         "node_readiness_timeout_seconds": args.node_readiness_timeout_seconds,
     }
@@ -247,9 +262,10 @@ def main() -> int:
         "event_id_retention_limit": args.event_id_retention_limit,
         "delta_log_limit": args.delta_log_limit,
         "network_profile": args.network_profile,
-        "dashboard_observability": args.dashboard_observability,
         "docker_cpus": args.docker_cpus,
         "docker_memory": args.docker_memory,
+        "resource_mode": args.resource_mode,
+        "resource_profile": effective_resource_profile,
         "warm_topology": warm_topology,
         "node_readiness_timeout_seconds": args.node_readiness_timeout_seconds,
     }
@@ -292,6 +308,16 @@ def main() -> int:
         json.dumps(results, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+    result_rows = results.get("results", [])
+    resource_assignments = [
+        {
+            "repetition": row.get("repetition"),
+            "node_count": row.get("node_count"),
+            "assignments": json.loads(row.get("node_resource_assignments") or "[]"),
+            "resource_limit_verified": row.get("resource_limit_verified"),
+        }
+        for row in result_rows
+    ]
 
     manifest = {
         "run_id": run_id,
@@ -300,6 +326,7 @@ def main() -> int:
         "finished_at": finished_at,
         "csv_path": str(csv_path),
         "results_path": str(results_path),
+        "resource_assignments": resource_assignments,
     }
     json_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     print(csv_path)

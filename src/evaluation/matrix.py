@@ -1,4 +1,5 @@
 import csv
+import random
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,26 @@ NODE_COUNTS = (3, 5, 7, 10, 12, 15, 20, 25, 30, 40, 50)
 NETWORK_PROFILES = ("clean_lan", "constrained_wifi", "degraded", "severe")
 CPU_LIMITS = (0.25, 0.5, 1.0)
 MEMORY_LIMITS_MIB = (100, 256, 512)
+COMBINED_NODE_COUNTS = (5, 10, 15)
+COMBINED_EVENT_TOTALS = (30, 90, 180, 300)
+COMBINED_SCALE_EVENT_TOTAL = 90
+COMBINED_LOAD_NODE_COUNT = 15
+COMBINED_DEVICE_PROFILES = {
+    "uniform": ("uniform", ""),
+    "mixed": ("heterogeneous", "balanced_edge_v1"),
+}
+COMBINED_PARTITION_SPLITS: dict[str, float | None] = {
+    "none": None,
+    "p50": 0.5,
+    "p80": 0.8,
+}
+COMBINED_RATE_PER_NODE = 10
+COMBINED_PARTITION_WAIT_SECONDS = 30
+COMBINED_CONVERGENCE_WAIT_SECONDS = 180
+COMBINED_DELTA_LOG_LIMIT = 5000
+COMBINED_DOCKER_CPUS = 0.5
+COMBINED_DOCKER_MEMORY = "512m"
+COMBINED_EXPECTED_CONFIGURATION_COUNT = 144
 EXPECTED_SWEEP_COUNTS = {
     "scale": 44,
     "load": 60,
@@ -51,7 +72,8 @@ MATRIX_COLUMNS = (
     "seed",
     "docker_cpus",
     "docker_memory",
-    "observability",
+    "resource_mode",
+    "resource_profile",
 )
 
 
@@ -96,7 +118,8 @@ def _base_case(
         "seed": seed,
         "docker_cpus": docker_cpus,
         "docker_memory": docker_memory,
-        "observability": "off",
+        "resource_mode": "uniform",
+        "resource_profile": "",
     }
 
 
@@ -186,7 +209,7 @@ def generate_experiment_cases(
                 sweep="partition_shape",
                 node_count=node_count,
                 scenario="partition_heal",
-                network_profile="hard_partition",
+                network_profile="clean_lan",
                 events_per_node=45,
                 partition_events_per_node=45,
                 offered_rate_per_second="",
@@ -221,6 +244,123 @@ def generate_experiment_cases(
                     )
 
     validate_experiment_cases(cases, require_complete=True)
+    return cases
+
+
+def generate_resource_heterogeneity_cases(
+    *, repetitions: int = 10, base_seed: int = 9201
+) -> list[dict[str, Any]]:
+    if repetitions < 1:
+        raise ValueError("repetitions must be at least 1")
+
+    cases: list[dict[str, Any]] = []
+    for node_index, node_count in enumerate((5, 10, 15)):
+        seed = base_seed + node_index * repetitions
+        for resource_mode in ("uniform", "heterogeneous"):
+            for method in METHODS:
+                base = _base_case(
+                    condition_id=f"heterogeneity-n{node_count:02d}",
+                    sweep="resource_heterogeneity",
+                    node_count=node_count,
+                    scenario="baseline",
+                    network_profile="clean_lan",
+                    events_per_node=15,
+                    partition_events_per_node=0,
+                    offered_rate_per_second="",
+                    partition_split="",
+                    partition_wait_seconds=0,
+                    convergence_wait_seconds=45,
+                    repetitions=repetitions,
+                    seed=seed,
+                    docker_cpus=0.5,
+                    docker_memory="512m",
+                )
+                cases.append(
+                    {
+                        "case_id": (
+                            f"heterogeneity-n{node_count:02d}-{resource_mode}-{method}"
+                        ),
+                        **base,
+                        "sync_mode": method,
+                        "event_id_retention_limit": METHOD_RETENTION[method],
+                        "delta_log_limit": 1000,
+                        "resource_mode": resource_mode,
+                        "resource_profile": (
+                            "balanced_edge_v1"
+                            if resource_mode == "heterogeneous"
+                            else ""
+                        ),
+                    }
+                )
+
+    validate_experiment_cases(cases)
+    return cases
+
+
+def generate_combined_cases(
+    *, repetitions: int = 10, seed: int = 11001
+) -> list[dict[str, Any]]:
+    if repetitions < 1:
+        raise ValueError("repetitions must be at least 1")
+
+    scale_cells = {
+        (node_count, COMBINED_SCALE_EVENT_TOTAL) for node_count in COMBINED_NODE_COUNTS
+    }
+    load_cells = {
+        (COMBINED_LOAD_NODE_COUNT, event_total) for event_total in COMBINED_EVENT_TOTALS
+    }
+
+    cases: list[dict[str, Any]] = []
+    for node_count, event_total in sorted(scale_cells | load_cells):
+        for device_label, (
+            resource_mode,
+            resource_profile,
+        ) in COMBINED_DEVICE_PROFILES.items():
+            for partition_label, partition_split in COMBINED_PARTITION_SPLITS.items():
+                partitioned = partition_split is not None
+                condition_id = (
+                    f"combined-n{node_count:02d}-{device_label}-"
+                    f"{partition_label}-e{event_total:03d}"
+                )
+                base = _base_case(
+                    condition_id=condition_id,
+                    sweep="combined",
+                    node_count=node_count,
+                    scenario="partition_heal" if partitioned else "baseline",
+                    network_profile="clean_lan",
+                    events_per_node=event_total // 2 if partitioned else event_total,
+                    partition_events_per_node=event_total // 2 if partitioned else 0,
+                    offered_rate_per_second=COMBINED_RATE_PER_NODE * node_count,
+                    partition_split=partition_split if partitioned else "",
+                    partition_wait_seconds=(
+                        COMBINED_PARTITION_WAIT_SECONDS if partitioned else 0
+                    ),
+                    convergence_wait_seconds=COMBINED_CONVERGENCE_WAIT_SECONDS,
+                    repetitions=repetitions,
+                    seed=seed,
+                    docker_cpus=COMBINED_DOCKER_CPUS,
+                    docker_memory=COMBINED_DOCKER_MEMORY,
+                )
+                for method in METHODS:
+                    cases.append(
+                        {
+                            "case_id": f"{condition_id}-{method}",
+                            **base,
+                            "sync_mode": method,
+                            "event_id_retention_limit": METHOD_RETENTION[method],
+                            "delta_log_limit": COMBINED_DELTA_LOG_LIMIT,
+                            "resource_mode": resource_mode,
+                            "resource_profile": resource_profile,
+                        }
+                    )
+
+    if len(cases) != COMBINED_EXPECTED_CONFIGURATION_COUNT:
+        raise ValueError(
+            f"expected {COMBINED_EXPECTED_CONFIGURATION_COUNT} combined "
+            f"configurations, found {len(cases)}"
+        )
+    random.Random(seed).shuffle(cases)
+    validate_experiment_cases(cases)
     return cases
 
 

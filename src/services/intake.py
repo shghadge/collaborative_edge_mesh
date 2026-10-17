@@ -1,4 +1,3 @@
-import json
 import uuid
 import structlog
 from datetime import datetime, timezone
@@ -49,7 +48,7 @@ class IntakeService:
 
             The response tells you exactly where the data was stored:
             which counter, register, pn_counter, or set key was used.
-            Also returns tracking metadata for per-message observability.
+            Also returns the event's tracking ID and receive time.
             """
             try:
                 tracking_id = str(event.metadata.get("tracking_id") or uuid.uuid4())
@@ -76,11 +75,6 @@ class IntakeService:
                     operation=event.operation,
                 )
 
-                # Compute tracking metadata
-                merkle_root_after = self.state.merkle_root()
-                state_dict = self.state.to_dict()
-                state_size_bytes = len(json.dumps(state_dict))
-
                 log.info(
                     "event_received",
                     event_id=event.id,
@@ -100,8 +94,6 @@ class IntakeService:
                     # Per-message tracking metadata
                     "tracking_id": tracking_id,
                     "recorded_at": recorded_at,
-                    "state_size_bytes": state_size_bytes,
-                    "merkle_root_after": merkle_root_after,
                 }
             except Exception as e:
                 log.error("event_failed", error=str(e))
@@ -163,23 +155,5 @@ class IntakeService:
             except Exception as e:
                 log.error("merge_failed", error=str(e))
                 raise HTTPException(status_code=400, detail=str(e))
-
-        @app.get("/metrics/summary")
-        async def metrics_summary():
-            """Node-level metric snapshot for dashboard per-node stats."""
-            state_dict = self.state.to_dict()
-            state_size = len(json.dumps(state_dict))
-            uptime = (
-                datetime.now(timezone.utc)
-                - self.start_time.replace(tzinfo=timezone.utc)
-            ).total_seconds()
-            return {
-                "node_id": self.config.node_id,
-                "event_count": self.state.get_event_count(),
-                "state_size_bytes": state_size,
-                "merkle_root": self.state.merkle_root(),
-                "version": self.state.version,
-                "uptime_seconds": round(uptime, 2),
-            }
 
         return app

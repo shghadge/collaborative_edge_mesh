@@ -1,829 +1,375 @@
 <!doctype html>
 <html lang="en">
     <head>
-        <meta charset="UTF-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
         <meta
             name="description"
-            content="Interactive dashboard for monitoring and controlling the collaborative edge mesh network"
+            content="Configure, run, and export one collaborative edge mesh evaluation batch."
         />
-        <title>Edge Mesh Observatory</title>
-
-        <script src="https://cdn.tailwindcss.com"></script>
-        <script>
-            tailwind.config = {
-                theme: {
-                    extend: {
-                        fontFamily: {
-                            sans: ["Inter", "ui-sans-serif", "system-ui"],
-                            mono: [
-                                "JetBrains Mono",
-                                "ui-monospace",
-                                "monospace",
-                            ],
-                        },
-                        colors: {
-                            panel: "#131a2c",
-                            panelSoft: "#1a2340",
-                        },
-                    },
-                },
-            };
-        </script>
-
-        <link rel="preconnect" href="https://fonts.googleapis.com" />
-        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-        <link
-            href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
-            rel="stylesheet"
-        />
+        <title>Edge Mesh Evaluation</title>
         <link rel="stylesheet" href="/style.css" />
-        <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
-        <script src="https://d3js.org/d3.v7.min.js"></script>
+        <script src="/app.js" defer></script>
     </head>
-    <body
-        class="min-h-screen overflow-hidden bg-slate-950 text-slate-100 font-sans"
-    >
-        <header
-            id="header"
-            class="fixed top-0 left-0 right-0 z-50 border-b border-white/10 bg-slate-900/85 backdrop-blur px-4 py-2"
-        >
-            <div class="flex flex-wrap items-center justify-between gap-3">
-                <div class="flex items-center gap-3">
-                    <div class="logo flex items-center gap-2 text-sky-300">
-                        <svg
-                            width="26"
-                            height="26"
-                            viewBox="0 0 24 24"
-                            fill="none"
-                            stroke="currentColor"
-                            stroke-width="2"
-                        >
-                            <circle cx="12" cy="12" r="3" />
-                            <circle cx="12" cy="4" r="1.5" />
-                            <circle cx="20" cy="12" r="1.5" />
-                            <circle cx="12" cy="20" r="1.5" />
-                            <circle cx="4" cy="12" r="1.5" />
-                            <line x1="12" y1="6" x2="12" y2="9" />
-                            <line x1="14.5" y1="12" x2="18" y2="12" />
-                            <line x1="12" y1="15" x2="12" y2="18" />
-                            <line x1="6" y1="12" x2="9.5" y2="12" />
-                        </svg>
-                        <h1 class="text-sm font-semibold tracking-tight">
-                            Edge Mesh Observatory
-                        </h1>
-                        <a href="/docs" target="_blank" class="badge"
-                            >API Docs</a
-                        >
-                    </div>
-                </div>
+    <body>
+        <a class="skip-link" href="#main-content">Skip to experiment configuration</a>
 
-                <div class="header-stats flex flex-wrap items-center gap-2">
-                    <div class="stat-pill" id="stat-nodes">
-                        <span class="stat-label">Nodes</span
-                        ><span class="stat-value" id="stat-node-count">0</span>
-                    </div>
-                    <div class="stat-pill" id="stat-convergence">
-                        <span class="stat-label">Convergence</span
-                        ><span class="stat-value" id="stat-convergence-time"
-                            >&mdash;</span
-                        >
-                    </div>
-                    <div class="stat-pill" id="stat-status">
-                        <span class="stat-label">Status</span
-                        ><span class="stat-value" id="stat-network-status"
-                            ><span class="status-dot converged"></span> OK</span
-                        >
-                    </div>
-                    <div class="stat-pill" id="stat-gossip">
-                        <span class="stat-label">Gossip</span
-                        ><span class="stat-value" id="stat-gossip-count"
-                            >0</span
-                        >
-                    </div>
-                </div>
+        <header class="site-header">
+            <a class="wordmark" href="/" aria-label="Edge Mesh Evaluation home">
+                <span class="wordmark-mark" aria-hidden="true">EM</span>
+                <span>
+                    <strong>Edge Mesh</strong>
+                </span>
+            </a>
+            <div class="header-tools">
+                <span class="system-state" id="api-state">
+                    <span class="state-dot" aria-hidden="true"></span>
+                    <span id="api-state-label">Checking runner</span>
+                </span>
+                <a class="docs-link" href="/docs" target="_blank" rel="noreferrer">
+                    API docs <span aria-hidden="true">↗</span>
+                </a>
             </div>
         </header>
 
-        <div
-            class="app-layout mt-[56px] flex h-[calc(100vh-56px)] flex-col lg:flex-row"
-        >
-            <aside
-                class="topology-side w-full lg:w-[48%] lg:min-w-[420px] lg:max-w-[54%] border-b lg:border-b-0 lg:border-r border-white/10 flex flex-col gap-2 p-2 overflow-y-auto"
-            >
-                <section
-                    class="topology-panel-full flex-1 min-h-[38vh] bg-panel rounded-xl border border-white/10"
-                    id="topology-panel"
-                >
-                    <div
-                        class="panel-header flex items-center justify-between border-b border-white/10 px-4 py-2"
-                    >
-                        <h2
-                            class="text-xs uppercase tracking-[0.12em] text-slate-400"
-                        >
-                            Network Topology
-                        </h2>
-                        <div class="panel-actions flex items-center gap-2">
-                            <button
-                                class="btn btn-icon"
-                                onclick="toggleFullscreen()"
-                                title="Fullscreen"
-                                id="btn-fullscreen"
-                            >
-                                ⛶
-                            </button>
-                            <button
-                                class="btn btn-icon"
-                                onclick="refreshAll()"
-                                title="Refresh"
-                                id="btn-refresh"
-                            >
-                                ↻
-                            </button>
+        <main id="main-content" class="page-shell">
+
+            <div class="configure-layout">
+                <section class="instrument-panel configuration-panel" id="configure-panel" aria-labelledby="configure-title">
+                    <div class="panel-heading">
+                        <div>
+                            <h2 id="configure-title">Experiment settings</h2>
                         </div>
                     </div>
-                    <div
-                        class="topology-container h-full min-h-[38vh] lg:min-h-0"
-                    >
-                        <svg id="topology-canvas" class="h-full w-full"></svg>
-                    </div>
+
+                    <form id="experiment-form" novalidate>
+                        <fieldset id="config-fields">
+                            <legend class="visually-hidden">Experiment settings</legend>
+
+                            <section class="field-section" aria-labelledby="identity-heading">
+                                <div class="field-section-heading">
+                                    <h3 id="identity-heading">Batch</h3>
+                                </div>
+                                <div class="field-grid field-grid-four">
+                                    <div class="field field-span-two">
+                                        <label for="case-id">Case name</label>
+                                        <input id="case-id" type="text" value="baseline-01" maxlength="64" required autocomplete="off" spellcheck="false" />
+                                    </div>
+                                    <div class="field">
+                                        <label for="node-count">Nodes</label>
+                                        <input id="node-count" type="number" list="node-count-options" value="5" min="1" step="1" required inputmode="numeric" />
+                                    </div>
+                                    <div class="field">
+                                        <label for="repetitions">Runs</label>
+                                        <input id="repetitions" type="number" list="repetition-options" value="10" min="1" step="1" required inputmode="numeric" />
+                                    </div>
+                                    <div class="field">
+                                        <label for="scenario-seed">First seed</label>
+                                        <input id="scenario-seed" type="number" value="8801" step="1" required inputmode="numeric" />
+                                    </div>
+                                </div>
+                            </section>
+
+                            <section class="field-section" aria-labelledby="protocol-heading">
+                                <div class="field-section-heading">
+                                    <h3 id="protocol-heading">Test condition</h3>
+                                </div>
+                                <div class="field-grid">
+                                    <div class="field">
+                                        <label for="sync-mode">Sync mode</label>
+                                        <select id="sync-mode" required>
+                                            <option value="full_state" selected>Full state</option>
+                                            <option value="optimized_full_state">Optimized full state</option>
+                                            <option value="naive_key_delta">Naive key delta</option>
+                                            <option value="true_delta">True delta</option>
+                                        </select>
+                                    </div>
+                                    <div class="field">
+                                        <label for="scenario">Scenario</label>
+                                        <select id="scenario" required>
+                                            <option value="baseline" selected>Baseline</option>
+                                            <option value="partition_heal">Partition and heal</option>
+                                            <option value="high_load">High load</option>
+                                        </select>
+                                    </div>
+                                    <div class="field">
+                                        <label for="network-profile">Network</label>
+                                        <select id="network-profile" required>
+                                            <option value="clean_lan" selected>Clean LAN</option>
+                                            <option value="constrained_wifi">Constrained Wi-Fi</option>
+                                            <option value="degraded">Degraded</option>
+                                            <option value="severe">Severe</option>
+                                        </select>
+                                    </div>
+                                    <div class="field">
+                                        <label for="events-per-node">Events per node</label>
+                                        <input id="events-per-node" type="number" list="event-count-options" value="15" min="1" step="1" required inputmode="numeric" />
+                                    </div>
+                                    <div class="field" id="offered-rate-field">
+                                        <label for="offered-rate">Offered rate <span class="label-optional">optional</span></label>
+                                        <div class="input-with-unit">
+                                            <input id="offered-rate" type="number" min="0.01" step="0.01" inputmode="decimal" placeholder="Unpaced" />
+                                            <span>events/s</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </section>
+
+                            <section class="field-section conditional-section" id="partition-fields" aria-labelledby="partition-heading" hidden>
+                                <div class="field-section-heading">
+                                    <h3 id="partition-heading">Network failure</h3>
+                                </div>
+                                <div class="field-grid field-grid-three">
+                                    <div class="field">
+                                        <label for="partition-splits">Partition splits</label>
+                                        <input id="partition-splits" type="text" value="0.5" inputmode="decimal" autocomplete="off" spellcheck="false" />
+                                        <small>Comma-separated decimals between 0 and 1.</small>
+                                    </div>
+                                    <div class="field">
+                                        <label for="partition-duration">Failure time</label>
+                                        <input id="partition-duration" type="number" list="failure-time-options" value="8" min="0.1" step="0.1" inputmode="decimal" />
+                                    </div>
+                                    <div class="field">
+                                        <label for="partition-events">Events per node during failure</label>
+                                        <input id="partition-events" type="number" list="failure-event-options" value="3" min="0" step="1" inputmode="numeric" />
+                                    </div>
+                                </div>
+                            </section>
+
+                            <section class="field-section" aria-labelledby="execution-heading">
+                                <div class="field-section-heading">
+                                    <h3 id="execution-heading">Resource setup</h3>
+                                </div>
+                                <div class="field-grid field-grid-three">
+                                    <div class="field">
+                                        <label for="resource-mode">Node resources</label>
+                                        <select id="resource-mode" required>
+                                            <option value="uniform" selected>Same for every node</option>
+                                            <option value="heterogeneous">Mixed edge devices</option>
+                                        </select>
+                                    </div>
+                                    <div class="field">
+                                        <label for="resource-profile">Resource profile</label>
+                                        <select id="resource-profile" disabled>
+                                            <option value="balanced_edge_v1" selected>Balanced edge devices</option>
+                                        </select>
+                                    </div>
+                                    <div class="field">
+                                        <label for="event-concurrency">Concurrent requests</label>
+                                        <input id="event-concurrency" type="number" list="concurrency-options" value="25" min="1" step="1" required inputmode="numeric" />
+                                    </div>
+                                    <div class="field">
+                                        <label for="docker-cpus">CPU per node</label>
+                                        <input id="docker-cpus" type="number" list="cpu-options" value="1" min="0.01" step="0.01" required inputmode="decimal" />
+                                    </div>
+                                    <div class="field">
+                                        <label for="docker-memory">Memory per node</label>
+                                        <input id="docker-memory" type="text" list="memory-options" value="512m" required autocomplete="off" spellcheck="false" />
+                                    </div>
+                                    <div class="field">
+                                        <label for="convergence-cutoff">Convergence timeout</label>
+                                        <input id="convergence-cutoff" type="number" list="timeout-options" value="45" min="0.1" step="0.1" required inputmode="decimal" />
+                                    </div>
+                                    <div class="field">
+                                        <label for="poll-interval">Sample every</label>
+                                        <input id="poll-interval" type="number" list="sample-options" value="2" min="0.1" step="0.1" required inputmode="decimal" />
+                                    </div>
+                                    <div class="resource-preview" id="resource-preview" hidden>
+                                        <div>
+                                            <strong>Balanced edge devices</strong>
+                                            <span id="resource-preview-counts">2 low · 2 medium · 1 high</span>
+                                        </div>
+                                        <dl>
+                                            <div><dt>Low</dt><dd>0.25 CPU · 256 MiB</dd></div>
+                                            <div><dt>Medium</dt><dd>0.50 CPU · 512 MiB</dd></div>
+                                            <div><dt>High</dt><dd>1.00 CPU · 1 GiB</dd></div>
+                                        </dl>
+                                        <p id="resource-preview-total">Total: 2.5 CPU · 2560 MiB</p>
+                                    </div>
+                                </div>
+                            </section>
+
+                            <section class="field-section" aria-labelledby="retention-heading">
+                                <div class="field-section-heading">
+                                    <h3 id="retention-heading">Data limits</h3>
+                                </div>
+                                <div class="field-grid">
+                                    <div class="field" id="retention-field">
+                                        <label for="event-retention">Event IDs kept</label>
+                                        <input id="event-retention" type="number" value="0" min="0" step="1" inputmode="numeric" disabled />
+                                        <small id="retention-help">Full state keeps the complete event history.</small>
+                                    </div>
+                                    <div class="field" id="delta-log-field" hidden>
+                                        <label for="delta-log-limit">Delta records kept</label>
+                                        <input id="delta-log-limit" type="number" value="1000" min="0" step="1" inputmode="numeric" />
+                                        <small>Use 0 for unbounded delta retention.</small>
+                                    </div>
+                                    <p class="fixed-note">Live metrics are off. Each run starts fresh containers.</p>
+                                </div>
+                            </section>
+                            <datalist id="node-count-options">
+                                <option value="1"></option>
+                                <option value="5"></option>
+                                <option value="10"></option>
+                                <option value="15"></option>
+                            </datalist>
+                            <datalist id="repetition-options">
+                                <option value="1"></option>
+                                <option value="5"></option>
+                                <option value="10"></option>
+                                <option value="20"></option>
+                            </datalist>
+                            <datalist id="event-count-options">
+                                <option value="5"></option>
+                                <option value="15"></option>
+                                <option value="25"></option>
+                                <option value="50"></option>
+                                <option value="100"></option>
+                            </datalist>
+                            <datalist id="failure-time-options">
+                                <option value="8"></option>
+                                <option value="15"></option>
+                                <option value="30"></option>
+                            </datalist>
+                            <datalist id="failure-event-options">
+                                <option value="0"></option>
+                                <option value="3"></option>
+                                <option value="5"></option>
+                                <option value="10"></option>
+                            </datalist>
+                            <datalist id="concurrency-options">
+                                <option value="1"></option>
+                                <option value="10"></option>
+                                <option value="25"></option>
+                                <option value="50"></option>
+                                <option value="100"></option>
+                            </datalist>
+                            <datalist id="cpu-options">
+                                <option value="0.25"></option>
+                                <option value="0.5"></option>
+                                <option value="1"></option>
+                                <option value="2"></option>
+                            </datalist>
+                            <datalist id="memory-options">
+                                <option value="100m"></option>
+                                <option value="256m"></option>
+                                <option value="512m"></option>
+                                <option value="1g"></option>
+                            </datalist>
+                            <datalist id="timeout-options">
+                                <option value="15"></option>
+                                <option value="30"></option>
+                                <option value="45"></option>
+                                <option value="60"></option>
+                                <option value="90"></option>
+                            </datalist>
+                            <datalist id="sample-options">
+                                <option value="0.5"></option>
+                                <option value="1"></option>
+                                <option value="2"></option>
+                                <option value="5"></option>
+                            </datalist>
+                        </fieldset>
+
+                        <div class="form-errors" id="form-errors" role="alert" hidden></div>
+                        <div class="form-actions">
+                            <button class="primary-action" id="run-button" type="submit">
+                                <span>Run evaluation</span>
+                                <span aria-hidden="true">→</span>
+                            </button>
+                            <p id="run-guard">The condition locks while the batch is running.</p>
+                        </div>
+                    </form>
                 </section>
 
-                <section
-                    class="accordion-panel open rounded-xl border border-white/10 bg-panel"
-                    id="live-metrics-panel"
-                    data-panel-id="live-metrics"
-                >
-                    <div
-                        class="accordion-header flex items-center justify-between gap-2 px-4 py-3 cursor-pointer"
-                        onclick="toggleAccordion(this)"
-                    >
-                        <div class="accordion-title flex items-center gap-2">
-                            <span class="accordion-chevron text-slate-400"
-                                >▾</span
-                            >
-                            <h2
-                                class="text-xs uppercase tracking-[0.12em] text-slate-300"
-                            >
-                                Live Metrics
-                            </h2>
-                        </div>
-                        <div
-                            class="panel-actions flex items-center gap-2"
-                            onclick="event.stopPropagation()"
-                        >
-                            <button
-                                class="btn btn-sm btn-outline"
-                                id="btn-metrics-poll"
-                                onclick="triggerPoll()"
-                                title="Run full backend poll and refresh metrics"
-                            >
-                                Poll Backend
-                            </button>
-                            <span class="badge" id="metrics-update-badge"
-                                >Polling...</span
-                            >
+                <aside class="instrument-panel review-panel" aria-labelledby="review-title">
+                    <div class="panel-heading compact">
+                        <div>
+                            <h2 id="review-title">Run summary</h2>
                         </div>
                     </div>
-                    <div class="accordion-body border-t border-white/10 p-3">
-                        <div
-                            class="metrics-grid grid grid-cols-1 sm:grid-cols-2 gap-2"
-                        >
-                            <div class="metric-card" id="mc-convergence">
-                                <div class="metric-body">
-                                    <span class="metric-label"
-                                        >Convergence Time</span
-                                    ><span
-                                        class="metric-value"
-                                        id="mv-convergence"
-                                        >&mdash;</span
-                                    ><span class="metric-unit">seconds</span>
-                                </div>
-                            </div>
-                            <div class="metric-card" id="mc-data-loss">
-                                <div class="metric-body">
-                                    <span class="metric-label">Data Loss</span
-                                    ><span
-                                        class="metric-value"
-                                        id="mv-data-loss"
-                                        >0%</span
-                                    ><span class="metric-unit">of events</span>
-                                </div>
-                            </div>
-                            <div class="metric-card" id="mc-gossip">
-                                <div class="metric-body">
-                                    <span class="metric-label"
-                                        >Gossip Messages</span
-                                    ><span class="metric-value" id="mv-gossip"
-                                        >0</span
-                                    ><span class="metric-unit">sent total</span>
-                                </div>
-                            </div>
-                            <div class="metric-card" id="mc-state-size">
-                                <div class="metric-body">
-                                    <span class="metric-label">State Size</span
-                                    ><span
-                                        class="metric-value"
-                                        id="mv-state-size"
-                                        >0 B</span
-                                    ><span class="metric-unit"
-                                        >bytes total</span
-                                    >
-                                </div>
-                            </div>
-                            <div class="metric-card" id="mc-known-status">
-                                <div class="metric-body">
-                                    <span class="metric-label"
-                                        >Known Status</span
-                                    ><span
-                                        class="metric-value"
-                                        id="mv-known-status"
-                                        >Insufficient Coverage</span
-                                    ><span class="metric-unit"
-                                        >confidence-aware</span
-                                    >
-                                </div>
-                            </div>
-                            <div class="metric-card" id="mc-coverage">
-                                <div class="metric-body">
-                                    <span class="metric-label">Coverage</span
-                                    ><span class="metric-value" id="mv-coverage"
-                                        >0%</span
-                                    ><span class="metric-unit"
-                                        >fresh observed nodes</span
-                                    >
-                                </div>
-                            </div>
-                            <div
-                                class="metric-card wide sm:col-span-2"
-                                id="mc-divergence"
-                            >
-                                <div class="metric-body">
-                                    <span class="metric-label"
-                                        >Network Status</span
-                                    ><span
-                                        class="metric-value"
-                                        id="mv-divergence"
-                                        >Converged</span
-                                    ><span
-                                        class="metric-unit"
-                                        id="mv-divergence-detail"
-                                        >All Merkle roots match</span
-                                    >
-                                </div>
-                            </div>
-                        </div>
-                        <p class="mt-2 text-xs text-slate-400">
-                            Status legend: <strong>Known Converged</strong>,
-                            <strong>Known Diverged</strong>,
-                            <strong>Insufficient Coverage</strong>.
-                        </p>
+                    <p class="review-narrative" id="review-narrative"></p>
+                    <div class="expected-output">
+                        <span>Result rows</span>
+                        <strong id="expected-rows">10</strong>
                     </div>
-                </section>
-            </aside>
+                    <dl class="review-list" id="review-list"></dl>
+                    <div class="preflight-state" id="preflight-state" aria-live="polite"></div>
+                </aside>
+            </div>
 
-            <main
-                class="panels-side flex-1 overflow-y-auto p-3 space-y-2 bg-slate-950/70"
-                id="panels-side"
-            >
-                <section
-                    class="accordion-panel open rounded-xl border border-white/10 bg-panel"
-                    id="gateway-management-panel"
-                    data-panel-id="gateway-management"
-                >
-                    <div
-                        class="accordion-header flex items-center justify-between gap-2 px-4 py-3 cursor-pointer"
-                        onclick="toggleAccordion(this)"
-                    >
-                        <div class="accordion-title flex items-center gap-2">
-                            <span class="accordion-chevron text-slate-400"
-                                >▾</span
-                            >
-                            <h2
-                                class="text-xs uppercase tracking-[0.12em] text-slate-300"
-                            >
-                                Gateway Management
-                            </h2>
-                        </div>
-                        <div
-                            class="panel-actions"
-                            onclick="event.stopPropagation()"
-                        >
-                            <button
-                                class="btn btn-sm"
-                                onclick="createGateway()"
-                                id="btn-add-gateway"
-                            >
-                                + Add Gateway
-                            </button>
-                        </div>
+            <section class="instrument-panel run-panel" id="run-panel" aria-labelledby="run-title">
+                <div class="panel-heading">
+                    <div>
+                        <h2 id="run-title">Batch progress</h2>
                     </div>
-                    <div class="accordion-body border-t border-white/10">
-                        <div class="node-list" id="gateway-list">
-                            <div class="empty-state">No gateways running</div>
-                        </div>
+                    <span class="run-state idle" id="run-state">Idle</span>
+                </div>
+                <div class="run-identity">
+                    <div>
+                        <span>Run ID</span>
+                        <strong id="active-run-id">Not started</strong>
                     </div>
-                </section>
+                    <div>
+                        <span>Current work</span>
+                        <strong id="current-step">Waiting for a configuration</strong>
+                    </div>
+                </div>
+                <div class="progress-track" id="progress-track" role="progressbar" aria-label="Evaluation progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                    <span id="progress-bar"></span>
+                </div>
+                <div class="progress-facts">
+                    <span><strong id="progress-count">0 / 0</strong> steps</span>
+                    <span><strong id="progress-repetition">—</strong> repetition</span>
+                    <span><strong id="progress-scenario">—</strong> scenario</span>
+                    <span><strong id="progress-results">0</strong> rows ready</span>
+                </div>
+                <p class="run-message" id="run-message" aria-live="polite">No batch is running.</p>
+            </section>
 
-                <section
-                    class="accordion-panel open rounded-xl border border-white/10 bg-panel"
-                    id="node-management-panel"
-                    data-panel-id="node-management"
-                >
-                    <div
-                        class="accordion-header flex items-center justify-between gap-2 px-4 py-3 cursor-pointer"
-                        onclick="toggleAccordion(this)"
-                    >
-                        <div class="accordion-title flex items-center gap-2">
-                            <span class="accordion-chevron text-slate-400"
-                                >▾</span
-                            >
-                            <h2
-                                class="text-xs uppercase tracking-[0.12em] text-slate-300"
-                            >
-                                Node Management
-                            </h2>
-                        </div>
-                        <div
-                            class="panel-actions flex items-center gap-2"
-                            onclick="event.stopPropagation()"
-                        >
-                            <select
-                                id="gateway-selector"
-                                class="gateway-selector rounded border border-white/20 bg-slate-900 px-2 py-1 text-xs text-slate-200"
-                            >
-                                <option value="">Auto (Round-Robin)</option>
-                            </select>
-                            <button
-                                class="btn btn-sm"
-                                onclick="createNode()"
-                                id="btn-add-node"
-                            >
-                                + Add Node
-                            </button>
-                            <input
-                                type="number"
-                                id="batch-node-count"
-                                min="1"
-                                value="3"
-                                class="w-14 rounded border border-white/20 bg-slate-900 px-2 py-1 text-xs text-center text-slate-200"
-                            />
-                            <button
-                                class="btn btn-sm btn-outline"
-                                onclick="
-                                    createNodesBatch(
-                                        document.getElementById(
-                                            'batch-node-count',
-                                        ).value,
-                                    )
-                                "
-                                id="btn-add-batch-nodes"
-                            >
-                                + Add Batch
-                            </button>
-                        </div>
+            <section class="instrument-panel results-panel" id="results-panel" aria-labelledby="results-title" hidden>
+                <div class="panel-heading results-heading">
+                    <div>
+                        <h2 id="results-title">Batch findings</h2>
+                        <p class="result-context" id="result-context"></p>
                     </div>
-                    <div class="accordion-body border-t border-white/10">
-                        <div class="node-list" id="node-list">
-                            <div class="empty-state">No nodes running</div>
-                        </div>
-                        <div
-                            class="partition-controls flex flex-wrap gap-2 border-t border-white/10 p-3"
-                        >
-                            <button
-                                class="btn btn-warning"
-                                onclick="splitBrain()"
-                                id="btn-split-brain"
-                            >
-                                Split Brain
-                            </button>
-                            <button
-                                class="btn btn-success"
-                                onclick="healAll()"
-                                id="btn-heal-all"
-                            >
-                                Heal All
-                            </button>
-                        </div>
-                    </div>
-                </section>
+                    <a class="download-action is-disabled" id="download-csv" aria-disabled="true">
+                        Download CSV <span aria-hidden="true">↓</span>
+                    </a>
+                </div>
 
-                <section
-                    class="accordion-panel open rounded-xl border border-white/10 bg-panel"
-                    id="event-sender-panel"
-                    data-panel-id="event-sender"
-                >
-                    <div
-                        class="accordion-header flex items-center justify-between gap-2 px-4 py-3 cursor-pointer"
-                        onclick="toggleAccordion(this)"
-                    >
-                        <div class="accordion-title flex items-center gap-2">
-                            <span class="accordion-chevron text-slate-400"
-                                >▾</span
-                            >
-                            <h2
-                                class="text-xs uppercase tracking-[0.12em] text-slate-300"
-                            >
-                                Send Event
-                            </h2>
-                        </div>
-                    </div>
-                    <div class="accordion-body border-t border-white/10 p-4">
-                        <form
-                            id="event-form"
-                            class="event-form space-y-3"
-                            onsubmit="sendEvent(event)"
-                        >
-                            <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                <div>
-                                    <label
-                                        for="event-type"
-                                        class="text-[11px] uppercase tracking-widest text-slate-500"
-                                        >Type</label
-                                    ><input
-                                        type="text"
-                                        id="event-type"
-                                        value="temperature"
-                                        required
-                                        class="mt-1 w-full rounded border border-white/15 bg-slate-900 px-3 py-2 text-sm"
-                                    />
-                                </div>
-                                <div>
-                                    <label
-                                        for="event-value"
-                                        class="text-[11px] uppercase tracking-widest text-slate-500"
-                                        >Value</label
-                                    ><input
-                                        type="text"
-                                        id="event-value"
-                                        value="25.0"
-                                        required
-                                        class="mt-1 w-full rounded border border-white/15 bg-slate-900 px-3 py-2 text-sm"
-                                    />
-                                </div>
-                            </div>
-                            <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                <div>
-                                    <label
-                                        for="event-category"
-                                        class="text-[11px] uppercase tracking-widest text-slate-500"
-                                        >Category</label
-                                    >
-                                    <select
-                                        id="event-category"
-                                        class="mt-1 w-full rounded border border-white/15 bg-slate-900 px-3 py-2 text-sm"
-                                    >
-                                        <option value="sensor">Sensor</option>
-                                        <option value="resource">
-                                            Resource
-                                        </option>
-                                        <option value="infrastructure">
-                                            Infrastructure
-                                        </option>
-                                        <option value="general" selected>
-                                            General
-                                        </option>
-                                    </select>
-                                </div>
-                                <div>
-                                    <label
-                                        for="event-target"
-                                        class="text-[11px] uppercase tracking-widest text-slate-500"
-                                        >Target Node</label
-                                    >
-                                    <select
-                                        id="event-target"
-                                        class="mt-1 w-full rounded border border-white/15 bg-slate-900 px-3 py-2 text-sm"
-                                    >
-                                        <option value="">Any node</option>
-                                    </select>
-                                </div>
-                            </div>
-                            <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                <div>
-                                    <label
-                                        for="event-location"
-                                        class="text-[11px] uppercase tracking-widest text-slate-500"
-                                        >Location</label
-                                    ><input
-                                        type="text"
-                                        id="event-location"
-                                        value="sensor_a"
-                                        class="mt-1 w-full rounded border border-white/15 bg-slate-900 px-3 py-2 text-sm"
-                                    />
-                                </div>
-                                <div>
-                                    <label
-                                        for="event-operation"
-                                        class="text-[11px] uppercase tracking-widest text-slate-500"
-                                        >Operation</label
-                                    >
-                                    <select
-                                        id="event-operation"
-                                        class="mt-1 w-full rounded border border-white/15 bg-slate-900 px-3 py-2 text-sm"
-                                    >
-                                        <option value="" selected>
-                                            Default
-                                        </option>
-                                        <option value="increment">
-                                            Increment
-                                        </option>
-                                        <option value="decrement">
-                                            Decrement
-                                        </option>
-                                    </select>
-                                </div>
-                            </div>
-                            <button
-                                type="submit"
-                                class="btn btn-primary btn-block"
-                                id="send-event-btn"
-                            >
-                                Send Event
-                            </button>
-                        </form>
-                        <div
-                            id="event-result"
-                            class="event-result hidden"
-                        ></div>
-                    </div>
-                </section>
+                <div class="metric-grid" id="metric-grid" aria-label="Result summary"></div>
 
-                <section
-                    class="accordion-panel rounded-xl border border-white/10 bg-panel"
-                    id="charts-panel"
-                    data-panel-id="charts"
-                >
-                    <div
-                        class="accordion-header flex items-center justify-between gap-2 px-4 py-3 cursor-pointer"
-                        onclick="toggleAccordion(this)"
-                    >
-                        <div class="accordion-title flex items-center gap-2">
-                            <span class="accordion-chevron text-slate-400"
-                                >▾</span
-                            >
-                            <h2
-                                class="text-xs uppercase tracking-[0.12em] text-slate-300"
-                            >
-                                Charts
-                            </h2>
-                        </div>
+                <div class="raw-results">
+                    <div class="raw-results-heading">
+                        <h3>Raw result rows</h3>
+                        <span id="row-count"></span>
                     </div>
-                    <div class="accordion-body border-t border-white/10 p-3">
-                        <div
-                            class="charts-grid grid grid-cols-1 xl:grid-cols-3 gap-3"
-                        >
-                            <div class="chart-container">
-                                <h3 class="chart-title">Convergence Time</h3>
-                                <canvas id="chart-convergence"></canvas>
-                            </div>
-                            <div class="chart-container">
-                                <h3 class="chart-title">State Size Growth</h3>
-                                <canvas id="chart-state-size"></canvas>
-                            </div>
-                            <div class="chart-container">
-                                <h3 class="chart-title">Node Count</h3>
-                                <canvas id="chart-node-count"></canvas>
-                            </div>
-                        </div>
+                    <div class="table-scroll" tabindex="0" aria-label="Scrollable raw evaluation results">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th scope="col">Run</th>
+                                    <th scope="col">Case</th>
+                                    <th scope="col">Rep</th>
+                                    <th scope="col">Scenario</th>
+                                    <th scope="col">Nodes</th>
+                                    <th scope="col">Accepted</th>
+                                    <th scope="col">Coverage</th>
+                                    <th scope="col">Timed</th>
+                                    <th scope="col">Semantic</th>
+                                    <th scope="col">Last node</th>
+                                    <th scope="col">Write p95</th>
+                                    <th scope="col">Sync bytes</th>
+                                    <th scope="col">CPU peak</th>
+                                    <th scope="col">Memory peak</th>
+                                </tr>
+                            </thead>
+                            <tbody id="results-body"></tbody>
+                        </table>
                     </div>
-                </section>
-
-                <section
-                    class="accordion-panel rounded-xl border border-white/10 bg-panel"
-                    id="evaluation-panel"
-                    data-panel-id="evaluation"
-                >
-                    <div
-                        class="accordion-header flex items-center justify-between gap-2 px-4 py-3 cursor-pointer"
-                        onclick="toggleAccordion(this)"
-                    >
-                        <div class="accordion-title flex items-center gap-2">
-                            <span class="accordion-chevron text-slate-400"
-                                >▾</span
-                            >
-                            <h2
-                                class="text-xs uppercase tracking-[0.12em] text-slate-300"
-                            >
-                                Evaluation Suite
-                            </h2>
-                        </div>
-                        <span class="badge" id="eval-status-badge">Idle</span>
-                    </div>
-                    <div
-                        class="accordion-body border-t border-white/10 p-3 space-y-3"
-                    >
-                        <div class="eval-config flex flex-wrap items-end gap-3">
-                            <div class="form-group">
-                                <label
-                                    for="eval-node-counts"
-                                    class="text-[11px] uppercase tracking-widest text-slate-500"
-                                    >Node Counts</label
-                                ><input
-                                    type="text"
-                                    id="eval-node-counts"
-                                    value="5"
-                                    class="mt-1 w-36 rounded border border-white/15 bg-slate-900 px-2 py-1 text-sm"
-                                />
-                            </div>
-                            <div class="form-group">
-                                <label
-                                    for="eval-events-per-node"
-                                    class="text-[11px] uppercase tracking-widest text-slate-500"
-                                    >Events / Node</label
-                                ><input
-                                    type="number"
-                                    id="eval-events-per-node"
-                                    value="5"
-                                    min="1"
-                                    max="50"
-                                    class="mt-1 w-28 rounded border border-white/15 bg-slate-900 px-2 py-1 text-sm"
-                                />
-                            </div>
-                            <div class="form-group">
-                                <label
-                                    for="eval-scenario-preset"
-                                    class="text-[11px] uppercase tracking-widest text-slate-500"
-                                    >Scenario Preset</label
-                                ><select
-                                    id="eval-scenario-preset"
-                                    class="mt-1 w-40 rounded border border-white/15 bg-slate-900 px-2 py-1 text-sm"
-                                >
-                                    <option value="quick" selected>quick</option>
-                                    <option value="standard">standard</option>
-                                    <option value="degraded-link">degraded-link</option>
-                                </select>
-                            </div>
-                            <div
-                                class="eval-actions flex items-center gap-2 ml-auto"
-                            >
-                                <button
-                                    class="btn btn-primary"
-                                    onclick="runEvaluation()"
-                                    id="btn-run-eval"
-                                >
-                                    Run Evaluation
-                                </button>
-                                <button
-                                    class="btn btn-outline"
-                                    onclick="downloadEvaluation()"
-                                    id="btn-download-eval"
-                                    disabled
-                                >
-                                    Download CSV
-                                </button>
-                            </div>
-                        </div>
-                        <p class="text-xs text-slate-400">
-                            Live dashboard metrics are cached for demo display; downloaded evaluation CSV is the measurement source.
-                        </p>
-                        <div
-                            class="eval-progress-wrap hidden"
-                            id="eval-progress-wrap"
-                        >
-                            <div class="eval-progress-bar">
-                                <div
-                                    class="eval-progress-fill"
-                                    id="eval-progress-fill"
-                                    style="width: 0%"
-                                ></div>
-                            </div>
-                            <div class="eval-step-label" id="eval-step-label">
-                                Starting...
-                            </div>
-                        </div>
-                        <div class="table-wrap" id="eval-results-wrap">
-                            <table
-                                id="eval-results-table"
-                                class="w-full text-xs"
-                            >
-                                <thead>
-                                    <tr>
-                                        <th>Scenario</th>
-                                        <th>Stage</th>
-                                        <th>Mode</th>
-                                        <th>Split</th>
-                                        <th>Nodes</th>
-                                        <th>Writes</th>
-                                        <th>Success</th>
-                                        <th>Conv.</th>
-                                        <th>Timeout</th>
-                                        <th>Missing @ Cutoff</th>
-                                        <th>Staleness</th>
-                                        <th>Sync Bytes</th>
-                                        <th>B/Event</th>
-                                        <th>Repairs</th>
-                                        <th>State Size</th>
-                                        <th>Status</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="eval-results-tbody">
-                                    <tr>
-                                        <td colspan="16" class="empty-cell">
-                                            No evaluation data - click Run
-                                            Evaluation to start
-                                        </td>
-                                    </tr>
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
-                </section>
-
-                <section
-                    class="accordion-panel rounded-xl border border-white/10 bg-panel"
-                    id="per-node-panel"
-                    data-panel-id="per-node"
-                >
-                    <div
-                        class="accordion-header flex items-center justify-between gap-2 px-4 py-3 cursor-pointer"
-                        onclick="toggleAccordion(this)"
-                    >
-                        <div class="accordion-title flex items-center gap-2">
-                            <span class="accordion-chevron text-slate-400"
-                                >▾</span
-                            >
-                            <h2
-                                class="text-xs uppercase tracking-[0.12em] text-slate-300"
-                            >
-                                Per-Node Stats
-                            </h2>
-                        </div>
-                    </div>
-                    <div class="accordion-body border-t border-white/10 p-3">
-                        <div class="table-wrap">
-                            <table id="per-node-table" class="w-full text-xs">
-                                <thead>
-                                    <tr>
-                                        <th>Node</th>
-                                        <th>Events</th>
-                                        <th>Gossip Sent</th>
-                                        <th>Peers</th>
-                                        <th>State Size</th>
-                                        <th>Merkle</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="per-node-tbody">
-                                    <tr>
-                                        <td colspan="6" class="empty-cell">
-                                            Waiting for data...
-                                        </td>
-                                    </tr>
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
-                </section>
-
-                <section
-                    class="accordion-panel rounded-xl border border-white/10 bg-panel"
-                    id="event-log-panel"
-                    data-panel-id="event-log"
-                >
-                    <div
-                        class="accordion-header flex items-center justify-between gap-2 px-4 py-3 cursor-pointer"
-                        onclick="toggleAccordion(this)"
-                    >
-                        <div class="accordion-title flex items-center gap-2">
-                            <span class="accordion-chevron text-slate-400"
-                                >▾</span
-                            >
-                            <h2
-                                class="text-xs uppercase tracking-[0.12em] text-slate-300"
-                            >
-                                Event Log
-                            </h2>
-                        </div>
-                        <span class="badge" id="event-log-count">0 events</span>
-                    </div>
-                    <div class="accordion-body border-t border-white/10 p-3">
-                        <div class="table-wrap">
-                            <table id="event-log-table" class="w-full text-xs">
-                                <thead>
-                                    <tr>
-                                        <th>Time</th>
-                                        <th>Node</th>
-                                        <th>Type</th>
-                                        <th>Category</th>
-                                        <th>State Size</th>
-                                        <th>Merkle</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="event-log-tbody">
-                                    <tr>
-                                        <td colspan="6" class="empty-cell">
-                                            No events sent yet
-                                        </td>
-                                    </tr>
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
-                </section>
-            </main>
-        </div>
-
-        <div id="toast-container"></div>
-        <script src="/app.js"></script>
+                </div>
+            </section>
+        </main>
     </body>
 </html>

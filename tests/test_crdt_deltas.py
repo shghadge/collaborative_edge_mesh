@@ -1,5 +1,4 @@
 import unittest
-from unittest.mock import patch
 
 from src.crdt.gcounter import GCounter
 from src.crdt.pncounter import PNCounter
@@ -72,21 +71,25 @@ class DeltaMutatorTests(unittest.TestCase):
                 category="sensor",
             )
 
-        true_delta = true_delta_source.get_deltas_since(0, mode="true_delta")
-        key_delta = key_delta_source.get_deltas_since(0, mode="naive_key_delta")
+        # Both sources already hold edge-2's mutation through the full-state merge.
+        requested_vv = {"edge-2": 1}
+        true_delta = true_delta_source.get_deltas_for(requested_vv, mode="true_delta")
+        key_delta = key_delta_source.get_deltas_for(
+            requested_vv, mode="naive_key_delta"
+        )
         counter_key = "event_count:water_level"
 
         self.assertEqual(
-            true_delta["deltas"][0]["state"]["counters"][counter_key]["counts"],
+            true_delta["state"]["counters"][counter_key]["counts"],
             {"edge-1": 1},
         )
         self.assertEqual(
-            key_delta["deltas"][0]["state"]["counters"][counter_key]["counts"],
+            key_delta["state"]["counters"][counter_key]["counts"],
             {"edge-1": 1, "edge-2": 1},
         )
 
         replica = NodeState("edge-3", sync_mode="naive_key_delta")
-        self.assertEqual(replica.apply_delta_payload(key_delta), 1)
+        self.assertEqual(replica.apply_delta_payload(key_delta, requested_vv), 1)
         self.assertEqual(replica.merkle_root(), key_delta_source.merkle_root())
 
     def test_full_state_modes_do_not_build_unused_delta_logs(self):
@@ -119,7 +122,7 @@ class DeltaMutatorTests(unittest.TestCase):
 
         delta_state = source.delta_log[-1]["state"]
         replica = NodeState("edge-2")
-        applied = replica.apply_delta_payload(source.get_deltas_since(0))
+        applied = replica.apply_delta_payload(source.get_deltas_for({}), {})
 
         self.assertEqual(applied, 1)
         self.assertEqual(replica.get_event_count("water_level"), 1)
@@ -129,7 +132,7 @@ class DeltaMutatorTests(unittest.TestCase):
             "updated_at",
             "event_id_retention_limit",
             "event_id_count",
-            "delta_seq",
+            "delta_vv",
             "delta_log_limit",
             "merkle_root",
             "state_summary",
@@ -151,16 +154,74 @@ class DeltaMutatorTests(unittest.TestCase):
             category="sensor",
         )
 
-        self.assertEqual(relay.apply_delta_payload(source.get_deltas_since(0)), 1)
-        self.assertEqual(relay.delta_seq, 1)
-        self.assertEqual(sink.apply_delta_payload(relay.get_deltas_since(0)), 1)
+        self.assertEqual(relay.apply_delta_payload(source.get_deltas_for({}), {}), 1)
+        self.assertEqual(relay.delta_vv, {"edge-1": 1})
+        self.assertEqual(relay.apply_delta_payload(sink.get_deltas_for({}), {}), 0)
+        self.assertEqual(sink.apply_delta_payload(relay.get_deltas_for({}), {}), 1)
         self.assertEqual(sink.merkle_root(), source.merkle_root())
 
-        source_seq = source.delta_seq
-        self.assertEqual(source.apply_delta_payload(sink.get_deltas_since(0)), 0)
-        self.assertEqual(source.delta_seq, source_seq)
+        source_log_length = len(source.delta_log)
+        echo = sink.get_deltas_for(source.delta_vv)
+        self.assertIsNone(echo["state"])
+        self.assertEqual(source.apply_delta_payload(echo, source.delta_vv), 0)
+        self.assertEqual(len(source.delta_log), source_log_length)
 
-    def test_delta_batch_hashes_once_and_relays_each_state_change(self):
+    def test_relay_does_not_resend_mutations_received_from_another_peer(self):
+        source = NodeState("edge-1")
+        relay = NodeState("edge-2")
+        sink = NodeState("edge-3")
+        source.record_event(
+            "event-1",
+            "water_level",
+            {"location": "bridge", "value": 10},
+            category="sensor",
+        )
+        relay.apply_delta_payload(source.get_deltas_for({}), {})
+        sink.apply_delta_payload(source.get_deltas_for({}), {})
+
+        from_relay = relay.get_deltas_for(sink.delta_vv)
+
+        self.assertIsNone(from_relay["state"])
+        self.assertEqual(sink.apply_delta_payload(from_relay, sink.delta_vv), 0)
+
+    def test_converged_replica_pulls_only_the_new_mutation(self):
+        nodes = [NodeState(f"edge-{index}") for index in range(3)]
+        for index in range(30):
+            nodes[index % 3].record_event(
+                f"event-{index}",
+                "water_level",
+                {"location": f"bridge-{index}", "value": index},
+                category="sensor",
+            )
+        for target in nodes:
+            for source in nodes:
+                if source is not target:
+                    requested_vv = dict(target.delta_vv)
+                    target.apply_delta_payload(
+                        source.get_deltas_for(requested_vv), requested_vv
+                    )
+        self.assertEqual(len({node.merkle_root() for node in nodes}), 1)
+
+        nodes[0].record_event(
+            "event-new",
+            "water_level",
+            {"location": "bridge-new", "value": 99},
+            category="sensor",
+        )
+        requested_vv = dict(nodes[1].delta_vv)
+        nodes[1].apply_delta_payload(
+            nodes[0].get_deltas_for(requested_vv), requested_vv
+        )
+        requested_vv = dict(nodes[2].delta_vv)
+        payload = nodes[1].get_deltas_for(requested_vv)
+
+        self.assertEqual(
+            list(payload["state"]["registers"]), ["sensor:bridge-new:water_level"]
+        )
+        self.assertEqual(nodes[2].apply_delta_payload(payload, requested_vv), 1)
+        self.assertEqual(nodes[2].merkle_root(), nodes[0].merkle_root())
+
+    def test_delta_group_is_applied_once_and_relayed(self):
         source = NodeState("edge-1")
         replica = NodeState("edge-2")
         sink = NodeState("edge-3")
@@ -182,31 +243,18 @@ class DeltaMutatorTests(unittest.TestCase):
             {"location": "highway_101", "value": "blocked"},
             category="infrastructure",
         )
-        payload = source.get_deltas_since(0)
+        payload = source.get_deltas_for({})
 
-        with patch.object(
-            replica, "merkle_root", wraps=replica.merkle_root
-        ) as merkle_root:
-            applied = replica.apply_delta_payload(payload)
-
-        self.assertEqual(applied, 3)
-        self.assertEqual(merkle_root.call_count, 2)
+        self.assertEqual(replica.apply_delta_payload(payload, {}), 3)
         self.assertEqual(replica.version, 1)
-        self.assertEqual(replica.delta_seq, 3)
-        self.assertEqual(sink.apply_delta_payload(replica.get_deltas_since(0)), 3)
+        self.assertEqual(replica.delta_vv, {"edge-1": 3})
+        self.assertEqual(sink.apply_delta_payload(replica.get_deltas_for({}), {}), 3)
         self.assertEqual(sink.merkle_root(), source.merkle_root())
 
-        version = replica.version
-        delta_seq = replica.delta_seq
-        with patch.object(
-            replica, "merkle_root", wraps=replica.merkle_root
-        ) as merkle_root:
-            reapplied = replica.apply_delta_payload(payload)
-
-        self.assertEqual(reapplied, 0)
-        self.assertEqual(merkle_root.call_count, 2)
-        self.assertEqual(replica.version, version)
-        self.assertEqual(replica.delta_seq, delta_seq)
+        log_length = len(replica.delta_log)
+        self.assertEqual(replica.apply_delta_payload(payload, {}), 0)
+        self.assertEqual(replica.version, 1)
+        self.assertEqual(len(replica.delta_log), log_length)
 
     def test_orset_remove_delta_tombstones_observed_add(self):
         source = ORSet("edge-1")
@@ -231,9 +279,7 @@ class DeltaMutatorTests(unittest.TestCase):
             {"location": "highway_101", "value": "blocked"},
             category="infrastructure",
         )
-        replica.apply_delta_payload(
-            {"has_gap": False, "deltas": [source.delta_log[-1]]}
-        )
+        replica.apply_delta_payload(source.get_deltas_for(replica.delta_vv), {})
 
         source.record_event(
             "remove-event",
@@ -242,9 +288,8 @@ class DeltaMutatorTests(unittest.TestCase):
             category="infrastructure",
             operation="remove",
         )
-        replica.apply_delta_payload(
-            {"has_gap": False, "deltas": [source.delta_log[-1]]}
-        )
+        requested_vv = dict(replica.delta_vv)
+        replica.apply_delta_payload(source.get_deltas_for(requested_vv), requested_vv)
 
         self.assertNotIn("highway_101", replica.sets["hazards:road_status"].value)
 

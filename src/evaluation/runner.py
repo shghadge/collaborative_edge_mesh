@@ -14,19 +14,35 @@ import structlog
 from pydantic import BaseModel, Field
 
 from src.services.docker_manager import NETWORK_PROFILE_SETTINGS
+from src.evaluation.resources import (
+    DEFAULT_RESOURCE_PROFILE,
+    RESOURCE_MODES,
+    RESOURCE_PROFILES,
+    build_resource_assignments,
+    resource_profile_block_size,
+    resource_totals,
+)
 
 log = structlog.get_logger()
 
-NETWORK_PROFILES = {"hard_partition", *NETWORK_PROFILE_SETTINGS}
-OBSERVABILITY_MODES = {"off", "light", "full"}
+NETWORK_PROFILES = set(NETWORK_PROFILE_SETTINGS)
 SYNC_MODES = {
     "full_state",
     "optimized_full_state",
     "naive_key_delta",
     "true_delta",
-    "centralized",
 }
-SCENARIOS = {"baseline", "partition_heal", "high_load"}
+SHARED_WORKLOADS = {
+    "shared_key": "sensor",
+    "shared_counter": "resource",
+    "shared_set": "infrastructure",
+}
+SHARED_WARMUP_EVENTS_PER_NODE = {
+    "shared_key": 1,
+    "shared_counter": 60,
+    "shared_set": 60,
+}
+SCENARIOS = {"baseline", "partition_heal", "high_load", *SHARED_WORKLOADS}
 DEFAULT_EVENT_ID_RETENTION_LIMIT = 100
 DEFAULT_DELTA_LOG_LIMIT = 1000
 
@@ -48,9 +64,14 @@ CSV_HEADER = [
     "network_loss_percent",
     "network_bandwidth_mbps",
     "network_rules_verified",
-    "dashboard_observability",
     "docker_cpus",
     "docker_memory",
+    "resource_mode",
+    "resource_profile",
+    "resource_total_cpus",
+    "resource_total_memory_mib",
+    "resource_limit_verified",
+    "node_resource_assignments",
     "scenario",
     "node_count",
     "partition_split",
@@ -78,6 +99,7 @@ CSV_HEADER = [
     "convergence_wait_seconds",
     "missing_at_cutoff_count",
     "time_to_last_node_s",
+    "recovery_after_heal_s",
     "time_to_first_remote_node_p50_s",
     "time_to_first_remote_node_p95_s",
     "time_to_last_node_p50_s",
@@ -85,25 +107,37 @@ CSV_HEADER = [
     "rounds_to_last_node",
     "tracking_coverage_percent",
     "accepted_tracking_ids_count",
+    "attempted_tracking_ids_count",
     "fully_observed_tracking_ids_count",
     "missing_tracking_ids_count",
     "per_node_missing_tracking_ids",
     "missing_at_cutoff_pct",
+    "last_node_to_converge",
+    "last_node_resource_tier",
+    "low_event_arrival_p50_s",
+    "low_event_arrival_p95_s",
+    "medium_event_arrival_p50_s",
+    "medium_event_arrival_p95_s",
+    "high_event_arrival_p50_s",
+    "high_event_arrival_p95_s",
     "gateway_staleness_seconds",
-    "recovery_time_s",
     "sync_bytes_total",
+    "tracking_bytes_received",
+    "protocol_sync_bytes_total",
     "gossip_summary_sent_bytes",
     "gossip_summary_received_bytes",
     "full_state_repair_bytes",
     "delta_repair_bytes",
+    "delta_request_bytes",
     "semantic_state_bytes",
     "evaluation_metadata_state_bytes",
     "nonsemantic_state_metadata_bytes",
-    "central_request_bytes",
-    "central_response_bytes",
     "bytes_per_accepted_event",
+    "protocol_bytes_per_accepted_event",
+    "bytes_per_attempted_event",
     "avg_state_bytes_per_known_event",
     "repair_pull_count",
+    "repair_pulls_failed",
     "gossip_messages_sent",
     "total_state_size_bytes",
     "avg_state_size_bytes",
@@ -112,8 +146,28 @@ CSV_HEADER = [
     "resource_sample_count",
     "cpu_mean_percent",
     "cpu_peak_percent",
+    "cpu_periods",
+    "cpu_throttled_periods",
+    "cpu_throttled_period_percent",
+    "cpu_throttled_time_s",
     "memory_mean_mib",
     "memory_peak_mib",
+    "per_node_resource_metrics",
+    "resource_tier_metrics",
+    "low_cpu_limit_mean_percent",
+    "low_cpu_limit_peak_percent",
+    "low_memory_limit_mean_percent",
+    "low_memory_limit_peak_percent",
+    "medium_cpu_limit_mean_percent",
+    "medium_cpu_limit_peak_percent",
+    "medium_memory_limit_mean_percent",
+    "medium_memory_limit_peak_percent",
+    "high_cpu_limit_mean_percent",
+    "high_cpu_limit_peak_percent",
+    "high_memory_limit_mean_percent",
+    "high_memory_limit_peak_percent",
+    "container_failure_count",
+    "container_oom_count",
     "network_rx_bytes",
     "network_tx_bytes",
     "block_read_bytes",
@@ -145,13 +199,14 @@ class EvalScenarioConfig(BaseModel):
     sync_mode: str = "true_delta"
     event_id_retention_limit: int = DEFAULT_EVENT_ID_RETENTION_LIMIT
     delta_log_limit: int = DEFAULT_DELTA_LOG_LIMIT
-    network_profile: str = "hard_partition"
+    network_profile: str = "clean_lan"
     scenario_seed: int | None = None
-    dashboard_observability: str = "off"
     event_concurrency: int = Field(default=25)
     offered_rate_per_second: float | None = Field(default=None, gt=0)
     docker_cpus: float | None = None
     docker_memory: str | None = None
+    resource_mode: str = "uniform"
+    resource_profile: str | None = None
     repetitions: int = Field(default=1, ge=1)
     scenarios: list[str] = Field(default=["baseline", "partition_heal", "high_load"])
     warm_topology: bool = True
@@ -183,6 +238,8 @@ class EvalScenarioConfig(BaseModel):
                 else f"delta_log_{self.delta_log_limit}"
             )
             base = f"{base}_{delta_retention}"
+        if self.resource_mode == "heterogeneous":
+            base = f"{base}_{self.resource_profile or DEFAULT_RESOURCE_PROFILE}"
         if self.docker_cpus:
             return (
                 f"{base}_cpu_{self.docker_cpus:g}_mem_{self.docker_memory or 'default'}"
@@ -267,6 +324,11 @@ class EvaluationRunner:
         self._resource_stop = None
         self._resource_task = None
         self._network_profile_receipt = {}
+        self._resource_assignments: dict[str, dict[str, Any]] = {}
+        self._resource_allocation_totals: dict[str, float | int | None] = {}
+        self._resource_limit_verified = False
+        self._netem_profile: str | None = None
+        self._partition_applied = False
 
     async def _collect_resource_sample(self) -> None:
         if not hasattr(self.docker_mgr, "resource_snapshot"):
@@ -300,8 +362,18 @@ class EvaluationRunner:
         self._resource_stop = None
         self._resource_task = None
 
-    def _resource_summary(self) -> dict[str, float | int]:
+    def _resource_summary(self) -> dict[str, Any]:
         samples = [item for sample in self._resource_samples for item in sample]
+        empty_tier_fields = {
+            f"{tier}_{metric}": 0.0
+            for tier in ("low", "medium", "high")
+            for metric in (
+                "cpu_limit_mean_percent",
+                "cpu_limit_peak_percent",
+                "memory_limit_mean_percent",
+                "memory_limit_peak_percent",
+            )
+        }
         if not samples:
             return {
                 "resource_sample_count": 0,
@@ -309,20 +381,28 @@ class EvaluationRunner:
                 "cpu_peak_percent": 0.0,
                 "memory_mean_mib": 0.0,
                 "memory_peak_mib": 0.0,
+                "cpu_periods": 0,
+                "cpu_throttled_periods": 0,
+                "cpu_throttled_period_percent": 0.0,
+                "cpu_throttled_time_s": 0.0,
+                "per_node_resource_metrics": "{}",
+                "resource_tier_metrics": "{}",
                 "network_rx_bytes": 0,
                 "network_tx_bytes": 0,
                 "block_read_bytes": 0,
                 "block_write_bytes": 0,
+                **empty_tier_fields,
             }
 
-        cpu_values = []
-        previous_cpu_by_node = {}
+        cpu_by_node: dict[str, list[float]] = {}
+        previous_cpu_by_node: dict[str, tuple[int, int]] = {}
         for resource_sample in self._resource_samples:
             for sample in resource_sample:
                 node = str(sample["node"])
+                cpu_by_node.setdefault(node, [])
                 if "cpu_usage_ns" not in sample or "system_cpu_usage_ns" not in sample:
                     if "cpu_percent" in sample:
-                        cpu_values.append(float(sample["cpu_percent"]))
+                        cpu_by_node[node].append(float(sample["cpu_percent"]))
                     continue
                 current = (
                     int(sample["cpu_usage_ns"]),
@@ -335,29 +415,146 @@ class EvaluationRunner:
                 cpu_delta = current[0] - previous[0]
                 system_delta = current[1] - previous[1]
                 if cpu_delta > 0 and system_delta > 0:
-                    cpu_values.append(
+                    cpu_by_node[node].append(
                         (cpu_delta / system_delta)
                         * max(int(sample.get("online_cpus", 1)), 1)
                         * 100
                     )
-        memory_values = [int(sample["memory_bytes"]) for sample in samples]
-        first_by_node = {}
-        last_by_node = {}
+
+        memory_by_node: dict[str, list[int]] = {}
+        first_by_node: dict[str, dict[str, Any]] = {}
+        last_by_node: dict[str, dict[str, Any]] = {}
         for sample in samples:
             node = str(sample["node"])
+            memory_by_node.setdefault(node, []).append(int(sample["memory_bytes"]))
             first_by_node.setdefault(node, sample)
             last_by_node[node] = sample
 
         def counter_growth(key: str) -> int:
             return sum(
                 max(
-                    int(last_by_node[node][key]) - int(first_by_node[node][key]),
+                    int(last_by_node[node].get(key, 0))
+                    - int(first_by_node[node].get(key, 0)),
                     0,
                 )
                 for node in last_by_node
             )
 
         mib = 1024 * 1024
+        per_node_metrics: dict[str, dict[str, Any]] = {}
+        tier_cpu_utilization: dict[str, list[float]] = {}
+        tier_memory_utilization: dict[str, list[float]] = {}
+        tier_nodes: dict[str, set[str]] = {}
+        for node in sorted(memory_by_node):
+            assignment = self._resource_assignments.get(node, {})
+            tier = str(assignment.get("tier") or "uniform")
+            cpu_limit = assignment.get("cpus")
+            memory_limit_bytes = (
+                int(assignment["memory_mib"]) * mib
+                if assignment.get("memory_mib") is not None
+                else int(last_by_node[node].get("memory_limit_bytes") or 0)
+            )
+            cpu_values = cpu_by_node.get(node, [])
+            memory_values = memory_by_node[node]
+            cpu_limit_values = (
+                [value / float(cpu_limit) for value in cpu_values] if cpu_limit else []
+            )
+            memory_limit_values = (
+                [(value / memory_limit_bytes) * 100 for value in memory_values]
+                if memory_limit_bytes > 0
+                else []
+            )
+            tier_nodes.setdefault(tier, set()).add(node)
+            tier_cpu_utilization.setdefault(tier, []).extend(cpu_limit_values)
+            tier_memory_utilization.setdefault(tier, []).extend(memory_limit_values)
+            cpu_periods = max(
+                int(last_by_node[node].get("cpu_periods", 0))
+                - int(first_by_node[node].get("cpu_periods", 0)),
+                0,
+            )
+            cpu_throttled_periods = max(
+                int(last_by_node[node].get("cpu_throttled_periods", 0))
+                - int(first_by_node[node].get("cpu_throttled_periods", 0)),
+                0,
+            )
+            cpu_throttled_time_ns = max(
+                int(last_by_node[node].get("cpu_throttled_time_ns", 0))
+                - int(first_by_node[node].get("cpu_throttled_time_ns", 0)),
+                0,
+            )
+            per_node_metrics[node] = {
+                "tier": tier,
+                "cpu_limit": cpu_limit,
+                "cpu_limit_mean_percent": round(
+                    sum(cpu_limit_values) / len(cpu_limit_values), 3
+                )
+                if cpu_limit_values
+                else 0.0,
+                "cpu_limit_peak_percent": round(max(cpu_limit_values), 3)
+                if cpu_limit_values
+                else 0.0,
+                "memory_limit_mib": round(memory_limit_bytes / mib, 3)
+                if memory_limit_bytes
+                else None,
+                "memory_limit_mean_percent": round(
+                    sum(memory_limit_values) / len(memory_limit_values), 3
+                )
+                if memory_limit_values
+                else 0.0,
+                "memory_limit_peak_percent": round(max(memory_limit_values), 3)
+                if memory_limit_values
+                else 0.0,
+                "cpu_periods": cpu_periods,
+                "cpu_throttled_periods": cpu_throttled_periods,
+                "cpu_throttled_period_percent": round(
+                    (cpu_throttled_periods / cpu_periods) * 100, 3
+                )
+                if cpu_periods
+                else 0.0,
+                "cpu_throttled_time_s": round(cpu_throttled_time_ns / 1e9, 6),
+            }
+
+        tier_metrics: dict[str, dict[str, float | int]] = {}
+        tier_fields: dict[str, float] = {
+            str(key): float(value) for key, value in empty_tier_fields.items()
+        }
+        for tier in sorted(tier_nodes):
+            cpu_values = tier_cpu_utilization.get(tier, [])
+            memory_values = tier_memory_utilization.get(tier, [])
+            summary = {
+                "node_count": len(tier_nodes[tier]),
+                "cpu_limit_mean_percent": round(sum(cpu_values) / len(cpu_values), 3)
+                if cpu_values
+                else 0.0,
+                "cpu_limit_peak_percent": round(max(cpu_values), 3)
+                if cpu_values
+                else 0.0,
+                "memory_limit_mean_percent": round(
+                    sum(memory_values) / len(memory_values), 3
+                )
+                if memory_values
+                else 0.0,
+                "memory_limit_peak_percent": round(max(memory_values), 3)
+                if memory_values
+                else 0.0,
+            }
+            tier_metrics[tier] = summary
+            if tier in {"low", "medium", "high"}:
+                for metric in (
+                    "cpu_limit_mean_percent",
+                    "cpu_limit_peak_percent",
+                    "memory_limit_mean_percent",
+                    "memory_limit_peak_percent",
+                ):
+                    tier_fields[f"{tier}_{metric}"] = float(summary[metric])
+
+        cpu_values = [value for values in cpu_by_node.values() for value in values]
+        memory_values = [
+            value for values in memory_by_node.values() for value in values
+        ]
+        cpu_periods = counter_growth("cpu_periods")
+        cpu_throttled_periods = counter_growth("cpu_throttled_periods")
+        cpu_throttled_time_ns = counter_growth("cpu_throttled_time_ns")
         return {
             "resource_sample_count": len(self._resource_samples),
             "cpu_mean_percent": (
@@ -368,21 +565,66 @@ class EvaluationRunner:
                 (sum(memory_values) / len(memory_values)) / mib, 3
             ),
             "memory_peak_mib": round(max(memory_values) / mib, 3),
+            "cpu_periods": cpu_periods,
+            "cpu_throttled_periods": cpu_throttled_periods,
+            "cpu_throttled_period_percent": round(
+                (cpu_throttled_periods / cpu_periods) * 100, 3
+            )
+            if cpu_periods
+            else 0.0,
+            "cpu_throttled_time_s": round(cpu_throttled_time_ns / 1e9, 6),
+            "per_node_resource_metrics": json.dumps(
+                per_node_metrics, sort_keys=True, separators=(",", ":")
+            ),
+            "resource_tier_metrics": json.dumps(
+                tier_metrics, sort_keys=True, separators=(",", ":")
+            ),
             "network_rx_bytes": counter_growth("network_rx_bytes"),
             "network_tx_bytes": counter_growth("network_tx_bytes"),
             "block_read_bytes": counter_growth("block_read_bytes"),
             "block_write_bytes": counter_growth("block_write_bytes"),
+            **tier_fields,
         }
 
     def validate_config(self, cfg: EvalScenarioConfig) -> None:
-        if cfg.dashboard_observability not in OBSERVABILITY_MODES:
-            raise ValueError("dashboard_observability must be off, light, or full")
         if cfg.sync_mode not in SYNC_MODES:
             supported = ", ".join(sorted(SYNC_MODES))
             raise ValueError(f"sync_mode must be one of: {supported}")
         if cfg.network_profile not in NETWORK_PROFILES:
             supported = ", ".join(sorted(NETWORK_PROFILES))
             raise ValueError(f"network_profile must be one of: {supported}")
+        if cfg.resource_mode not in RESOURCE_MODES:
+            raise ValueError("resource_mode must be uniform or heterogeneous")
+        if cfg.resource_mode == "heterogeneous":
+            profile_name = cfg.resource_profile or DEFAULT_RESOURCE_PROFILE
+            if profile_name not in RESOURCE_PROFILES:
+                supported = ", ".join(sorted(RESOURCE_PROFILES))
+                raise ValueError(f"resource_profile must be one of: {supported}")
+            block_size = resource_profile_block_size(profile_name)
+            invalid_counts = [
+                node_count
+                for node_count in cfg.node_counts
+                if node_count % block_size != 0
+            ]
+            if invalid_counts:
+                raise ValueError(
+                    f"{profile_name} requires node counts divisible by {block_size}"
+                )
+            uniform_control = RESOURCE_PROFILES[profile_name]["uniform_control"]
+            if cfg.docker_cpus is not None and not math.isclose(
+                cfg.docker_cpus, float(uniform_control["cpus"])
+            ):
+                raise ValueError(
+                    f"{profile_name} uses {uniform_control['cpus']} CPU as its "
+                    "equal-budget uniform control"
+                )
+            if cfg.docker_memory is not None and cfg.docker_memory.lower() != str(
+                uniform_control["memory"]
+            ):
+                raise ValueError(
+                    f"{profile_name} uses {uniform_control['memory']} memory as its "
+                    "equal-budget uniform control"
+                )
         if (
             cfg.sync_mode == "optimized_full_state"
             and cfg.event_id_retention_limit <= 0
@@ -399,7 +641,7 @@ class EvaluationRunner:
         unknown_scenarios = sorted(set(cfg.scenarios) - SCENARIOS)
         if unknown_scenarios:
             raise ValueError(
-                "scenarios must contain only baseline, partition_heal, or high_load"
+                f"scenarios must contain only {', '.join(sorted(SCENARIOS))}"
             )
         if self._scenario_step_count(cfg) == 0:
             raise ValueError("selected scenarios produce no evaluation steps")
@@ -407,11 +649,8 @@ class EvaluationRunner:
     def _enabled_scenarios(self, cfg: EvalScenarioConfig) -> set[str]:
         return set(cfg.scenarios)
 
-    def _active_partition_splits(self, cfg: EvalScenarioConfig) -> list[float]:
-        if (
-            cfg.network_profile == "hard_partition"
-            and "partition_heal" in self._enabled_scenarios(cfg)
-        ):
+    def active_partition_splits(self, cfg: EvalScenarioConfig) -> list[float]:
+        if "partition_heal" in self._enabled_scenarios(cfg):
             return cfg.partition_splits
         return []
 
@@ -422,7 +661,8 @@ class EvaluationRunner:
             count += 1
         if "high_load" in scenarios:
             count += 1
-        count += len(self._active_partition_splits(cfg))
+        count += sum(scenario in scenarios for scenario in SHARED_WORKLOADS)
+        count += len(self.active_partition_splits(cfg))
         return count
 
     def planned_steps(self, cfg: EvalScenarioConfig) -> int:
@@ -482,8 +722,8 @@ class EvaluationRunner:
         category="sensor",
         concurrency=25,
         rng: random.Random,
-        central_url: str | None = None,
         offered_rate: float | None = None,
+        shared_workload: str | None = None,
     ):
         started_at = time.perf_counter()
         result = {
@@ -493,10 +733,9 @@ class EvaluationRunner:
             "duplicates": 0,
             "request_errors": 0,
             "tracking_ids": [],
+            "attempted_tracking_ids": [],
             "failed_request_latencies_ms": [],
             "request_latencies_ms": [],
-            "central_request_bytes": 0,
-            "central_response_bytes": 0,
             "first_submitted_at": None,
             "last_submitted_at": None,
         }
@@ -518,83 +757,66 @@ class EvaluationRunner:
             node_url = target.get("internal_url") or target.get("url")
             submitted_at = time.time()
             if not node_url:
-                return "error", None, submitted_at, None, 0, 0
+                return "error", None, submitted_at, None
 
-            event_type = event_types[i % len(event_types)]
+            if shared_workload is None:
+                event_type = event_types[i % len(event_types)]
+                event_category = category
+                value = round(rng.uniform(1.0, 100.0), 2)
+                location = f"{category}_{i}"
+            else:
+                event_category = shared_workload
+                event_type = {
+                    "sensor": "water_level",
+                    "resource": "shelter_occupancy",
+                    "infrastructure": "road_block",
+                }[shared_workload]
+                if shared_workload == "resource":
+                    value = 1
+                elif shared_workload == "infrastructure":
+                    value = "active"
+                else:
+                    value = round(rng.uniform(1.0, 100.0), 2)
+                location = "shared_site"
             tracking_id = str(uuid.UUID(int=rng.getrandbits(128)))
             payload = {
                 "id": tracking_id,
                 "type": event_type,
-                "value": round(rng.uniform(1.0, 100.0), 2),
-                "location": f"{category}_{i}",
-                "category": category,
+                "value": value,
+                "location": location,
+                "category": event_category,
                 "metadata": {
                     "tracking_id": tracking_id,
                     "source": "evaluation",
                     "evaluation_submitted_at": submitted_at,
                 },
             }
-            request_url = f"{node_url}/event"
-            request_payload = payload
-            if central_url:
-                request_url = f"{node_url}/evaluation/central-submit"
-                request_payload = {"central_url": central_url, "event": payload}
 
             request_started = time.perf_counter()
             try:
                 async with semaphore:
                     async with session.post(
-                        request_url, json=request_payload
+                        f"{node_url}/event", json=payload
                     ) as response:
                         try:
                             response_data = await response.json()
                         except Exception:
                             response_data = {}
                         latency_ms = (time.perf_counter() - request_started) * 1000
-                        central_request_bytes = int(
-                            response_data.get("central_request_bytes", 0)
-                        )
-                        central_response_bytes = int(
-                            response_data.get("central_response_bytes", 0)
-                        )
                         status = response_data.get("status")
                         if response.status < 400 and status != "duplicate":
-                            return (
-                                "accepted",
-                                tracking_id,
-                                submitted_at,
-                                latency_ms,
-                                central_request_bytes,
-                                central_response_bytes,
-                            )
-                        if status == "duplicate":
-                            outcome = "duplicate"
-                        else:
-                            outcome = "rejected"
-                        return (
-                            outcome,
-                            tracking_id,
-                            submitted_at,
-                            latency_ms,
-                            central_request_bytes,
-                            central_response_bytes,
-                        )
+                            return "accepted", tracking_id, submitted_at, latency_ms
+                        outcome = "duplicate" if status == "duplicate" else "rejected"
+                        return outcome, tracking_id, submitted_at, latency_ms
             except Exception:
-                return "error", tracking_id, submitted_at, None, 0, 0
+                return "error", tracking_id, submitted_at, None
 
         submissions = [
             _send_one(i, nodes[i % len(nodes)]) for i in range(count * len(nodes))
         ]
-        for (
-            status,
-            tracking_id,
-            submitted_at,
-            latency_ms,
-            central_request_bytes,
-            central_response_bytes,
-        ) in await asyncio.gather(*submissions):
-            result["central_request_bytes"] += central_request_bytes
-            result["central_response_bytes"] += central_response_bytes
+        for status, tracking_id, submitted_at, latency_ms in await asyncio.gather(
+            *submissions
+        ):
             if (
                 result["first_submitted_at"] is None
                 or submitted_at < result["first_submitted_at"]
@@ -605,6 +827,9 @@ class EvaluationRunner:
                 or submitted_at > result["last_submitted_at"]
             ):
                 result["last_submitted_at"] = submitted_at
+
+            if tracking_id is not None:
+                result["attempted_tracking_ids"].append(tracking_id)
 
             if status == "duplicate":
                 if latency_ms is not None:
@@ -656,151 +881,6 @@ class EvaluationRunner:
             if not polled:
                 log.warning("evaluation_gateway_poll_failed", gateway=gw.get("name"))
 
-    @staticmethod
-    def _central_gateway_url(gateways) -> str:
-        if not gateways:
-            raise RuntimeError("centralized baseline requires one gateway")
-        gateway = gateways[0]
-        central_url = gateway.get("url") or gateway.get("external_url")
-        if not central_url:
-            raise RuntimeError("centralized baseline gateway has no URL")
-        return str(central_url).rstrip("/")
-
-    async def wait_for_central_metrics(
-        self,
-        session,
-        gateways,
-        cfg,
-        event_result,
-    ):
-        central_url = self._central_gateway_url(gateways)
-        accepted_ids = set(event_result.get("tracking_ids") or [])
-        started = time.time()
-        deadline = started + cfg.convergence_wait_seconds
-        central_state = {}
-        while True:
-            try:
-                async with session.get(
-                    f"{central_url}/gateway/evaluation/central/state"
-                ) as response:
-                    if response.status < 400:
-                        central_state = await response.json()
-            except Exception:
-                central_state = {}
-
-            stored_ids = set(central_state.get("event_ids") or [])
-            missing_ids = accepted_ids - stored_ids
-            if not missing_ids or time.time() >= deadline:
-                break
-            await asyncio.sleep(cfg.poll_interval_seconds)
-
-        elapsed = round(time.time() - started, 3)
-        stored_ids = set(central_state.get("event_ids") or [])
-        missing_ids = accepted_ids - stored_ids
-        accepted_count = len(accepted_ids)
-        fully_stored_count = accepted_count - len(missing_ids)
-        coverage = (
-            round((fully_stored_count / accepted_count) * 100, 1)
-            if accepted_count
-            else 100.0
-        )
-        state_size = int(central_state.get("state_size_bytes", 0))
-        central_request_bytes = int(event_result.get("central_request_bytes", 0))
-        central_response_bytes = int(event_result.get("central_response_bytes", 0))
-        converged = not missing_ids
-        await self._collect_resource_sample()
-        return {
-            "convergence_time_s": elapsed if converged else None,
-            "converged_within_timeout": converged,
-            "convergence_wait_seconds": cfg.convergence_wait_seconds,
-            "missing_at_cutoff_count": len(missing_ids),
-            "missing_at_cutoff_pct": round((len(missing_ids) / accepted_count) * 100, 2)
-            if accepted_count
-            else 0.0,
-            "gateway_staleness_seconds": 0.0,
-            "time_to_last_node_s": None,
-            "rounds_to_last_node": None,
-            "tracking_coverage_percent": coverage,
-            "accepted_tracking_ids_count": accepted_count,
-            "fully_observed_tracking_ids_count": fully_stored_count,
-            "missing_tracking_ids_count": len(missing_ids),
-            "per_node_missing_tracking_ids": "{}",
-            "sync_bytes_total": central_request_bytes + central_response_bytes,
-            "gossip_summary_sent_bytes": 0,
-            "gossip_summary_received_bytes": 0,
-            "full_state_repair_bytes": 0,
-            "delta_repair_bytes": 0,
-            "semantic_state_bytes": state_size,
-            "evaluation_metadata_state_bytes": 0,
-            "nonsemantic_state_metadata_bytes": 0,
-            "central_request_bytes": central_request_bytes,
-            "central_response_bytes": central_response_bytes,
-            "repair_pull_count": 0,
-            "gossip_messages_sent": 0,
-            "total_state_size_bytes": state_size,
-            "avg_state_size_bytes": state_size,
-            "avg_state_bytes_per_known_event": round(
-                state_size / max(accepted_count, 1), 2
-            ),
-            "known_status": "known_converged" if converged else "known_diverged",
-            "coverage_percent": coverage,
-            "is_converged": converged,
-            "unique_merkle_roots": 0,
-            "semantic_state_converged": converged,
-            "unique_semantic_states": 1 if central_state else 0,
-            "max_events": len(stored_ids),
-            "min_events": len(stored_ids),
-            "delta_pulls_started": 0,
-            "delta_pulls_success": 0,
-            "delta_pulls_gap": 0,
-            "delta_deltas_applied": 0,
-            "delta_bytes_received": 0,
-        }
-
-    async def wait_for_central_access(
-        self,
-        session,
-        nodes,
-        central_url: str,
-        timeout_seconds: float,
-    ) -> float | None:
-        pending = {
-            node.get("node_id"): node.get("internal_url") or node.get("url")
-            for node in nodes
-        }
-        pending = {
-            node_id: node_url
-            for node_id, node_url in pending.items()
-            if node_id and node_url
-        }
-        started = time.time()
-        deadline = started + timeout_seconds
-        while pending and time.time() < deadline:
-
-            async def probe(node_id, node_url):
-                try:
-                    async with session.get(
-                        f"{node_url}/evaluation/central-health",
-                        params={"central_url": central_url},
-                    ) as response:
-                        if response.status < 400:
-                            return node_id
-                except Exception:
-                    return None
-                return None
-
-            ready = await asyncio.gather(
-                *(probe(node_id, node_url) for node_id, node_url in pending.items())
-            )
-            for node_id in ready:
-                if node_id:
-                    pending.pop(node_id, None)
-            if pending:
-                await asyncio.sleep(0.25)
-        if pending:
-            return None
-        return round(time.time() - started, 3)
-
     async def collect_metrics(
         self,
         session,
@@ -808,6 +888,7 @@ class EvaluationRunner:
         gateways,
         accepted_events=None,
         tracking_ids=None,
+        attempted_tracking_ids=None,
         *,
         include_state: bool,
     ):
@@ -869,20 +950,35 @@ class EvaluationRunner:
         evaluation_metadata_state_bytes = 0
         nonsemantic_state_metadata_bytes = 0
         repair_pull_count = 0
+        repair_pulls_failed = 0
         delta_pulls_started = 0
         delta_pulls_success = 0
         delta_pulls_gap = 0
         delta_deltas_applied = 0
         delta_bytes_received = 0
+        delta_request_bytes = 0
+        tracking_bytes_received = 0
         event_counts = []
         merkle_roots = []
         semantic_states = []
-        per_node_tracking_ids = {}
-        tracking_ids = set(tracking_ids or [])
-        tracking_seen_counts = {tracking_id: 0 for tracking_id in tracking_ids}
-        tracking_seen_latencies = {tracking_id: [] for tracking_id in tracking_ids}
+        per_node_tracking_ids: dict[str, set[str]] = {}
+        accepted_tracking_ids = set(tracking_ids or [])
+        attempted_tracking_ids = set(
+            attempted_tracking_ids
+            if attempted_tracking_ids is not None
+            else accepted_tracking_ids
+        )
+        tracking_seen_counts = {
+            tracking_id: 0 for tracking_id in attempted_tracking_ids
+        }
+        tracking_seen_latencies = {
+            tracking_id: [] for tracking_id in attempted_tracking_ids
+        }
         tracking_last_seen_latency = {}
         tracking_last_seen_round = {}
+        arrival_latencies_by_tier: dict[str, list[float]] = {}
+        latest_arrival_by_node: dict[str, float] = {}
+        latest_first_seen_at: float | None = None
 
         for node in nodes:
             node_url = node.get("internal_url") or node.get("url")
@@ -898,11 +994,14 @@ class EvaluationRunner:
                     gossip_summary_received_bytes += stats.get("received_bytes", 0)
                     full_state_repair_bytes += stats.get("repair_bytes_received", 0)
                     repair_pull_count += stats.get("repair_pulls_started", 0)
+                    repair_pulls_failed += stats.get("repair_pulls_failed", 0)
                     delta_pulls_started += stats.get("delta_pulls_started", 0)
                     delta_pulls_success += stats.get("delta_pulls_success", 0)
                     delta_pulls_gap += stats.get("delta_pulls_gap", 0)
                     delta_deltas_applied += stats.get("delta_deltas_applied", 0)
                     delta_bytes_received += node_delta_bytes
+                    delta_request_bytes += stats.get("delta_request_bytes_sent", 0)
+                    tracking_bytes_received += stats.get("tracking_bytes_received", 0)
             except Exception:
                 pass
 
@@ -940,8 +1039,22 @@ class EvaluationRunner:
                         )
                         seen_tracking = sdata.get("first_seen_tracking") or {}
                         per_node_tracking_ids[str(node_id)] = set(seen_tracking)
+                        node_key = str(node_id)
+                        container_name = (
+                            node_key
+                            if node_key.startswith("edge-node-")
+                            else f"edge-node-{node_key.replace('node-', '')}"
+                        )
+                        resource_tier = str(
+                            self._resource_assignments.get(container_name, {}).get(
+                                "tier", "uniform"
+                            )
+                        )
                         for tracking_id, seen in seen_tracking.items():
-                            if tracking_ids and tracking_id not in tracking_ids:
+                            if (
+                                attempted_tracking_ids
+                                and tracking_id not in attempted_tracking_ids
+                            ):
                                 continue
                             if tracking_id in tracking_seen_counts:
                                 tracking_seen_counts[tracking_id] += 1
@@ -955,6 +1068,16 @@ class EvaluationRunner:
                                 tracking_last_seen_latency[tracking_id] = max(
                                     tracking_last_seen_latency.get(tracking_id, 0.0),
                                     latency,
+                                )
+                                arrival_latencies_by_tier.setdefault(
+                                    resource_tier, []
+                                ).append(latency)
+                                latest_arrival_by_node[node_key] = max(
+                                    latest_arrival_by_node.get(node_key, 0.0),
+                                    latency,
+                                )
+                                latest_first_seen_at = max(
+                                    latest_first_seen_at or first_seen_at, first_seen_at
                                 )
                             round_number = seen.get("gossip_round")
                             if isinstance(round_number, int):
@@ -974,14 +1097,20 @@ class EvaluationRunner:
 
         max_ev = max(event_counts) if event_counts else 0
         min_ev = min(event_counts) if event_counts else 0
-        expected_events = accepted_events if accepted_events is not None else max_ev
+        expected_events = (
+            len(attempted_tracking_ids)
+            if attempted_tracking_ids
+            else accepted_events
+            if accepted_events is not None
+            else max_ev
+        )
         fully_seen_tracking = [
             tracking_id
             for tracking_id, count in tracking_seen_counts.items()
             if count >= len(nodes)
         ]
-        missing_tracking_ids = tracking_ids - set(fully_seen_tracking)
-        if include_state and tracking_ids:
+        missing_tracking_ids = attempted_tracking_ids - set(fully_seen_tracking)
+        if include_state and attempted_tracking_ids:
             missing_at_cutoff_count = len(missing_tracking_ids)
         else:
             missing_at_cutoff_count = (
@@ -993,7 +1122,7 @@ class EvaluationRunner:
             else 0.0
         )
         per_node_missing_tracking_ids = {
-            node_id: len(tracking_ids - seen_ids)
+            node_id: len(attempted_tracking_ids - seen_ids)
             for node_id, seen_ids in per_node_tracking_ids.items()
         }
         tracking_coverage_percent = (
@@ -1028,9 +1157,40 @@ class EvaluationRunner:
                 first_remote_latencies.append(latencies[1])
             if latencies:
                 last_node_latencies.append(latencies[-1])
+        last_node_to_converge = None
+        last_node_resource_tier = None
+        if (
+            attempted_tracking_ids
+            and not missing_tracking_ids
+            and len(per_node_tracking_ids) == len(nodes)
+            and latest_arrival_by_node
+        ):
+            last_node_to_converge = max(
+                latest_arrival_by_node,
+                key=lambda node_id: latest_arrival_by_node[node_id],
+            )
+            last_container = (
+                last_node_to_converge
+                if last_node_to_converge.startswith("edge-node-")
+                else f"edge-node-{last_node_to_converge.replace('node-', '')}"
+            )
+            last_node_resource_tier = self._resource_assignments.get(
+                last_container, {}
+            ).get("tier")
+
+        tier_arrival_metrics = {
+            f"{tier}_event_arrival_{percentile_name}_s": _percentile(
+                arrival_latencies_by_tier.get(tier, []), percentile
+            )
+            for tier in ("low", "medium", "high")
+            for percentile_name, percentile in (("p50", 0.5), ("p95", 0.95))
+        }
 
         sync_bytes_total = (
-            gossip_summary_sent_bytes + full_state_repair_bytes + delta_bytes_received
+            gossip_summary_sent_bytes
+            + full_state_repair_bytes
+            + delta_bytes_received
+            + delta_request_bytes
         )
         unique_roots = len(set(root for root in merkle_roots if root))
         direct_roots_converged = len(merkle_roots) == len(nodes) and unique_roots == 1
@@ -1056,7 +1216,11 @@ class EvaluationRunner:
             if gateway_staleness_values
             else None,
             "time_to_last_node_s": time_to_last_node_s,
+            "latest_first_seen_at_unix_s": latest_first_seen_at,
             "rounds_to_last_node": rounds_to_last_node,
+            "last_node_to_converge": last_node_to_converge,
+            "last_node_resource_tier": last_node_resource_tier,
+            **tier_arrival_metrics,
             "tracking_coverage_percent": tracking_coverage_percent,
             "time_to_first_remote_node_p50_s": _percentile(first_remote_latencies, 0.5),
             "time_to_first_remote_node_p95_s": _percentile(
@@ -1064,21 +1228,26 @@ class EvaluationRunner:
             ),
             "time_to_last_node_p50_s": _percentile(last_node_latencies, 0.5),
             "time_to_last_node_p95_s": _percentile(last_node_latencies, 0.95),
-            "accepted_tracking_ids_count": len(tracking_ids),
+            "accepted_tracking_ids_count": len(accepted_tracking_ids),
+            "attempted_tracking_ids_count": len(attempted_tracking_ids),
             "fully_observed_tracking_ids_count": len(fully_seen_tracking),
             "missing_tracking_ids_count": len(missing_tracking_ids),
             "per_node_missing_tracking_ids": json.dumps(
                 per_node_missing_tracking_ids, sort_keys=True
             ),
             "sync_bytes_total": sync_bytes_total,
+            "tracking_bytes_received": tracking_bytes_received,
+            "protocol_sync_bytes_total": sync_bytes_total - tracking_bytes_received,
             "gossip_summary_sent_bytes": gossip_summary_sent_bytes,
             "gossip_summary_received_bytes": gossip_summary_received_bytes,
             "full_state_repair_bytes": full_state_repair_bytes,
             "delta_repair_bytes": delta_bytes_received,
+            "delta_request_bytes": delta_request_bytes,
             "semantic_state_bytes": semantic_state_bytes,
             "evaluation_metadata_state_bytes": evaluation_metadata_state_bytes,
             "nonsemantic_state_metadata_bytes": (nonsemantic_state_metadata_bytes),
             "repair_pull_count": repair_pull_count,
+            "repair_pulls_failed": repair_pulls_failed,
             "gossip_messages_sent": total_gossip,
             "total_state_size_bytes": total_state_size,
             "avg_state_size_bytes": avg_state_size_bytes,
@@ -1102,14 +1271,59 @@ class EvaluationRunner:
         }
 
     async def wait_for_metrics(
-        self, session, nodes, gateways, cfg, accepted_events, tracking_ids=None
+        self,
+        session,
+        nodes,
+        gateways,
+        cfg,
+        accepted_events,
+        tracking_ids=None,
+        attempted_tracking_ids=None,
     ):
         started = time.time()
         deadline = started + cfg.convergence_wait_seconds
         metrics = None
+        gateways_polled = False
+
+        async def _collect_final_metrics():
+            nonlocal gateways_polled
+            if not gateways_polled:
+                await self.poll_all_gateways(session, gateways)
+                gateways_polled = True
+            return await self.collect_metrics(
+                session,
+                nodes,
+                gateways,
+                accepted_events=accepted_events,
+                tracking_ids=tracking_ids,
+                include_state=True,
+                attempted_tracking_ids=attempted_tracking_ids,
+            )
+
+        def _mark_converged_within_timeout(
+            collected_metrics: dict[str, Any], observed_at: float
+        ) -> bool:
+            if (
+                not collected_metrics["is_converged"]
+                or collected_metrics["missing_at_cutoff_count"] != 0
+            ):
+                return False
+            convergence_time = (
+                collected_metrics.get("time_to_last_node_s")
+                if attempted_tracking_ids
+                else round(observed_at - started, 3)
+            )
+            if (
+                convergence_time is None
+                or float(convergence_time) > cfg.convergence_wait_seconds
+            ):
+                return False
+            collected_metrics["convergence_time_s"] = round(float(convergence_time), 3)
+            collected_metrics["converged_within_timeout"] = True
+            collected_metrics["convergence_wait_seconds"] = cfg.convergence_wait_seconds
+            return True
 
         while True:
-            await self.poll_all_gateways(session, gateways)
             metrics = await self.collect_metrics(
                 session,
                 nodes,
@@ -1117,37 +1331,24 @@ class EvaluationRunner:
                 accepted_events=accepted_events,
                 tracking_ids=tracking_ids,
                 include_state=False,
+                attempted_tracking_ids=attempted_tracking_ids,
             )
             observed_at = time.time()
-            if metrics["is_converged"] and observed_at <= deadline:
-                metrics = await self.collect_metrics(
-                    session,
-                    nodes,
-                    gateways,
-                    accepted_events=accepted_events,
-                    tracking_ids=tracking_ids,
-                    include_state=True,
-                )
+            full_metrics_collected = False
+            if metrics["is_converged"]:
+                metrics = await _collect_final_metrics()
+                full_metrics_collected = True
                 observed_at = time.time()
-                if (
-                    metrics["is_converged"]
-                    and metrics["missing_at_cutoff_count"] == 0
-                    and observed_at <= deadline
-                ):
-                    metrics["convergence_time_s"] = round(observed_at - started, 3)
-                    metrics["converged_within_timeout"] = True
-                    metrics["convergence_wait_seconds"] = cfg.convergence_wait_seconds
+                if _mark_converged_within_timeout(metrics, observed_at):
                     await self._collect_resource_sample()
                     return metrics
-            if time.time() >= deadline:
-                metrics = await self.collect_metrics(
-                    session,
-                    nodes,
-                    gateways,
-                    accepted_events=accepted_events,
-                    tracking_ids=tracking_ids,
-                    include_state=True,
-                )
+            if observed_at >= deadline:
+                if not full_metrics_collected:
+                    metrics = await _collect_final_metrics()
+                    observed_at = time.time()
+                if _mark_converged_within_timeout(metrics, observed_at):
+                    await self._collect_resource_sample()
+                    return metrics
                 metrics["convergence_time_s"] = None
                 metrics["converged_within_timeout"] = False
                 metrics["convergence_wait_seconds"] = cfg.convergence_wait_seconds
@@ -1188,12 +1389,135 @@ class EvaluationRunner:
             missing = ", ".join(sorted(pending))
             raise RuntimeError(f"nodes did not become ready: {missing}")
 
-    async def recreate_nodes(self, session, node_count: int, cfg: EvalScenarioConfig):
-        if hasattr(self.docker_mgr, "clear_netem"):
-            try:
-                await asyncio.to_thread(self.docker_mgr.clear_netem)
-            except Exception:
-                pass
+    async def _inspect_resource_limits(self) -> dict[str, dict[str, Any]]:
+        if not hasattr(self.docker_mgr, "inspect_node_resource_limits"):
+            return {}
+        node_ids = [
+            str(assignment["node_id"])
+            for assignment in self._resource_assignments.values()
+        ]
+        return await asyncio.to_thread(
+            self.docker_mgr.inspect_node_resource_limits, node_ids
+        )
+
+    async def _container_health_summary(self) -> dict[str, int]:
+        inspected = await self._inspect_resource_limits()
+        return {
+            "container_failure_count": sum(
+                1 for state in inspected.values() if not state.get("running")
+            ),
+            "container_oom_count": sum(
+                1 for state in inspected.values() if state.get("oom_killed")
+            ),
+        }
+
+    def _assign_node_resources(
+        self, node_count: int, cfg: EvalScenarioConfig, repetition: int
+    ) -> list[dict[str, Any]]:
+        assignments = build_resource_assignments(
+            node_count=node_count,
+            resource_mode=cfg.resource_mode,
+            resource_profile=cfg.resource_profile,
+            uniform_cpus=cfg.docker_cpus,
+            uniform_memory=cfg.docker_memory,
+            repetition_seed=cfg.seed_for_repetition(repetition),
+        )
+        self._resource_assignments = {
+            str(assignment["container"]): assignment for assignment in assignments
+        }
+        self._resource_allocation_totals = resource_totals(assignments)
+        self._resource_limit_verified = False
+        return assignments
+
+    async def _verify_resource_limits(self) -> None:
+        inspected = await self._inspect_resource_limits()
+        if not inspected:
+            return
+        mismatches = []
+        for container_name, assignment in self._resource_assignments.items():
+            actual = inspected.get(container_name)
+            expected_cpus = assignment.get("cpus")
+            expected_memory_mib = assignment.get("memory_mib")
+            if actual is None:
+                mismatches.append(f"{container_name}: not found")
+                continue
+            if expected_cpus is not None and not math.isclose(
+                float(actual.get("cpus") or 0),
+                float(expected_cpus),
+                rel_tol=0,
+                abs_tol=1e-9,
+            ):
+                mismatches.append(f"{container_name}: CPU limit")
+            if expected_memory_mib is not None and int(
+                actual.get("memory_bytes") or 0
+            ) != int(float(expected_memory_mib) * 1024 * 1024):
+                mismatches.append(f"{container_name}: memory limit")
+        if mismatches:
+            raise RuntimeError(
+                "node resource limit verification failed: " + ", ".join(mismatches)
+            )
+        self._resource_limit_verified = True
+
+    async def _apply_repetition_resources(
+        self, node_count: int, cfg: EvalScenarioConfig, repetition: int
+    ) -> None:
+        assignments = self._assign_node_resources(node_count, cfg, repetition)
+        receipt = await asyncio.to_thread(
+            self.docker_mgr.update_node_resources, assignments
+        )
+        if receipt.get("status") != "updated":
+            raise RuntimeError(
+                receipt.get("message")
+                or f"failed to update node resources for repetition {repetition}"
+            )
+        await self._verify_resource_limits()
+        log.info(
+            "eval_node_resources_updated",
+            repetition=repetition,
+            node_count=node_count,
+            seed=cfg.seed_for_repetition(repetition),
+        )
+
+    async def _heal_partition(self) -> bool:
+        """Heal partition rules this runner applied; return whether a heal ran."""
+        if not self._partition_applied:
+            return False
+        try:
+            await asyncio.to_thread(self.docker_mgr.heal_all)
+        except Exception as error:
+            log.warning("eval_partition_heal_failed", error=str(error))
+        else:
+            self._partition_applied = False
+        return True
+
+    async def _clear_network_profile(self) -> bool:
+        """Clear the netem profile this runner applied; return whether a clear ran."""
+        if self._netem_profile is None:
+            return False
+        try:
+            await asyncio.to_thread(self.docker_mgr.clear_netem)
+        except Exception as error:
+            log.warning(
+                "eval_netem_clear_failed",
+                profile=self._netem_profile,
+                error=str(error),
+            )
+        else:
+            self._netem_profile = None
+            self._network_profile_receipt = {}
+        return True
+
+    async def recreate_nodes(
+        self,
+        session,
+        node_count: int,
+        cfg: EvalScenarioConfig,
+        repetition: int = 1,
+    ):
+        assignments = self._assign_node_resources(node_count, cfg, repetition)
+
+        await self._heal_partition()
+        await self._clear_network_profile()
         existing = await asyncio.to_thread(self.docker_mgr.list_nodes)
         remove_tasks = [
             asyncio.to_thread(self.docker_mgr.remove_node, node["node_id"])
@@ -1205,15 +1529,14 @@ class EvaluationRunner:
         create_tasks = [
             asyncio.to_thread(
                 self.docker_mgr.create_node,
-                node_id=f"node-{index + 1}",
+                node_id=assignment["node_id"],
                 sync_mode=cfg.sync_mode,
                 event_id_retention_limit=cfg.effective_event_id_retention_limit(),
                 delta_log_limit=cfg.delta_log_limit,
-                observability_mode=cfg.dashboard_observability,
-                cpu_limit=cfg.docker_cpus,
-                memory_limit=cfg.docker_memory,
+                cpu_limit=assignment["cpus"],
+                memory_limit=assignment["memory"],
             )
-            for index in range(node_count)
+            for assignment in assignments
         ]
         for result in await asyncio.gather(*create_tasks, return_exceptions=True):
             if isinstance(result, Exception):
@@ -1222,6 +1545,9 @@ class EvaluationRunner:
         nodes = await asyncio.to_thread(self.docker_mgr.list_nodes)
         if len(nodes) < node_count:
             raise RuntimeError(f"expected {node_count} nodes, found {len(nodes)}")
+
+        await self._verify_resource_limits()
+
         await self.wait_for_nodes_ready(
             session, nodes, cfg.node_readiness_timeout_seconds
         )
@@ -1252,6 +1578,45 @@ class EvaluationRunner:
             node_tasks.append(_post_first_available(urls, "/evaluation/reset"))
         if node_tasks:
             await asyncio.gather(*node_tasks, return_exceptions=True)
+
+        gateway_tasks = []
+        for gateway in gateways:
+            urls = self.candidate_urls(gateway.get("url"), gateway.get("external_url"))
+            gateway_tasks.append(
+                _post_first_available(urls, "/gateway/evaluation/reset")
+            )
+        if gateway_tasks:
+            await asyncio.gather(*gateway_tasks, return_exceptions=True)
+
+    async def reset_measurement_metrics(self, session, nodes, gateways):
+        """Reset scenario counters while preserving the synchronized node state."""
+
+        async def _post_first_available(urls, path):
+            for base_url in urls:
+                try:
+                    async with session.post(f"{base_url}{path}") as resp:
+                        if resp.status < 400:
+                            await resp.json()
+                            return True
+                except Exception:
+                    continue
+            return False
+
+        node_tasks = []
+        for node in nodes:
+            urls = self.candidate_urls(
+                node.get("internal_url"),
+                node.get("external_url"),
+                node.get("url"),
+            )
+            node_tasks.append(_post_first_available(urls, "/evaluation/reset-metrics"))
+        node_results = (
+            await asyncio.gather(*node_tasks, return_exceptions=True)
+            if node_tasks
+            else []
+        )
+        if not node_results or not all(result is True for result in node_results):
+            raise RuntimeError("failed to reset node measurement metrics")
 
         gateway_tasks = []
         for gateway in gateways:
@@ -1311,9 +1676,26 @@ class EvaluationRunner:
                 "network_rules_verified",
                 self._network_profile_receipt.get("status") == "applied",
             ),
-            "dashboard_observability": cfg.dashboard_observability,
             "docker_cpus": cfg.docker_cpus or "",
             "docker_memory": cfg.docker_memory or "",
+            "resource_mode": cfg.resource_mode,
+            "resource_profile": (
+                cfg.resource_profile or DEFAULT_RESOURCE_PROFILE
+                if cfg.resource_mode == "heterogeneous"
+                else ""
+            ),
+            "resource_total_cpus": self._resource_allocation_totals.get("total_cpus")
+            or "",
+            "resource_total_memory_mib": self._resource_allocation_totals.get(
+                "total_memory_mib"
+            )
+            or "",
+            "resource_limit_verified": self._resource_limit_verified,
+            "node_resource_assignments": json.dumps(
+                list(self._resource_assignments.values()),
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
             "scenario": scenario,
             "node_count": node_count,
             "partition_split": partition_split,
@@ -1354,10 +1736,18 @@ class EvaluationRunner:
 
     def _append_result(self, row, metrics):
         combined = {**row, **metrics, **self._resource_summary()}
-        accepted = combined.get("accepted_events", 0)
-        sync_bytes = combined.get("sync_bytes_total", 0)
+        accepted = int(combined.get("accepted_events", 0) or 0)
+        sync_bytes = int(combined.get("sync_bytes_total", 0) or 0)
         combined["bytes_per_accepted_event"] = (
             round(sync_bytes / accepted, 2) if accepted else ""
+        )
+        protocol_bytes = int(combined.get("protocol_sync_bytes_total", 0) or 0)
+        combined["protocol_bytes_per_accepted_event"] = (
+            round(protocol_bytes / accepted, 2) if accepted else ""
+        )
+        attempted = int(combined.get("attempted_events", 0) or 0)
+        combined["bytes_per_attempted_event"] = (
+            round(sync_bytes / attempted, 2) if attempted else ""
         )
         self.state["results"].append(combined)
 
@@ -1382,55 +1772,49 @@ class EvaluationRunner:
         self.state.update(_progress_defaults())
 
         scenarios = self._enabled_scenarios(cfg)
-        partition_splits = self._active_partition_splits(cfg)
+        partition_splits = self.active_partition_splits(cfg)
         self.state["total_steps"] = self.planned_steps(cfg)
         self.state["steps_remaining"] = self.state["total_steps"]
         self.state["total_repetitions"] = cfg.repetitions
         step = 0
 
+        target_netem_profile = (
+            cfg.network_profile
+            if hasattr(self.docker_mgr, "apply_netem_profile")
+            else None
+        )
+
         async def _prepare_scenario(session, nodes, gateways):
-            try:
-                await asyncio.to_thread(self.docker_mgr.heal_all)
-            except Exception:
-                pass
-            if hasattr(self.docker_mgr, "clear_netem"):
-                try:
-                    await asyncio.to_thread(self.docker_mgr.clear_netem)
-                except Exception:
-                    pass
-            await self.wait_for_nodes_ready(
-                session, nodes, cfg.node_readiness_timeout_seconds
-            )
+            network_changed = await self._heal_partition()
+            if self._netem_profile != target_netem_profile:
+                network_changed = await self._clear_network_profile() or network_changed
+            if network_changed:
+                await self.wait_for_nodes_ready(
+                    session, nodes, cfg.node_readiness_timeout_seconds
+                )
             await self.reset_runtime(session, nodes, gateways)
-            self._network_profile_receipt = {}
-            if cfg.network_profile != "hard_partition" and hasattr(
-                self.docker_mgr, "apply_netem_profile"
+            if (
+                target_netem_profile is not None
+                and self._netem_profile != target_netem_profile
             ):
                 receipt = await asyncio.to_thread(
-                    self.docker_mgr.apply_netem_profile, cfg.network_profile
+                    self.docker_mgr.apply_netem_profile, target_netem_profile
                 )
                 if receipt.get("status") != "applied":
                     raise RuntimeError(
                         receipt.get("message")
-                        or f"failed to apply network profile {cfg.network_profile}"
+                        or f"failed to apply network profile {target_netem_profile}"
                     )
                 self._network_profile_receipt = receipt
+                self._netem_profile = target_netem_profile
             await self._start_resource_sampling()
             return nodes, gateways
 
         async def _finish_scenario(session, nodes):
-            try:
-                await asyncio.to_thread(self.docker_mgr.heal_all)
-            except Exception:
-                pass
-            if hasattr(self.docker_mgr, "clear_netem"):
-                try:
-                    await asyncio.to_thread(self.docker_mgr.clear_netem)
-                except Exception:
-                    pass
-            await self.wait_for_nodes_ready(
-                session, nodes, cfg.node_readiness_timeout_seconds
-            )
+            if await self._heal_partition():
+                await self.wait_for_nodes_ready(
+                    session, nodes, cfg.node_readiness_timeout_seconds
+                )
             await self._stop_resource_sampling()
 
         try:
@@ -1441,22 +1825,21 @@ class EvaluationRunner:
                     warm_gateways = None
                     if cfg.warm_topology:
                         warm_nodes, warm_gateways = await self.recreate_nodes(
-                            session, node_count, cfg
+                            session, node_count, cfg, repetition=1
                         )
 
                     for repetition in range(1, cfg.repetitions + 1):
                         rng = random.Random(cfg.seed_for_repetition(repetition))
                         if cfg.warm_topology:
                             nodes, gateways = warm_nodes, warm_gateways
+                            if cfg.resource_mode == "heterogeneous" and repetition > 1:
+                                await self._apply_repetition_resources(
+                                    node_count, cfg, repetition
+                                )
                         else:
                             nodes, gateways = await self.recreate_nodes(
-                                session, node_count, cfg
+                                session, node_count, cfg, repetition=repetition
                             )
-                        central_url = (
-                            self._central_gateway_url(gateways)
-                            if cfg.sync_mode == "centralized"
-                            else None
-                        )
 
                         if "baseline" in scenarios:
                             self._set_progress(
@@ -1479,25 +1862,20 @@ class EvaluationRunner:
                                 cfg.events_per_node,
                                 concurrency=cfg.event_concurrency,
                                 rng=rng,
-                                central_url=central_url,
                                 offered_rate=cfg.offered_rate_per_second,
                             )
-                            if central_url:
-                                metrics = await self.wait_for_central_metrics(
-                                    session,
-                                    gateways,
-                                    cfg,
-                                    baseline_events,
-                                )
-                            else:
-                                metrics = await self.wait_for_metrics(
-                                    session,
-                                    nodes,
-                                    gateways,
-                                    cfg,
-                                    baseline_events["accepted"],
-                                    tracking_ids=baseline_events["tracking_ids"],
-                                )
+                            metrics = await self.wait_for_metrics(
+                                session,
+                                nodes,
+                                gateways,
+                                cfg,
+                                baseline_events["accepted"],
+                                tracking_ids=baseline_events["tracking_ids"],
+                                attempted_tracking_ids=baseline_events[
+                                    "attempted_tracking_ids"
+                                ],
+                            )
+                            metrics.update(await self._container_health_summary())
                             self._append_result(
                                 self._row_base(
                                     cfg,
@@ -1537,25 +1915,17 @@ class EvaluationRunner:
                                 cfg.events_per_node,
                                 concurrency=cfg.event_concurrency,
                                 rng=rng,
-                                central_url=central_url,
+                                offered_rate=cfg.offered_rate_per_second,
                             )
                             fault_receipt = {}
-                            if central_url:
-                                fault_applied_at = time.time()
+                            await self.poll_all_gateways(session, gateways)
+                            fault_applied_at = time.time()
+                            try:
                                 fault_receipt = await asyncio.to_thread(
-                                    self.docker_mgr.partition_from_gateway,
-                                    split,
-                                    central_url,
+                                    self.docker_mgr.create_split_brain, split
                                 )
-                            else:
-                                await self.poll_all_gateways(session, gateways)
-                                fault_applied_at = time.time()
-                                try:
-                                    fault_receipt = await asyncio.to_thread(
-                                        self.docker_mgr.create_split_brain, split
-                                    )
-                                except Exception:
-                                    fault_receipt = {}
+                            except Exception:
+                                fault_receipt = {}
                             if fault_receipt.get("status") not in {
                                 "split_brain",
                                 "partitioned",
@@ -1565,31 +1935,21 @@ class EvaluationRunner:
                                     fault_receipt.get("message")
                                     or "failed to apply partition rules"
                                 )
+                            self._partition_applied = True
                             partition_events = await self.send_events(
                                 session,
                                 nodes,
                                 cfg.partition_events_per_node,
                                 concurrency=cfg.event_concurrency,
                                 rng=rng,
-                                central_url=central_url,
+                                offered_rate=cfg.offered_rate_per_second,
                             )
                             await asyncio.sleep(cfg.partition_wait_seconds)
-                            try:
-                                await asyncio.to_thread(self.docker_mgr.heal_all)
-                            except Exception:
-                                pass
+                            await self._heal_partition()
                             fault_removed_at = time.time()
                             await self.wait_for_nodes_ready(
                                 session, nodes, cfg.node_readiness_timeout_seconds
                             )
-                            recovery_time_s = None
-                            if central_url:
-                                recovery_time_s = await self.wait_for_central_access(
-                                    session,
-                                    nodes,
-                                    central_url,
-                                    cfg.node_readiness_timeout_seconds,
-                                )
                             combined_events = {
                                 "attempted": pre_events["attempted"]
                                 + partition_events["attempted"],
@@ -1597,6 +1957,10 @@ class EvaluationRunner:
                                 + partition_events["accepted"],
                                 "tracking_ids": pre_events["tracking_ids"]
                                 + partition_events["tracking_ids"],
+                                "attempted_tracking_ids": pre_events[
+                                    "attempted_tracking_ids"
+                                ]
+                                + partition_events["attempted_tracking_ids"],
                             }
                             combined_events["partition_group_a"] = (
                                 fault_receipt.get("group_a") or []
@@ -1617,14 +1981,6 @@ class EvaluationRunner:
                             combined_events["duplicates"] = (
                                 pre_events["duplicates"]
                                 + partition_events["duplicates"]
-                            )
-                            combined_events["central_request_bytes"] = (
-                                pre_events["central_request_bytes"]
-                                + partition_events["central_request_bytes"]
-                            )
-                            combined_events["central_response_bytes"] = (
-                                pre_events["central_response_bytes"]
-                                + partition_events["central_response_bytes"]
                             )
                             combined_events["rejected"] = (
                                 pre_events["rejected"] + partition_events["rejected"]
@@ -1654,24 +2010,26 @@ class EvaluationRunner:
                             combined_events["accepted_throughput_events_s"] = (
                                 combined_events["accepted"] / submission_duration
                             )
-                            if central_url:
-                                metrics = await self.wait_for_central_metrics(
-                                    session,
-                                    gateways,
-                                    cfg,
-                                    combined_events,
-                                )
-                                metrics["recovery_time_s"] = recovery_time_s
-                            else:
-                                expected_events = combined_events["accepted"]
-                                metrics = await self.wait_for_metrics(
-                                    session,
-                                    nodes,
-                                    gateways,
-                                    cfg,
-                                    expected_events,
-                                    tracking_ids=combined_events["tracking_ids"],
-                                )
+                            expected_events = combined_events["accepted"]
+                            metrics = await self.wait_for_metrics(
+                                session,
+                                nodes,
+                                gateways,
+                                cfg,
+                                expected_events,
+                                tracking_ids=combined_events["tracking_ids"],
+                                attempted_tracking_ids=combined_events[
+                                    "attempted_tracking_ids"
+                                ],
+                            )
+                            metrics.update(await self._container_health_summary())
+                            latest_arrival = metrics.get("latest_first_seen_at_unix_s")
+                            metrics["recovery_after_heal_s"] = (
+                                round(max(latest_arrival - fault_removed_at, 0.0), 3)
+                                if metrics.get("converged_within_timeout")
+                                and latest_arrival is not None
+                                else ""
+                            )
                             self._append_result(
                                 self._row_base(
                                     cfg,
@@ -1709,25 +2067,20 @@ class EvaluationRunner:
                                 category="resource",
                                 concurrency=cfg.event_concurrency,
                                 rng=rng,
-                                central_url=central_url,
                                 offered_rate=cfg.offered_rate_per_second,
                             )
-                            if central_url:
-                                metrics = await self.wait_for_central_metrics(
-                                    session,
-                                    gateways,
-                                    cfg,
-                                    heavy_events,
-                                )
-                            else:
-                                metrics = await self.wait_for_metrics(
-                                    session,
-                                    nodes,
-                                    gateways,
-                                    cfg,
-                                    heavy_events["accepted"],
-                                    tracking_ids=heavy_events["tracking_ids"],
-                                )
+                            metrics = await self.wait_for_metrics(
+                                session,
+                                nodes,
+                                gateways,
+                                cfg,
+                                heavy_events["accepted"],
+                                tracking_ids=heavy_events["tracking_ids"],
+                                attempted_tracking_ids=heavy_events[
+                                    "attempted_tracking_ids"
+                                ],
+                            )
+                            metrics.update(await self._container_health_summary())
                             self._append_result(
                                 self._row_base(
                                     cfg,
@@ -1742,6 +2095,92 @@ class EvaluationRunner:
                             await _finish_scenario(session, nodes)
                             step += 1
 
+                        for (
+                            shared_scenario,
+                            shared_workload,
+                        ) in SHARED_WORKLOADS.items():
+                            if shared_scenario not in scenarios:
+                                continue
+                            scenario_label = shared_scenario.replace("_", " ").title()
+                            self._set_progress(
+                                current_step=(
+                                    f"[rep {repetition}/{cfg.repetitions}] "
+                                    f"[{node_count}N] {scenario_label} workload"
+                                ),
+                                completed_steps=step,
+                                cfg=cfg,
+                                repetition=repetition,
+                                node_count=node_count,
+                                scenario=shared_scenario,
+                            )
+                            nodes, gateways = await _prepare_scenario(
+                                session, nodes, gateways
+                            )
+                            warmup_events = await self.send_events(
+                                session,
+                                nodes,
+                                SHARED_WARMUP_EVENTS_PER_NODE[shared_scenario],
+                                concurrency=cfg.event_concurrency,
+                                rng=rng,
+                                shared_workload=shared_workload,
+                            )
+                            warmup_metrics = await self.wait_for_metrics(
+                                session,
+                                nodes,
+                                gateways,
+                                cfg,
+                                warmup_events["accepted"],
+                                tracking_ids=warmup_events["tracking_ids"],
+                                attempted_tracking_ids=warmup_events[
+                                    "attempted_tracking_ids"
+                                ],
+                            )
+                            if not warmup_metrics["converged_within_timeout"]:
+                                raise RuntimeError(
+                                    f"{shared_scenario} warmup did not converge within "
+                                    "the configured deadline"
+                                )
+
+                            await self._stop_resource_sampling()
+                            await self.reset_measurement_metrics(
+                                session, nodes, gateways
+                            )
+                            await self._start_resource_sampling()
+
+                            shared_events = await self.send_events(
+                                session,
+                                nodes,
+                                cfg.events_per_node,
+                                concurrency=cfg.event_concurrency,
+                                rng=rng,
+                                offered_rate=cfg.offered_rate_per_second,
+                                shared_workload=shared_workload,
+                            )
+                            metrics = await self.wait_for_metrics(
+                                session,
+                                nodes,
+                                gateways,
+                                cfg,
+                                shared_events["accepted"],
+                                tracking_ids=shared_events["tracking_ids"],
+                                attempted_tracking_ids=shared_events[
+                                    "attempted_tracking_ids"
+                                ],
+                            )
+                            metrics.update(await self._container_health_summary())
+                            self._append_result(
+                                self._row_base(
+                                    cfg,
+                                    run_id,
+                                    repetition,
+                                    shared_scenario,
+                                    node_count,
+                                    shared_events,
+                                ),
+                                metrics,
+                            )
+                            await _finish_scenario(session, nodes)
+                            step += 1
             self.state["current_step"] = "Generating CSV..."
             self.state["progress"] = step
             self.state["completed_steps"] = step
@@ -1765,6 +2204,8 @@ class EvaluationRunner:
             try:
                 if hasattr(self.docker_mgr, "clear_netem"):
                     await asyncio.to_thread(self.docker_mgr.clear_netem)
+                    self._netem_profile = None
+                    self._network_profile_receipt = {}
             except Exception:
                 pass
             self.state["running"] = False

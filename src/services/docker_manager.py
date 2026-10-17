@@ -1,8 +1,15 @@
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
-import structlog
-import docker
-import uuid
+import ipaddress
+import math
+import re
+import shlex
+import socket
 import threading
+import uuid
+
+import docker
+import structlog
 
 log = structlog.get_logger()
 
@@ -38,23 +45,144 @@ NETWORK_PROFILE_SETTINGS = {
 }
 
 
-def build_network_profile_commands(profile: str) -> list[str]:
+BYPASS_CLASS_RATE = "10gbit"
+
+
+def build_network_profile_commands(profile: str, bypass_ip: str) -> list[str]:
+    """Build tc commands that impair mesh egress while exempting the evaluator.
+
+    Unmatched traffic lands in the impaired default class 1:10; the u32 filter
+    steers packets addressed to ``bypass_ip`` into the unimpaired class 1:1.
+    """
     settings = NETWORK_PROFILE_SETTINGS[profile]
     bandwidth = settings["bandwidth_mbps"]
     delay = settings["delay_ms"]
     jitter = settings["jitter_ms"]
     loss = settings["loss_percent"]
     return [
-        "tc qdisc replace dev eth0 root handle 1: htb default 10",
+        "tc qdisc del dev eth0 root 2>/dev/null || true",
+        "tc qdisc add dev eth0 root handle 1: htb default 10",
         (
-            "tc class replace dev eth0 parent 1: classid 1:10 htb "
+            "tc class add dev eth0 parent 1: classid 1:1 htb "
+            f"rate {BYPASS_CLASS_RATE} ceil {BYPASS_CLASS_RATE}"
+        ),
+        (
+            "tc class add dev eth0 parent 1: classid 1:10 htb "
             f"rate {bandwidth:g}mbit ceil {bandwidth:g}mbit burst 32k"
         ),
         (
-            "tc qdisc replace dev eth0 parent 1:10 handle 10: netem "
+            "tc qdisc add dev eth0 parent 1:10 handle 10: netem "
             f"delay {delay:g}ms {jitter:g}ms loss {loss:g}%"
         ),
+        (
+            "tc filter add dev eth0 parent 1: protocol ip prio 1 u32 "
+            f"match ip dst {shlex.quote(bypass_ip + '/32')} flowid 1:1"
+        ),
     ]
+
+
+def _time_to_ms(value: str, unit: str) -> float:
+    return (
+        float(value)
+        * {
+            "ns": 0.000001,
+            "us": 0.001,
+            "ms": 1.0,
+            "s": 1000.0,
+        }[unit.lower()]
+    )
+
+
+def _rate_to_mbps(value: str, unit: str) -> float:
+    return (
+        float(value)
+        * {
+            "bit": 0.000001,
+            "kbit": 0.001,
+            "mbit": 1.0,
+            "gbit": 1000.0,
+        }[unit.lower()]
+    )
+
+
+def _htb_class_line(class_text: str, class_id: str) -> str | None:
+    match = re.search(
+        rf"^class htb {re.escape(class_id)}(?![0-9a-f]).*$", class_text, re.MULTILINE
+    )
+    return match.group(0) if match else None
+
+
+def _has_bypass_filter(filter_text: str, bypass_ip: str) -> bool:
+    try:
+        hex_ip = ipaddress.IPv4Address(bypass_ip).packed.hex()
+    except ValueError:
+        return False
+    match_pattern = re.compile(rf"\bmatch\s+{hex_ip}/ffffffff\s+at\s+16\b")
+    flowid_pattern = re.compile(r"\bflowid\s+1:1(?![0-9a-f])")
+    entries = re.split(r"^(?=filter\s)", filter_text, flags=re.MULTILINE)
+    return any(
+        match_pattern.search(entry) and flowid_pattern.search(entry)
+        for entry in entries
+    )
+
+
+def verify_network_profile_state(
+    settings: dict[str, float],
+    qdisc_output: str,
+    class_output: str,
+    filter_output: str,
+    bypass_ip: str,
+) -> bool:
+    qdisc_text = qdisc_output.lower()
+    class_text = class_output.lower()
+    filter_text = filter_output.lower()
+    if "netem" not in qdisc_text:
+        return False
+
+    impaired_class = _htb_class_line(class_text, "1:10")
+    if impaired_class is None or _htb_class_line(class_text, "1:1") is None:
+        return False
+    if not _has_bypass_filter(filter_text, bypass_ip):
+        return False
+
+    delay_match = re.search(
+        r"\bdelay\s+(\d+(?:\.\d+)?)\s*(ns|us|ms|s)"
+        r"(?:\s+(\d+(?:\.\d+)?)\s*(ns|us|ms|s))?",
+        qdisc_text,
+    )
+    rate_match = re.search(
+        r"\brate\s+(\d+(?:\.\d+)?)\s*(bit|kbit|mbit|gbit)", impaired_class
+    )
+    ceil_match = re.search(
+        r"\bceil\s+(\d+(?:\.\d+)?)\s*(bit|kbit|mbit|gbit)", impaired_class
+    )
+    if delay_match is None or rate_match is None or ceil_match is None:
+        return False
+
+    delay_ms = _time_to_ms(delay_match.group(1), delay_match.group(2))
+    jitter_ms = (
+        _time_to_ms(delay_match.group(3), delay_match.group(4))
+        if delay_match.group(3) is not None
+        else 0.0
+    )
+    loss_match = re.search(r"\bloss\s+(\d+(?:\.\d+)?)%", qdisc_text)
+    loss_percent = float(loss_match.group(1)) if loss_match else 0.0
+    rate_mbps = _rate_to_mbps(rate_match.group(1), rate_match.group(2))
+    ceil_mbps = _rate_to_mbps(ceil_match.group(1), ceil_match.group(2))
+
+    return all(
+        (
+            math.isclose(delay_ms, settings["delay_ms"], abs_tol=0.001),
+            math.isclose(jitter_ms, settings["jitter_ms"], abs_tol=0.001),
+            math.isclose(loss_percent, settings["loss_percent"], abs_tol=0.001),
+            math.isclose(rate_mbps, settings["bandwidth_mbps"], abs_tol=0.001),
+            math.isclose(ceil_mbps, settings["bandwidth_mbps"], abs_tol=0.001),
+        )
+    )
+
+
+def _decode(output) -> str:
+    return output.decode(errors="replace") if isinstance(output, bytes) else str(output)
 
 
 class DockerManager:
@@ -445,7 +573,6 @@ class DockerManager:
         sync_mode="full_state",
         event_id_retention_limit=100,
         delta_log_limit=1000,
-        observability_mode=None,
         cpu_limit=None,
         memory_limit=None,
     ):
@@ -514,11 +641,6 @@ class DockerManager:
                 "SYNC_MODE": sync_mode,
                 "EVENT_ID_RETENTION_LIMIT": str(event_id_retention_limit),
                 "DELTA_LOG_LIMIT": str(delta_log_limit),
-                **(
-                    {"OBSERVABILITY_MODE": observability_mode}
-                    if observability_mode
-                    else {}
-                ),
             },
             ports={f"{http_port}/tcp": host_port},
             network=network.name,
@@ -700,14 +822,60 @@ class DockerManager:
                 message=f"{container_name} not found",
             )
 
+    def _edge_containers(self):
+        return [c for c in self.client.containers.list() if "edge-node" in c.name]
+
+    def _run_node_scripts(self, jobs):
+        """Run one ``sh -c`` script per container concurrently.
+
+        Returns ``(container, exit_code, output)`` tuples in job order.
+        """
+        if not jobs:
+            return []
+
+        def run(job):
+            container, script = job
+            exit_code, output = container.exec_run(["sh", "-c", script])
+            return container, exit_code, _decode(output)
+
+        with ThreadPoolExecutor(max_workers=len(jobs)) as executor:
+            return list(executor.map(run, jobs))
+
+    def _evaluator_mesh_ip(self):
+        """Return the mesh-network IP of the container this process runs in."""
+        hostname = socket.gethostname()
+        try:
+            container = self.client.containers.get(hostname)
+        except docker.errors.DockerException as error:
+            log.warning(
+                "evaluator_container_lookup_failed", hostname=hostname, error=str(error)
+            )
+            return None
+        networks = (container.attrs.get("NetworkSettings") or {}).get("Networks") or {}
+        for net_name, net_info in networks.items():
+            if "mesh" in net_name and net_info.get("IPAddress"):
+                return net_info["IPAddress"]
+        log.warning(
+            "evaluator_mesh_ip_missing", hostname=hostname, networks=sorted(networks)
+        )
+        return None
+
     def heal_all(self):
         """Heal all running edge nodes."""
+        script = "iptables -F INPUT && iptables -F OUTPUT"
+        outcomes = self._run_node_scripts(
+            [(container, script) for container in self._edge_containers()]
+        )
         results = []
-        for container in self.client.containers.list():
-            if "edge-node" in container.name:
-                container.exec_run("iptables -F INPUT")
-                container.exec_run("iptables -F OUTPUT")
-                results.append(container.name)
+        for container, exit_code, output in outcomes:
+            if exit_code != 0:
+                log.warning(
+                    "heal_all_node_failed",
+                    node=container.name,
+                    exit_code=exit_code,
+                    output=output,
+                )
+            results.append(container.name)
 
         self.isolated_nodes.clear()
         self.invalidate_cache()
@@ -722,10 +890,7 @@ class DockerManager:
 
     def create_split_brain(self, majority_ratio=0.5):
         """Partition the mesh into two groups using a configurable A/B split."""
-        nodes = sorted(
-            [c for c in self.client.containers.list() if "edge-node" in c.name],
-            key=lambda c: c.name,
-        )
+        nodes = sorted(self._edge_containers(), key=lambda c: c.name)
         if len(nodes) < 2:
             return self._action_response(
                 action="split_brain",
@@ -751,44 +916,47 @@ class DockerManager:
         ips_a = [get_ip(c) for c in group_a]
         ips_b = [get_ip(c) for c in group_b]
 
-        results = []
         applied = True
+        jobs = []
         for container, opposite_ips in (
             *((container, ips_b) for container in group_a),
             *((container, ips_a) for container in group_b),
         ):
-            for ip in opposite_ips:
-                if not ip:
-                    applied = False
-                    continue
-                for direction, address_flag in (("INPUT", "-s"), ("OUTPUT", "-d")):
-                    add_command = f"iptables -A {direction} {address_flag} {ip} -j DROP"
-                    check_command = (
-                        f"iptables -C {direction} {address_flag} {ip} -j DROP"
-                    )
-                    add_code, add_output = container.exec_run(add_command)
-                    check_code, check_output = container.exec_run(check_command)
-                    if add_code != 0 or check_code != 0:
-                        applied = False
-                    results.append(
-                        {
-                            "node": container.name,
-                            "add_command": add_command,
-                            "add_exit_code": add_code,
-                            "add_output": (
-                                add_output.decode(errors="replace")
-                                if isinstance(add_output, bytes)
-                                else str(add_output)
-                            ),
-                            "check_command": check_command,
-                            "check_exit_code": check_code,
-                            "check_output": (
-                                check_output.decode(errors="replace")
-                                if isinstance(check_output, bytes)
-                                else str(check_output)
-                            ),
-                        }
-                    )
+            if not all(opposite_ips):
+                applied = False
+            rules = [
+                f"{direction} {address_flag} {shlex.quote(ip)} -j DROP"
+                for ip in opposite_ips
+                if ip
+                for direction, address_flag in (("INPUT", "-s"), ("OUTPUT", "-d"))
+            ]
+            if not rules:
+                continue
+            commands = [f"iptables -A {rule}" for rule in rules] + [
+                f"iptables -C {rule}" for rule in rules
+            ]
+            jobs.append((container, " && ".join(commands)))
+
+        results = []
+        for (container, exit_code, output), (_, script) in zip(
+            self._run_node_scripts(jobs), jobs
+        ):
+            if exit_code != 0:
+                applied = False
+                log.warning(
+                    "split_brain_node_failed",
+                    node=container.name,
+                    exit_code=exit_code,
+                    output=output,
+                )
+            results.append(
+                {
+                    "node": container.name,
+                    "command": script,
+                    "exit_code": exit_code,
+                    "output": output,
+                }
+            )
 
         if applied:
             for container in nodes:
@@ -814,62 +982,12 @@ class DockerManager:
             results=results,
         )
 
-    def partition_from_gateway(self, majority_ratio: float, gateway_url: str) -> dict:
-        """Block the minority client group from the centralized baseline."""
-        from urllib.parse import urlparse
-
-        gateway_host = urlparse(gateway_url).hostname
-        if not gateway_host:
-            return self._action_response(
-                action="partition_from_gateway",
-                target="gateway",
-                status="failed",
-                message="Gateway URL has no host",
-            )
-
-        nodes = sorted(
-            [c for c in self.client.containers.list() if "edge-node" in c.name],
-            key=lambda container: container.name,
-        )
-        if len(nodes) < 2:
-            return self._action_response(
-                action="partition_from_gateway",
-                target="gateway",
-                status="failed",
-                message="Need at least 2 nodes",
-            )
-
-        ratio = max(0.0, min(float(majority_ratio), 1.0))
-        split_index = round(len(nodes) * ratio)
-        split_index = max(1, min(split_index, len(nodes) - 1))
-        connected = nodes[:split_index]
-        disconnected = nodes[split_index:]
-        for container in disconnected:
-            container.exec_run(f"iptables -A OUTPUT -d {gateway_host} -j DROP")
-            container.exec_run(f"iptables -A INPUT -s {gateway_host} -j DROP")
-            self.isolated_nodes.add(container.name)
-
-        return self._action_response(
-            action="partition_from_gateway",
-            target="gateway",
-            status="partitioned",
-            message="Disconnected selected clients from the centralized baseline",
-            partition_ratio=ratio,
-            group_a=[container.name for container in connected],
-            group_b=[container.name for container in disconnected],
-            gateway_host=gateway_host,
-        )
-
     def apply_netem_profile(self, profile: str):
-        """Apply and verify a supported traffic-control profile on every edge node."""
-        if profile == "hard_partition":
-            return self._action_response(
-                action="apply_netem_profile",
-                target="mesh",
-                status="noop",
-                message="hard_partition uses iptables partition controls",
-                profile=profile,
-            )
+        """Apply and verify a supported traffic-control profile on every edge node.
+
+        Only mesh traffic is impaired: node egress to the evaluator container
+        (the one this process runs in) bypasses the htb/netem shaping.
+        """
         if profile not in NETWORK_PROFILE_SETTINGS:
             return self._action_response(
                 action="apply_netem_profile",
@@ -879,66 +997,111 @@ class DockerManager:
                 profile=profile,
             )
 
-        commands = build_network_profile_commands(profile)
+        settings = NETWORK_PROFILE_SETTINGS[profile]
+        containers = self._edge_containers()
+        if not containers:
+            return self._action_response(
+                action="apply_netem_profile",
+                target="mesh",
+                status="failed",
+                message=f"No edge nodes to apply {profile} to",
+                profile=profile,
+                settings=dict(settings),
+                results=[],
+            )
+
+        bypass_ip = self._evaluator_mesh_ip()
+        if bypass_ip is None:
+            return self._action_response(
+                action="apply_netem_profile",
+                target="mesh",
+                status="failed",
+                message=(
+                    f"Cannot apply {profile}: evaluator mesh IP for the tc bypass "
+                    f"could not be resolved from container {socket.gethostname()}"
+                ),
+                profile=profile,
+                settings=dict(settings),
+                results=[],
+            )
+
+        setup_command = " && ".join(build_network_profile_commands(profile, bypass_ip))
+        show_commands = (
+            "tc qdisc show dev eth0",
+            "tc class show dev eth0",
+            "tc filter show dev eth0",
+        )
+        run_marker = uuid.uuid4().hex
+        markers = [
+            f"__cem_tc_{run_marker}_{index}__" for index in range(len(show_commands))
+        ]
+        script = " && ".join(
+            [
+                setup_command,
+                *(
+                    f"echo {marker} && {command}"
+                    for marker, command in zip(markers, show_commands)
+                ),
+            ]
+        )
+
         results = []
         applied = True
-        for container in self.client.containers.list():
-            if "edge-node" not in container.name:
-                continue
-            command_results = []
-            for command in commands:
-                exit_code, output = container.exec_run(command)
-                decoded = (
-                    output.decode(errors="replace")
-                    if isinstance(output, bytes)
-                    else str(output)
-                )
-                command_results.append(
-                    {
-                        "command": command,
-                        "exit_code": exit_code,
-                        "output": decoded,
-                    }
-                )
-                if exit_code != 0:
-                    applied = False
+        for container, exit_code, output in self._run_node_scripts(
+            [(container, script) for container in containers]
+        ):
+            sections = []
+            rest = output
+            for marker in markers:
+                head, found, tail = rest.partition(f"{marker}\n")
+                if not found:
                     break
+                sections.append(head)
+                rest = tail
+            sections.append(rest)
 
-            verification = []
-            if all(item["exit_code"] == 0 for item in command_results):
-                for command in (
-                    "tc qdisc show dev eth0",
-                    "tc class show dev eth0",
-                ):
-                    exit_code, output = container.exec_run(command)
-                    decoded = (
-                        output.decode(errors="replace")
-                        if isinstance(output, bytes)
-                        else str(output)
-                    )
-                    expected_kind = "netem" if "qdisc" in command else "htb"
-                    verified = exit_code == 0 and expected_kind in decoded.lower()
-                    verification.append(
-                        {
-                            "command": command,
-                            "exit_code": exit_code,
-                            "output": decoded,
-                            "verified": verified,
-                        }
-                    )
-                    if not verified:
-                        applied = False
-
+            setup_ok = len(sections) > 1
+            shows = sections[1:]
+            settings_verified = (
+                exit_code == 0
+                and len(shows) == len(show_commands)
+                and verify_network_profile_state(settings, *shows, bypass_ip)
+            )
+            if not settings_verified:
+                applied = False
+                log.warning(
+                    "netem_profile_node_failed",
+                    node=container.name,
+                    profile=profile,
+                    bypass_ip=bypass_ip,
+                    exit_code=exit_code,
+                    setup_ok=setup_ok,
+                    output=output,
+                )
             results.append(
                 {
                     "node": container.name,
-                    "commands": command_results,
-                    "verification": verification,
+                    "commands": [
+                        {
+                            "command": setup_command,
+                            "exit_code": 0 if setup_ok else exit_code,
+                            "output": sections[0],
+                        }
+                    ],
+                    "verification": [
+                        {
+                            "command": command,
+                            "exit_code": 0 if index < len(shows) - 1 else exit_code,
+                            "output": show_output,
+                            "verified": settings_verified,
+                        }
+                        for index, (command, show_output) in enumerate(
+                            zip(show_commands, shows)
+                        )
+                    ],
                 }
             )
 
-        if not results:
-            applied = False
         return self._action_response(
             action="apply_netem_profile",
             target="mesh",
@@ -949,26 +1112,23 @@ class DockerManager:
                 else f"Failed to apply {profile} to every edge node"
             ),
             profile=profile,
-            settings=dict(NETWORK_PROFILE_SETTINGS[profile]),
+            settings=dict(settings),
+            bypass_ip=bypass_ip,
             results=results,
         )
 
     def clear_netem(self):
         """Remove tc/netem qdisc from all dynamic edge nodes."""
-        results = []
-        for container in self.client.containers.list():
-            if "edge-node" not in container.name:
-                continue
-            exit_code, output = container.exec_run("tc qdisc del dev eth0 root")
-            results.append(
-                {
-                    "node": container.name,
-                    "exit_code": exit_code,
-                    "output": output.decode(errors="replace")
-                    if isinstance(output, bytes)
-                    else str(output),
-                }
-            )
+        outcomes = self._run_node_scripts(
+            [
+                (container, "tc qdisc del dev eth0 root")
+                for container in self._edge_containers()
+            ]
+        )
+        results = [
+            {"node": container.name, "exit_code": exit_code, "output": output}
+            for container, exit_code, output in outcomes
+        ]
         return self._action_response(
             action="clear_netem",
             target="mesh",
@@ -976,6 +1136,94 @@ class DockerManager:
             message="Cleared netem qdisc",
             results=results,
         )
+
+    def update_node_resources(self, assignments: list[dict]) -> dict:
+        """Change CPU/memory limits of running edge nodes in place, in parallel.
+
+        docker-py's ``Container.update`` cannot set NanoCpus, so the Engine
+        ``/containers/{id}/update`` endpoint is called directly. MemorySwap is
+        set to twice Memory, matching Docker's default for ``mem_limit``-only
+        containers created by ``create_node``.
+        """
+        api = self.client.api
+
+        def update(assignment):
+            name = assignment["container"]
+            body = {}
+            if assignment.get("cpus") is not None:
+                body["NanoCpus"] = int(round(float(assignment["cpus"]) * 1_000_000_000))
+            if assignment.get("memory_mib") is not None:
+                memory_bytes = int(round(float(assignment["memory_mib"]) * 1024 * 1024))
+                body["Memory"] = memory_bytes
+                body["MemorySwap"] = 2 * memory_bytes
+            if not body:
+                return {"node": name, "ok": True, "error": None}
+            try:
+                response = api.post(api._url("/containers/{0}/update", name), json=body)
+                api._raise_for_status(response)
+            except Exception as error:
+                log.warning(
+                    "node_resource_update_failed",
+                    node=name,
+                    body=body,
+                    error=str(error),
+                )
+                return {"node": name, "ok": False, "error": str(error)}
+            return {"node": name, "ok": True, "error": None}
+
+        if assignments:
+            with ThreadPoolExecutor(max_workers=len(assignments)) as executor:
+                results = list(executor.map(update, assignments))
+        else:
+            results = []
+        self.invalidate_cache()
+
+        failed = [result["node"] for result in results if not result["ok"]]
+        if not failed:
+            log.info("node_resources_updated", nodes=[r["node"] for r in results])
+        return self._action_response(
+            action="update_node_resources",
+            target="mesh",
+            status="failed" if failed else "updated",
+            message=(
+                f"Failed to update resource limits on {', '.join(failed)}"
+                if failed
+                else f"Updated resource limits on {len(results)} edge nodes"
+            ),
+            results=results,
+        )
+
+    def inspect_node_resource_limits(
+        self, node_ids: list[str]
+    ) -> dict[str, dict[str, float | int | bool | str | None]]:
+        """Return configured limits and runtime state for the requested edge nodes."""
+        inspected = {}
+        for node_id in node_ids:
+            container_name = f"edge-node-{node_id.replace('node-', '')}"
+            try:
+                container = self.client.containers.get(container_name)
+                container.reload()
+                host_config = container.attrs.get("HostConfig") or {}
+                state = container.attrs.get("State") or {}
+                nano_cpus = int(host_config.get("NanoCpus") or 0)
+                inspected[container_name] = {
+                    "node_id": node_id,
+                    "cpus": nano_cpus / 1_000_000_000 if nano_cpus else None,
+                    "memory_bytes": int(host_config.get("Memory") or 0),
+                    "running": bool(state.get("Running")),
+                    "oom_killed": bool(state.get("OOMKilled")),
+                    "status": str(state.get("Status") or container.status),
+                }
+            except docker.errors.NotFound:
+                inspected[container_name] = {
+                    "node_id": node_id,
+                    "cpus": None,
+                    "memory_bytes": 0,
+                    "running": False,
+                    "oom_killed": False,
+                    "status": "missing",
+                }
+        return inspected
 
     def resource_snapshot(self) -> list[dict[str, float | int | str]]:
         """Return one resource-counter sample for each running edge node."""
@@ -995,6 +1243,7 @@ class DockerManager:
                     cpu_usage.get("percpu_usage") or []
                 )
 
+                throttling_data = cpu_stats.get("throttling_data") or {}
                 memory_stats = stats.get("memory_stats") or {}
                 memory_detail = memory_stats.get("stats") or {}
                 cache = memory_detail.get(
@@ -1028,6 +1277,13 @@ class DockerManager:
                             cpu_stats.get("system_cpu_usage", 0)
                         ),
                         "online_cpus": max(int(online_cpus), 1),
+                        "cpu_periods": int(throttling_data.get("periods", 0)),
+                        "cpu_throttled_periods": int(
+                            throttling_data.get("throttled_periods", 0)
+                        ),
+                        "cpu_throttled_time_ns": int(
+                            throttling_data.get("throttled_time", 0)
+                        ),
                         "memory_bytes": memory_bytes,
                         "memory_limit_bytes": memory_stats.get("limit", 0),
                         "network_rx_bytes": network_rx_bytes,

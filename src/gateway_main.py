@@ -4,7 +4,6 @@ Provides endpoints for state management and gateway node-sync control.
 """
 
 import asyncio
-import json
 import logging
 import signal
 import structlog
@@ -17,7 +16,6 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from src.config import config
-from src.models import Event
 from src.storage import SQLiteStore
 from src.services.gateway import GatewayService
 from src.services.peer_discovery import PeerDiscovery
@@ -55,25 +53,6 @@ discovery = PeerDiscovery(
     assigned_gateway="gateway",
     role="gateway",
 )
-central_evaluation_events = {}
-central_evaluation_metrics = {
-    "attempted": 0,
-    "accepted": 0,
-    "duplicates": 0,
-    "request_bytes": 0,
-}
-
-
-def _reset_central_evaluation() -> None:
-    central_evaluation_events.clear()
-    central_evaluation_metrics.update(
-        {
-            "attempted": 0,
-            "accepted": 0,
-            "duplicates": 0,
-            "request_bytes": 0,
-        }
-    )
 
 
 class GatewayNode(BaseModel):
@@ -152,58 +131,9 @@ async def gateway_runtime_metrics():
 @app.post("/gateway/evaluation/reset")
 async def gateway_evaluation_reset():
     gateway.reset_runtime()
-    _reset_central_evaluation()
     return {
         "status": "reset",
         "registered_node_count": len(gateway.edge_nodes),
-    }
-
-
-@app.get("/gateway/evaluation/central/health")
-async def central_evaluation_health():
-    return {"status": "ok"}
-
-
-@app.post("/gateway/evaluation/central/event")
-async def central_evaluation_event(request: Request):
-    raw_event = await request.body()
-    central_evaluation_metrics["attempted"] += 1
-    central_evaluation_metrics["request_bytes"] += len(raw_event)
-    try:
-        event = Event.model_validate_json(raw_event)
-    except Exception as error:
-        raise _api_error(
-            422,
-            "INVALID_CENTRAL_EVENT",
-            "The centralized baseline event is invalid.",
-            str(error),
-        )
-
-    if event.id in central_evaluation_events:
-        central_evaluation_metrics["duplicates"] += 1
-        return {
-            "status": "duplicate",
-            "event_id": event.id,
-            "accepted": False,
-        }
-
-    central_evaluation_events[event.id] = event.model_dump(mode="json")
-    central_evaluation_metrics["accepted"] += 1
-    return {
-        "status": "accepted",
-        "event_id": event.id,
-        "accepted": True,
-    }
-
-
-@app.get("/gateway/evaluation/central/state")
-async def central_evaluation_state():
-    return {
-        "event_count": len(central_evaluation_events),
-        "event_ids": sorted(central_evaluation_events),
-        "events": central_evaluation_events,
-        "metrics": dict(central_evaluation_metrics),
-        "state_size_bytes": len(json.dumps(central_evaluation_events, sort_keys=True)),
     }
 
 
@@ -284,33 +214,6 @@ async def divergence():
 @app.get("/gateway/metrics")
 async def metrics(name: Optional[str] = None, limit: int = 100):
     return store.get_metrics(name, limit)
-
-
-@app.get("/gateway/timeseries")
-async def timeseries(metric: str = "state_size_bytes", limit: int = 100):
-    """Get time-series data for dashboard charts."""
-    return store.get_timeseries(metric, limit)
-
-
-@app.get("/gateway/event-tracking")
-async def event_tracking(limit: int = 50):
-    """Get per-event tracking history."""
-    return store.get_event_tracking(limit)
-
-
-@app.post("/gateway/event-tracking")
-async def save_event_tracking_record(record: dict):
-    """Save an event tracking record."""
-    store.save_event_tracking(
-        tracking_id=record.get("tracking_id", "unknown"),
-        node_id=record.get("node_id", "unknown"),
-        event_type=record.get("event_type", "unknown"),
-        category=record.get("category", "general"),
-        state_size_bytes=record.get("state_size_bytes"),
-        merkle_root_after=record.get("merkle_root_after"),
-        metadata=record.get("metadata"),
-    )
-    return {"status": "saved"}
 
 
 async def main():

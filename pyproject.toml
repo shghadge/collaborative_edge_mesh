@@ -14,7 +14,6 @@ dependencies = [
     "ruff>=0.15.1",
     "httpx>=0.28.1",
     "zeroconf>=0.136.0",
-    "websockets>=16.0",
     "hypothesis>=6.0.0",
 ]
 

@@ -491,11 +491,8 @@ class GatewayService:
 
                 # save snapshot
                 if self.merged_state:
-                    import json as _json
-
                     root = self.merged_state.merkle_root()
                     state_dict = self.merged_state.to_dict()
-                    state_size = len(_json.dumps(state_dict))
                     self.store.save_snapshot(
                         merkle_root=root,
                         node_count=len(reachable_roots),
@@ -507,29 +504,6 @@ class GatewayService:
                     self.store.save_metric("node_count", len(reachable_roots))
                     self.store.save_metric(
                         "is_divergent", 1 if self.is_divergent else 0
-                    )
-
-                    # Save time-series for dashboard charts
-                    self.store.save_timeseries_metric(
-                        "state_size_bytes",
-                        state_size,
-                    )
-                    convergence_value = self.runtime_metrics.get(
-                        "last_convergence_seconds"
-                    )
-                    if convergence_value is None:
-                        convergence_value = 0.0
-                    self.store.save_timeseries_metric(
-                        "convergence_time",
-                        convergence_value,
-                    )
-                    self.store.save_timeseries_metric(
-                        "node_count",
-                        len(reachable_roots),
-                    )
-                    self.store.save_timeseries_metric(
-                        "is_divergent",
-                        1.0 if self.is_divergent else 0.0,
                     )
 
             self.last_poll = time.time()
