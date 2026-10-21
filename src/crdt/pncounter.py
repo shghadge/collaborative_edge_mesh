@@ -47,6 +47,7 @@ class PNCounter:
         self._n.merge(other._n)
 
     def to_dict(self):
+        """Serialize both internal G-Counters and the net value to a dict."""
         return {
             "type": "pn_counter",
             "node_id": self.node_id,
@@ -75,6 +76,7 @@ class PNCounter:
 
     @classmethod
     def from_dict(cls, data):
+        """Build a PN-Counter from a dict produced by ``to_dict``."""
         c = cls(data["node_id"], description=data.get("description", ""))
         c._p = GCounter.from_dict(data["positive"])
         c._n = GCounter.from_dict(data["negative"])

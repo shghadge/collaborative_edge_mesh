@@ -1,0 +1,49 @@
+measure,version,partition,method,nodes,n_runs,median,q1,q3,note
+time_after_heal_s,earlier,"50/50, 70/30, 80/20",full_state,5,30,8.4025,4.5575,8.4147,previous runs (earlier code)
+time_after_heal_s,earlier,"50/50, 70/30, 80/20",full_state,10,30,9.9435,6.8477,11.0575,previous runs (earlier code)
+time_after_heal_s,earlier,"50/50, 70/30, 80/20",full_state,15,30,9.6380,7.3435,11.7625,previous runs (earlier code)
+time_after_heal_s,earlier,"50/50, 70/30, 80/20",optimized_full_state,5,30,8.3975,4.5580,8.4170,previous runs (earlier code)
+time_after_heal_s,earlier,"50/50, 70/30, 80/20",optimized_full_state,10,30,8.8970,8.0855,11.0605,previous runs (earlier code)
+time_after_heal_s,earlier,"50/50, 70/30, 80/20",optimized_full_state,15,30,9.7370,8.9473,11.9425,previous runs (earlier code)
+time_after_heal_s,earlier,"50/50, 70/30, 80/20",naive_key_delta,5,30,5.4830,2.1975,8.4198,previous runs (earlier code)
+time_after_heal_s,earlier,"50/50, 70/30, 80/20",naive_key_delta,10,30,7.4395,6.6935,8.9125,previous runs (earlier code)
+time_after_heal_s,earlier,"50/50, 70/30, 80/20",naive_key_delta,15,30,7.4910,6.9725,9.5865,previous runs (earlier code)
+time_after_heal_s,earlier,"50/50, 70/30, 80/20",true_delta,5,30,8.4085,5.4715,8.4245,previous runs (earlier code)
+time_after_heal_s,earlier,"50/50, 70/30, 80/20",true_delta,10,30,6.7180,6.0353,8.6615,previous runs (earlier code)
+time_after_heal_s,earlier,"50/50, 70/30, 80/20",true_delta,15,30,8.9110,7.2618,9.9290,previous runs (earlier code)
+overhead_mb,earlier,"50/50, 70/30, 80/20",full_state,5,30,0.6779,0.5206,0.7407,previous runs (earlier code)
+overhead_mb,earlier,"50/50, 70/30, 80/20",full_state,10,30,6.0659,5.6879,6.3692,previous runs (earlier code)
+overhead_mb,earlier,"50/50, 70/30, 80/20",full_state,15,30,20.0862,18.2806,20.9305,previous runs (earlier code)
+overhead_mb,earlier,"50/50, 70/30, 80/20",optimized_full_state,5,30,0.6957,0.5239,0.7529,previous runs (earlier code)
+overhead_mb,earlier,"50/50, 70/30, 80/20",optimized_full_state,10,30,6.2158,5.8682,6.9745,previous runs (earlier code)
+overhead_mb,earlier,"50/50, 70/30, 80/20",optimized_full_state,15,30,19.2190,18.0797,20.6041,previous runs (earlier code)
+overhead_mb,earlier,"50/50, 70/30, 80/20",naive_key_delta,5,30,0.9185,0.6932,1.0715,previous runs (earlier code)
+overhead_mb,earlier,"50/50, 70/30, 80/20",naive_key_delta,10,30,8.0446,6.8682,8.3389,previous runs (earlier code)
+overhead_mb,earlier,"50/50, 70/30, 80/20",naive_key_delta,15,30,24.8814,23.9633,25.6804,previous runs (earlier code)
+overhead_mb,earlier,"50/50, 70/30, 80/20",true_delta,5,30,0.9986,0.9280,1.0691,previous runs (earlier code)
+overhead_mb,earlier,"50/50, 70/30, 80/20",true_delta,10,30,7.4950,7.2252,8.4709,previous runs (earlier code)
+overhead_mb,earlier,"50/50, 70/30, 80/20",true_delta,15,30,24.6644,23.5541,25.5964,previous runs (earlier code)
+time_after_heal_s,improved,"50/50, 70/30, 80/20",full_state,5,30,4.9250,2.7893,5.0318,
+time_after_heal_s,improved,"50/50, 70/30, 80/20",full_state,10,30,9.6490,7.0422,10.1150,
+time_after_heal_s,improved,"50/50, 70/30, 80/20",full_state,15,30,10.0720,9.1698,13.6070,
+time_after_heal_s,improved,"50/50, 70/30, 80/20",optimized_full_state,5,30,4.9100,2.7448,5.0357,
+time_after_heal_s,improved,"50/50, 70/30, 80/20",optimized_full_state,10,30,9.6945,9.1990,11.0180,
+time_after_heal_s,improved,"50/50, 70/30, 80/20",optimized_full_state,15,30,10.3255,9.1620,13.3565,
+time_after_heal_s,improved,"50/50, 70/30, 80/20",naive_key_delta,5,30,4.9060,2.5793,5.0678,
+time_after_heal_s,improved,"50/50, 70/30, 80/20",naive_key_delta,10,30,9.2990,6.8053,9.6423,
+time_after_heal_s,improved,"50/50, 70/30, 80/20",naive_key_delta,15,30,8.7010,7.9448,9.5663,
+time_after_heal_s,improved,"50/50, 70/30, 80/20",true_delta,5,30,4.9155,0.7195,5.0267,
+time_after_heal_s,improved,"50/50, 70/30, 80/20",true_delta,10,30,9.2305,6.3307,9.7175,
+time_after_heal_s,improved,"50/50, 70/30, 80/20",true_delta,15,30,9.0040,8.2658,10.2990,
+overhead_mb,improved,"50/50, 70/30, 80/20",full_state,5,30,0.5314,0.4439,0.6000,
+overhead_mb,improved,"50/50, 70/30, 80/20",full_state,10,30,3.1667,2.6652,3.4884,
+overhead_mb,improved,"50/50, 70/30, 80/20",full_state,15,30,7.7257,6.4678,8.9332,
+overhead_mb,improved,"50/50, 70/30, 80/20",optimized_full_state,5,30,0.5426,0.4847,0.6627,
+overhead_mb,improved,"50/50, 70/30, 80/20",optimized_full_state,10,30,3.1600,2.4889,3.4581,
+overhead_mb,improved,"50/50, 70/30, 80/20",optimized_full_state,15,30,7.4735,6.2012,8.7762,
+overhead_mb,improved,"50/50, 70/30, 80/20",naive_key_delta,5,30,0.2670,0.2541,0.2701,
+overhead_mb,improved,"50/50, 70/30, 80/20",naive_key_delta,10,30,1.3222,1.2636,1.4086,
+overhead_mb,improved,"50/50, 70/30, 80/20",naive_key_delta,15,30,3.5130,3.2476,3.8015,
+overhead_mb,improved,"50/50, 70/30, 80/20",true_delta,5,30,0.2679,0.2582,0.2742,
+overhead_mb,improved,"50/50, 70/30, 80/20",true_delta,10,30,1.3010,1.2473,1.3898,
+overhead_mb,improved,"50/50, 70/30, 80/20",true_delta,15,30,3.5336,3.2833,3.7548,

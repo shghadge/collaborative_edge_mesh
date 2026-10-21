@@ -1,4 +1,13 @@
 #!/usr/bin/env python3
+"""Submit one evaluation run to the simulator API and save its results.
+
+Usage: python3 scripts/run_evaluation_matrix.py [--base-url URL] [--sync-mode MODE]
+[--node-counts 5,10,15] [--scenarios ...] [--resume] [--out DIR] and further
+tuning flags (see --help). Posts to /evaluation/run, polls /evaluation/status,
+then writes the CSV, raw results JSON, and a manifest JSON under
+<out>/<implementation_label>/ and prints the CSV and manifest paths.
+"""
+
 import argparse
 import json
 import sys
@@ -16,22 +25,30 @@ from src.services.docker_manager import NETWORK_PROFILE_SETTINGS
 
 
 def _csv_list_int(value: str) -> list[int]:
+    """Parse a comma-separated string into a list of ints, skipping empty parts."""
     return [int(part.strip()) for part in value.split(",") if part.strip()]
 
 
 def _csv_list_float(value: str) -> list[float]:
+    """Parse a comma-separated string into a list of floats, skipping empty parts."""
     return [float(part.strip()) for part in value.split(",") if part.strip()]
 
 
 def _csv_list_str(value: str) -> list[str]:
+    """Split a comma-separated string into stripped, non-empty strings."""
     return [part.strip() for part in value.split(",") if part.strip()]
 
 
 def _manifest_matches(manifest: dict, expected: dict) -> bool:
+    """Return True if every key in expected has the same value in manifest."""
     return all(manifest.get(key) == value for key, value in expected.items())
 
 
 def _completed_run(out_dir: Path, expected: dict) -> tuple[Path, Path] | None:
+    """Find a saved manifest in out_dir that matches expected and whose CSV exists.
+
+    Returns (csv_path, manifest_path), or None if no completed run matches.
+    """
     if not out_dir.exists():
         return None
     for manifest_path in sorted(out_dir.glob("*.json"), reverse=True):
@@ -52,6 +69,10 @@ def _completed_run(out_dir: Path, expected: dict) -> tuple[Path, Path] | None:
 def _json_request(
     method: str, url: str, payload: dict | None = None, timeout: int = 30
 ):
+    """Send an HTTP request with an optional JSON body and return the decoded JSON.
+
+    An empty response body is returned as an empty dict.
+    """
     data = None
     headers = {}
     if payload is not None:
@@ -64,11 +85,13 @@ def _json_request(
 
 
 def _text_request(url: str, timeout: int = 30) -> str:
+    """GET url and return the response body as UTF-8 text."""
     with urlopen(url, timeout=timeout) as response:
         return response.read().decode("utf-8")
 
 
 def _status_line(status: dict) -> str:
+    """Format an evaluation status dict as a one-line progress summary."""
     completed = status.get("completed_steps", status.get("progress", 0))
     total = status.get("total_steps", 0)
     if not total:
@@ -92,6 +115,10 @@ def _status_line(status: dict) -> str:
 
 
 def _wait_for_api(base_url: str, timeout_seconds: float = 30.0) -> bool:
+    """Poll GET /evaluation/status until it responds or the timeout expires.
+
+    Returns True if the API answered, False on timeout.
+    """
     deadline = time.time() + timeout_seconds
     while time.time() < deadline:
         try:
@@ -103,10 +130,17 @@ def _wait_for_api(base_url: str, timeout_seconds: float = 30.0) -> bool:
 
 
 def _utc_now() -> str:
+    """Return the current UTC time as an ISO 8601 string."""
     return datetime.now(timezone.utc).isoformat()
 
 
 def main() -> int:
+    """Run one evaluation through the API and write its CSV, results, and manifest.
+
+    With --resume (and without --force), skips the run and prints existing paths
+    when a matching completed manifest is found. Returns 0 on success, 1 on
+    API or evaluation failure.
+    """
     parser = argparse.ArgumentParser(
         description="Run an evaluation matrix and save CSV output."
     )

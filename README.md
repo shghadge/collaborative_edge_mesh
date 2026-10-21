@@ -1,200 +1,95 @@
 # Collaborative Edge Mesh
 
-CRDT-based edge mesh for disaster analytics. Nodes sync data using gossip protocol and merge state using conflict-free data types.
+CRDT-based edge mesh for disaster analytics. Edge nodes exchange state by gossip, merge it with conflict-free data
+types, and upload to the cloud through gateways.
 
-## Runtime Topology
+## Components
 
-- **Simulator service**: hosts dashboard + simulation control APIs
-- **Gateway service**: polling/merge/metrics backend
-- **Edge nodes**: created dynamically from simulator (no default nodes at startup)
-
-After `make docker-rebuild`:
-- Dashboard + simulator API: `http://localhost:8000`
-- Gateway API: `http://localhost:7000`
+- **Simulator** (`src/simulator_main.py`, `http://localhost:8000`): dashboard and API; creates edge-node containers
+  and runs evaluations.
+- **Gateway** (`src/gateway_main.py`, `http://localhost:7000`): collects and merges node state.
+- **Edge nodes** (`src/node_main.py`): created on demand (`node-1`, `node-2`, ...). Each accepts events over HTTP,
+  stores them in CRDT state with a hash-chain log, and gossips over UDP every 5 s.
 
 ## Setup
 
 ```bash
-cd /home/shubham/290_copy/collaborative_edge_mesh
 uv sync
+make build            # build the Docker images
+make docker-rebuild   # clean and start the simulator and gateway
+make docker-clean     # stop everything, including edge nodes
 ```
 
-## Build
+## How a run works
+
+```mermaid
+flowchart LR
+  CLI[run_evaluation_matrix.py<br/>or dashboard] -->|POST /evaluation/run| SIM[Simulator<br/>evaluation runner]
+  SIM -->|create containers| NODES[Edge nodes]
+  SIM -->|POST /event| NODES
+  NODES <-->|gossip| NODES
+  SIM -->|poll Merkle roots, state, counters| NODES
+  SIM -->|Docker stats| NODES
+  CLI -->|GET /evaluation/status, /results, /download| SIM
+```
+
+### 1. Submit
 
 ```bash
-make build   # build docker images
-make docker-rebuild  # clean + rebuild + start simulator/gateway
+uv run python scripts/run_evaluation_matrix.py --sync-mode true_delta --node-counts 5 \
+  --events-per-node 15 --scenarios partition_heal --partition-splits 0.5 --repetitions 3 --out results/demo
 ```
 
-## Create Nodes (On-Demand)
+The script sends the configuration to `POST /evaluation/run`, polls `/evaluation/status` until the run ends, then
+writes `<out>/<label>/<run_id>.csv` (one row per repetition and scenario), `<run_id>-results.json` and
+`<run_id>.json` (configuration and resource limits). `--resume` skips a configuration that already has matching
+results. The dashboard uses the same endpoints. `scripts/run_reviewer_matrix.py` runs a CSV of configurations;
+the report's experiments are in `experiments/`.
 
-- Start with zero edge nodes
-- Use dashboard batch create or API: `POST /nodes/batch?count=<n>` on simulator
-- First created node starts as `node-1`, then increments
+### 2. Parameters
 
+| Parameter | Meaning | Values |
+|---|---|---|
+| `--sync-mode` | Synchronization method | `full_state`, `optimized_full_state`, `naive_key_delta`, `true_delta` |
+| `--node-counts` | Mesh sizes | e.g. `5,10,15` |
+| `--events-per-node` | Events sent to each node | e.g. `90` |
+| `--scenarios` | What happens during the run | `baseline`, `partition_heal`, `high_load`, `shared_key`, `shared_counter`, `shared_set` |
+| `--partition-splits`, `--partition-events-per-node`, `--partition-wait-seconds` | Group sizes, events sent during the partition, how long it is held | e.g. `0.5,0.7,0.8`, `15`, `30` |
+| `--network-profile` | Delay, jitter, loss and bandwidth between nodes | `clean_lan`, `constrained_wifi`, `degraded`, `severe` |
+| `--docker-cpus`, `--docker-memory` | Limits per node | e.g. `0.5`, `512m` |
+| `--resource-mode` | Same limits for all nodes, or a mix of weaker and stronger nodes (`balanced_edge_v1`) | `uniform`, `heterogeneous` |
+| `--offered-rate-per-second`, `--event-concurrency` | Sending rate and parallel requests | e.g. `10`, `25` |
+| `--convergence-wait-seconds` | Deadline for all nodes to agree | e.g. `180` |
+| `--repetitions`, `--scenario-seed` | Repetitions; seed (increased per repetition) | e.g. `10`, `7301` |
+| `--cold-topology` | Recreate containers for every repetition | flag |
 
-## Run an Individual Scenario
+### 3. Execute (`src/evaluation/runner.py`)
 
-Start the simulator and gateway first:
+For each node count and repetition, the runner:
 
-```bash
-make docker-rebuild
-```
+1. Removes old nodes and creates new containers with the CPU and memory limits, then waits for `/health`.
+2. For each scenario: resets node and gateway state, applies the network profile with `tc`, and starts sampling
+   container resources.
+3. Sends events directly to the nodes (`POST /event`, round robin), each with a tracking ID and submission time.
+   - `baseline`: the events only. `high_load`: three times as many.
+   - `partition_heal`: events, then `iptables` rules block traffic between the two groups, more events are sent
+     on both sides, the partition is held, and the rules are removed.
+4. Polls the nodes until their Merkle roots match and every node has every event, or the deadline passes.
+5. Stops sampling and clears the network profile.
 
-The evaluation runner creates the edge-node containers, applies the selected synchronization mode and resource limits, submits events, collects metrics, and writes CSV/JSON results under `results/`.
+### 4. Metrics
 
-### Baseline scenario
+| Metric | How it is gathered |
+|---|---|
+| Convergence time (`time_to_last_node_*`) | Each node records when it first saw each event; the runner subtracts the submission time |
+| Recovery time (`recovery_after_heal_s`) | Last arrival at any node minus the time the partition was removed |
+| Correctness (`converged`, missing events) | Matching Merkle roots, equal final state, no missing tracking IDs |
+| Traffic (`protocol_sync_bytes_total`) | Nodes count gossip summaries, full-state and delta bytes; the runner sums them without measurement-only tracking data |
+| CPU, memory, throttling, OOM | Docker stats sampled about every second per node; OOM kills from `docker inspect` |
 
-Runs connected nodes on the clean-LAN profile:
-
-```bash
-uv run python scripts/run_evaluation_matrix.py \
-  --case-id demo-baseline \
-  --sync-mode true_delta \
-  --network-profile clean_lan \
-  --node-counts 5 \
-  --events-per-node 15 \
-  --scenarios baseline \
-  --repetitions 3 \
-  --scenario-seed 7301 \
-  --convergence-wait-seconds 45 \
-  --cold-topology \
-  --out results/demo
-```
-
-### Partition and healing scenario
-
-Creates a hard partition, writes events on both sides, heals the partition, and measures recovery:
-
-```bash
-uv run python scripts/run_evaluation_matrix.py \
-  --case-id demo-partition \
-  --sync-mode true_delta \
-  --network-profile hard_partition \
-  --node-counts 5 \
-  --events-per-node 15 \
-  --partition-events-per-node 15 \
-  --partition-splits 0.5 \
-  --partition-wait-seconds 30 \
-  --scenarios partition_heal \
-  --repetitions 3 \
-  --scenario-seed 7301 \
-  --convergence-wait-seconds 45 \
-  --cold-topology \
-  --out results/demo
-```
-
-Use `--partition-splits 0.5,0.7,0.8` to test 50/50, 70/30, and 80/20 partitions.
-
-### High-load scenario
-
-Sends more events to stress throughput, latency, and synchronization:
-
-```bash
-uv run python scripts/run_evaluation_matrix.py \
-  --case-id demo-high-load \
-  --sync-mode optimized_full_state \
-  --network-profile clean_lan \
-  --node-counts 15 \
-  --events-per-node 90 \
-  --offered-rate-per-second 25 \
-  --scenarios high_load \
-  --repetitions 3 \
-  --scenario-seed 7301 \
-  --convergence-wait-seconds 60 \
-  --cold-topology \
-  --out results/demo
-```
-
-### Degraded-network scenario
-
-Applies the selected delay, jitter, packet-loss, and bandwidth profile before submitting events:
-
-```bash
-uv run python scripts/run_evaluation_matrix.py \
-  --case-id demo-degraded \
-  --sync-mode full_state \
-  --network-profile degraded \
-  --node-counts 10 \
-  --events-per-node 15 \
-  --scenarios baseline \
-  --repetitions 3 \
-  --scenario-seed 7301 \
-  --docker-cpus 0.5 \
-  --docker-memory 256m \
-  --convergence-wait-seconds 120 \
-  --cold-topology \
-  --out results/demo
-```
-
-Supported synchronization modes are `full_state`, `optimized_full_state`, `naive_key_delta`, and `true_delta`. Supported network profiles are `clean_lan`, `constrained_wifi`, `degraded`, `severe`, and `hard_partition`.
-
-## Run the Complete Experiment Matrix
-
-Generate the 1,760 selected configurations. Each configuration contains 30 repetitions, producing 52,800 expected result rows:
-
-```bash
-uv run python scripts/generate_experiment_matrix.py \
-  --repetitions 30 \
-  --base-seed 7301 \
-  --out scripts/final_experiment_matrix.csv
-```
-
-Validate the matrix without starting experiments:
-
-```bash
-uv run python scripts/run_reviewer_matrix.py \
-  scripts/final_experiment_matrix.csv \
-  --dry-run \
-  --require-complete
-```
-
-Run the complete matrix:
-
-```bash
-uv run python scripts/run_reviewer_matrix.py \
-  scripts/final_experiment_matrix.csv \
-  --out results/final_experiment \
-  --require-complete
-```
-
-The runner executes configurations one at a time and supports resuming completed configurations. Use `--no-resume` to force a configuration to run again.
-
-## Inspect a Running Experiment
-
-In another terminal:
+## Inspect a running experiment
 
 ```bash
 curl -s http://localhost:8000/evaluation/status | python -m json.tool
 docker stats --no-stream
-docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
 ```
-
-For a running node, inspect the active network controls:
-
-```bash
-docker exec edge-node-1 tc qdisc show dev eth0
-docker exec edge-node-1 tc class show dev eth0
-docker exec edge-node-1 iptables -S
-```
-
-The evaluator records the exact network settings, synchronization mode, resource limits, repetition seed, convergence results, event coverage, latency, throughput, communication bytes, CPU, memory, throttling, and OOM status in each result CSV.
-
-## Clean Up
-
-Stop and remove the simulator, gateway, and dynamically created edge nodes:
-
-```bash
-make docker-clean
-```
-## Notes
-
-The project follows a minimal command policy:
-- Keep Makefile targets limited to essential build and runtime commands
-- Use `uv` for all Python-related workflows
-
-Core components:
-- **FastAPI** HTTP server for event ingestion and state queries
-- **UDP Gossip** service broadcasting state to peers every 5 seconds
-- **Hash-chain log** for tamper-evident auditing
-- **Merkle root** computation for quick divergence detection

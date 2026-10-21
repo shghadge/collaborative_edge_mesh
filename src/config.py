@@ -1,3 +1,5 @@
+"""Environment-driven configuration shared by node and gateway processes."""
+
 import os
 
 
@@ -44,6 +46,7 @@ class Config:
 
     @staticmethod
     def _bool_env(name: str, default: bool = False) -> bool:
+        """Parse a boolean environment variable, returning ``default`` if unset."""
         value = os.getenv(name)
         if value is None:
             return default

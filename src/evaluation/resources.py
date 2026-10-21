@@ -1,3 +1,5 @@
+"""Per-node Docker CPU and memory assignments for evaluation runs."""
+
 import re
 import random
 from typing import Any, cast
@@ -39,6 +41,10 @@ RESOURCE_PROFILES: dict[str, dict[str, Any]] = {
 
 
 def resource_profile_block_size(profile_name: str) -> int:
+    """Return the number of nodes in one weighted block of ``profile_name``.
+
+    Raises ``ValueError`` for an unknown profile.
+    """
     profile = RESOURCE_PROFILES.get(profile_name)
     if profile is None:
         raise ValueError(f"unknown resource profile: {profile_name}")
@@ -46,6 +52,10 @@ def resource_profile_block_size(profile_name: str) -> int:
 
 
 def memory_limit_bytes(value: str | None) -> int | None:
+    """Convert a Docker memory string such as ``512m`` to bytes.
+
+    Returns ``None`` for an empty value; raises ``ValueError`` if unparsable.
+    """
     if not value:
         return None
     match = re.fullmatch(r"(\d+(?:\.\d+)?|\.\d+)([kmgt]?i?b?)", value.lower())
@@ -85,6 +95,13 @@ def build_resource_assignments(
     uniform_memory: str | None,
     repetition_seed: int | None,
 ) -> list[dict[str, Any]]:
+    """Build one CPU and memory assignment per edge node.
+
+    Uniform mode gives every node the same limits. Heterogeneous mode repeats
+    the profile's weighted tiers, requires ``node_count`` to be a multiple of
+    the block size, and shuffles tiers deterministically with
+    ``repetition_seed`` (0 when ``None``).
+    """
     if resource_mode not in RESOURCE_MODES:
         raise ValueError("resource_mode must be uniform or heterogeneous")
 
@@ -135,6 +152,7 @@ def build_resource_assignments(
 
 
 def resource_totals(assignments: list[dict[str, Any]]) -> dict[str, float | int | None]:
+    """Sum CPU and memory across assignments; a total is ``None`` if any value is."""
     cpu_values = [assignment.get("cpus") for assignment in assignments]
     memory_values = [assignment.get("memory_mib") for assignment in assignments]
     cpu_total = (

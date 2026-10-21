@@ -196,20 +196,24 @@ class NodeState:
         return self.delta_vv.get(self.node_id, 0)
 
     def record_delta(self, delta_state: "NodeState") -> int:
+        """Assign the next local sequence number to ``delta_state`` and log it."""
         seq = self.delta_seq + 1
         self.delta_vv[self.node_id] = seq
         self._append_delta_log({self.node_id: [seq, seq]}, delta_state.to_delta_dict())
         return seq
 
     def _append_delta_log(self, ranges: dict, state_data: dict):
+        """Append a delta log entry, trimming the log to ``delta_log_limit``."""
         self.delta_log.append({"ranges": ranges, "state": state_data})
         if self.delta_log_limit and len(self.delta_log) > self.delta_log_limit:
             self.delta_log = self.delta_log[-self.delta_log_limit :]
 
     def set_gossip_round(self, round_number: int):
+        """Set the gossip round stamped onto newly first-seen tracking ids."""
         self.current_gossip_round = max(int(round_number or 0), 0)
 
     def _record_first_seen(self, tracking_id, submitted_at=None):
+        """Record when this node first saw ``tracking_id``; later calls are no-ops."""
         if not tracking_id or tracking_id in self.first_seen_tracking:
             return
         now = time.time()
@@ -222,6 +226,7 @@ class NodeState:
         }
 
     def _merge_first_seen_tracking(self, other: "NodeState"):
+        """Record first-seen entries for tracking ids this node has not seen yet."""
         for tracking_id in other.first_seen_tracking:
             self._record_first_seen(
                 tracking_id,
@@ -387,6 +392,7 @@ class NodeState:
         return result
 
     def get_event_count(self, event_type=None):
+        """Return the event count for ``event_type``, or the total over all types."""
         if event_type:
             key = f"event_count:{event_type}"
             c = self.counters.get(key)
@@ -430,6 +436,7 @@ class NodeState:
 
     @staticmethod
     def _counter_has_new_counts(local, remote) -> bool:
+        """Return True if ``remote`` has a higher count than ``local`` for any node."""
         return any(
             count > local.counts.get(node_id, 0)
             for node_id, count in remote.counts.items()
@@ -579,6 +586,11 @@ class NodeState:
         return leaves[0]
 
     def to_dict(self, include_deltas=False):
+        """Serialize the full node state, including Merkle root and summary.
+
+        With ``include_deltas`` the retained delta log is added under
+        ``"delta_log"``.
+        """
         data = {
             "node_id": self.node_id,
             "version": self.version,
@@ -607,6 +619,7 @@ class NodeState:
         return data
 
     def to_delta_dict(self):
+        """Serialize only the CRDT payload and tracking data carried in a delta."""
         return {
             "node_id": self.node_id,
             "counters": {k: v.to_dict() for k, v in self.counters.items()},
@@ -723,6 +736,7 @@ class NodeState:
 
     @classmethod
     def from_dict(cls, data):
+        """Build a node state from a ``to_dict`` or ``to_delta_dict`` dict."""
         s = cls(
             data["node_id"],
             data.get("event_id_retention_limit", 100),

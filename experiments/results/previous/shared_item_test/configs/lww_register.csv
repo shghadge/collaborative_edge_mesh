@@ -1,0 +1,7 @@
+case_id,condition_id,enabled,sweep,sync_mode,event_id_retention_limit,delta_log_limit,node_count,scenario,partition_split,network_profile,events_per_node,partition_events_per_node,event_concurrency,offered_rate_per_second,partition_wait_seconds,convergence_wait_seconds,poll_interval_seconds,repetitions,seed,docker_cpus,docker_memory,resource_mode,resource_profile,observability
+shared-key-n05-naive_key_delta,shared-key-n05,1,shared_key_comparison,naive_key_delta,100,1000,5,shared_key,,clean_lan,15,0,25,,0,45,2,10,9601,1.0,512m,uniform,,off
+shared-key-n05-true_delta,shared-key-n05,1,shared_key_comparison,true_delta,100,1000,5,shared_key,,clean_lan,15,0,25,,0,45,2,10,9601,1.0,512m,uniform,,off
+shared-key-n10-naive_key_delta,shared-key-n10,1,shared_key_comparison,naive_key_delta,100,1000,10,shared_key,,clean_lan,15,0,25,,0,45,2,10,9611,1.0,512m,uniform,,off
+shared-key-n10-true_delta,shared-key-n10,1,shared_key_comparison,true_delta,100,1000,10,shared_key,,clean_lan,15,0,25,,0,45,2,10,9611,1.0,512m,uniform,,off
+shared-key-n15-naive_key_delta,shared-key-n15,1,shared_key_comparison,naive_key_delta,100,1000,15,shared_key,,clean_lan,15,0,25,,0,45,2,10,9621,1.0,512m,uniform,,off
+shared-key-n15-true_delta,shared-key-n15,1,shared_key_comparison,true_delta,100,1000,15,shared_key,,clean_lan,15,0,25,,0,45,2,10,9621,1.0,512m,uniform,,off

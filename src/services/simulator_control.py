@@ -1,3 +1,5 @@
+"""Simulator control plane: gateway discovery, node-to-gateway assignment sync, and gateway request proxying."""
+
 import asyncio
 import time
 from typing import Optional
@@ -19,12 +21,14 @@ class SimulatorControlService:
         self._last_sync_fingerprint: str = ""
 
     def normalize_node_id(self, node_id: str) -> str:
+        """Map a container-style `edge-node-N` name to the `node-N` node ID; other values pass through."""
         if node_id.startswith("edge-node-"):
             suffix = node_id.replace("edge-node-", "", 1)
             return f"node-{suffix}"
         return node_id
 
     def candidate_urls(self, *urls: Optional[str]) -> list[str]:
+        """Return the given URLs in order, dropping empty values and duplicates."""
         ordered: list[str] = []
         for url in urls:
             if not url:
@@ -34,10 +38,12 @@ class SimulatorControlService:
         return ordered
 
     def require_docker(self):
+        """Raise a 503 API error if Docker is not available."""
         if self.docker_manager is None:
             raise self._api_error(503, "DOCKER_UNAVAILABLE", "Docker not available")
 
     async def discover_gateways(self):
+        """List running gateway containers via Docker, raising a 503 API error if there are none."""
         self.require_docker()
         gateways = await asyncio.to_thread(self.docker_manager.list_gateways)
         if not gateways:
@@ -53,6 +59,11 @@ class SimulatorControlService:
         *,
         persist_auto_assignments: bool,
     ) -> dict[str, str]:
+        """Map node IDs to gateway names, keeping valid user assignments and round-robining the rest.
+
+        With `persist_auto_assignments`, assignments for nodes no longer present are dropped
+        and the computed map is saved into `user_gateway_assignments`.
+        """
         if not gateways:
             return {}
 
@@ -163,6 +174,7 @@ class SimulatorControlService:
             ) as session:
 
                 async def _sync_gateway(gateway):
+                    """POST the gateway's node list to /gateway/nodes/sync, trying each of its URLs."""
                     payload = {"nodes": assignments[gateway["name"]]}
                     for base_url in self.candidate_urls(
                         gateway.get("url"), gateway.get("external_url")
@@ -182,6 +194,7 @@ class SimulatorControlService:
                 )
 
                 async def _notify_node(node_info, gateway_name):
+                    """Tell a node its assigned gateway, retrying for about 15 seconds."""
                     node_urls = self.candidate_urls(
                         node_info.get("internal_url"),
                         node_info.get("external_url"),
@@ -215,6 +228,11 @@ class SimulatorControlService:
     async def proxy_gateway_request(
         self, method: str, path: str, params: Optional[dict] = None
     ):
+        """Forward a request to the first discovered gateway and return its JSON response.
+
+        Tries the gateway's internal URL, container hostname, and external URL in order.
+        Raises an API error with the first HTTP failure status, or 503 if none responded.
+        """
         gateways = await self.discover_gateways()
         primary = gateways[0]
 

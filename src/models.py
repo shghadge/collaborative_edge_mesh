@@ -1,3 +1,5 @@
+"""Pydantic models for events submitted to edge nodes and node status."""
+
 import uuid
 from datetime import datetime
 from enum import Enum

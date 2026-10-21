@@ -1,3 +1,10 @@
+"""Evaluation runner that drives scenarios against the edge mesh and records metrics.
+
+It recreates node containers, submits events, applies network profiles and
+partitions, polls nodes and gateways until convergence or timeout, samples
+per-container CPU and memory, and builds one CSV row per scenario step.
+"""
+
 import asyncio
 import csv
 import io
@@ -187,6 +194,8 @@ CSV_HEADER = [
 
 
 class EvalScenarioConfig(BaseModel):
+    """Configuration for one evaluation run: topology, workload, sync mode, network and resources."""
+
     case_id: str | None = None
     condition_id: str | None = None
     sweep: str | None = None
@@ -214,16 +223,19 @@ class EvalScenarioConfig(BaseModel):
     partition_events_per_node: int = Field(default=3, ge=0)
 
     def effective_event_id_retention_limit(self) -> int:
+        """Return the event ID retention limit, forced to 0 (unbounded) for full_state mode."""
         if self.sync_mode == "full_state":
             return 0
         return self.event_id_retention_limit
 
     def seed_for_repetition(self, repetition: int) -> int | None:
+        """Return the RNG seed for a 1-based repetition, or None when no scenario seed is set."""
         if self.scenario_seed is None:
             return None
         return self.scenario_seed + repetition - 1
 
     def implementation_label(self) -> str:
+        """Build a label naming the sync mode, retention, network profile and resource settings."""
         retention_limit = self.effective_event_id_retention_limit()
         retention = (
             "unbounded_retention"
@@ -250,6 +262,7 @@ class EvalScenarioConfig(BaseModel):
 
 
 def initial_eval_state() -> dict[str, Any]:
+    """Return a fresh evaluation state dict with no run in progress."""
     state = {
         "running": False,
         "run_id": None,
@@ -266,6 +279,7 @@ def initial_eval_state() -> dict[str, Any]:
 
 
 def _progress_defaults() -> dict[str, Any]:
+    """Return the default values for the per-step progress fields."""
     return {
         "completed_steps": 0,
         "steps_remaining": 0,
@@ -279,6 +293,7 @@ def _progress_defaults() -> dict[str, Any]:
 
 
 def _percentile(values: list[float], percentile: float) -> float | None:
+    """Return the nearest-rank percentile (0 to 1) of values, or None when empty."""
     if not values:
         return None
     ordered = sorted(values)
@@ -287,6 +302,7 @@ def _percentile(values: list[float], percentile: float) -> float | None:
 
 
 def _semantic_state(state: dict[str, Any]) -> dict[str, Any]:
+    """Reduce a node /state payload to its CRDT values, dropping metadata."""
     return {
         "counters": {
             key: value.get("total_value")
@@ -307,6 +323,12 @@ def _semantic_state(state: dict[str, Any]) -> dict[str, Any]:
 
 
 class EvaluationRunner:
+    """Runs evaluation scenarios against Docker-managed nodes and collects results.
+
+    Docker access goes through docker_mgr; the callables locate service URLs,
+    discover gateways and resync gateways with the current node set.
+    """
+
     def __init__(
         self,
         *,
@@ -331,6 +353,7 @@ class EvaluationRunner:
         self._partition_applied = False
 
     async def _collect_resource_sample(self) -> None:
+        """Take one Docker resource snapshot in a thread and store it if non-empty."""
         if not hasattr(self.docker_mgr, "resource_snapshot"):
             return
         sample = await asyncio.to_thread(self.docker_mgr.resource_snapshot)
@@ -338,6 +361,7 @@ class EvaluationRunner:
             self._resource_samples.append(sample)
 
     async def _resource_sample_loop(self) -> None:
+        """Collect a resource sample about once per second until the stop event is set."""
         while self._resource_stop and not self._resource_stop.is_set():
             await self._collect_resource_sample()
             try:
@@ -346,6 +370,7 @@ class EvaluationRunner:
                 continue
 
     async def _start_resource_sampling(self) -> None:
+        """Stop any running sampler, clear samples, and start a new background sampling task."""
         await self._stop_resource_sampling()
         self._resource_samples = []
         if not hasattr(self.docker_mgr, "resource_snapshot"):
@@ -354,6 +379,7 @@ class EvaluationRunner:
         self._resource_task = asyncio.create_task(self._resource_sample_loop())
 
     async def _stop_resource_sampling(self) -> None:
+        """Stop the sampling task, take one final sample, and reset the sampler handles."""
         if self._resource_stop:
             self._resource_stop.set()
         if self._resource_task:
@@ -363,6 +389,13 @@ class EvaluationRunner:
         self._resource_task = None
 
     def _resource_summary(self) -> dict[str, Any]:
+        """Summarize collected samples into CPU, memory, throttling, I/O and per-tier metrics.
+
+        CPU percent is derived from deltas between consecutive cumulative CPU
+        counters per node; counters such as throttling and network bytes are
+        reported as growth between each node's first and last sample. Per-tier
+        values are relative to the assigned CPU and memory limits.
+        """
         samples = [item for sample in self._resource_samples for item in sample]
         empty_tier_fields = {
             f"{tier}_{metric}": 0.0
@@ -431,6 +464,7 @@ class EvaluationRunner:
             last_by_node[node] = sample
 
         def counter_growth(key: str) -> int:
+            """Sum the non-negative growth of a cumulative counter across all nodes."""
             return sum(
                 max(
                     int(last_by_node[node].get(key, 0))
@@ -587,6 +621,7 @@ class EvaluationRunner:
         }
 
     def validate_config(self, cfg: EvalScenarioConfig) -> None:
+        """Raise ValueError if the config names unknown modes, profiles or scenarios, or is inconsistent."""
         if cfg.sync_mode not in SYNC_MODES:
             supported = ", ".join(sorted(SYNC_MODES))
             raise ValueError(f"sync_mode must be one of: {supported}")
@@ -647,14 +682,17 @@ class EvaluationRunner:
             raise ValueError("selected scenarios produce no evaluation steps")
 
     def _enabled_scenarios(self, cfg: EvalScenarioConfig) -> set[str]:
+        """Return the set of scenarios selected in the config."""
         return set(cfg.scenarios)
 
     def active_partition_splits(self, cfg: EvalScenarioConfig) -> list[float]:
+        """Return the partition splits to run, or an empty list when partition_heal is disabled."""
         if "partition_heal" in self._enabled_scenarios(cfg):
             return cfg.partition_splits
         return []
 
     def _scenario_step_count(self, cfg: EvalScenarioConfig) -> int:
+        """Count the scenario steps run per node count and repetition."""
         scenarios = self._enabled_scenarios(cfg)
         count = 0
         if "baseline" in scenarios:
@@ -666,9 +704,11 @@ class EvaluationRunner:
         return count
 
     def planned_steps(self, cfg: EvalScenarioConfig) -> int:
+        """Return the total number of scenario steps the run will execute."""
         return cfg.repetitions * len(cfg.node_counts) * self._scenario_step_count(cfg)
 
     def status(self) -> dict[str, Any]:
+        """Return a public snapshot of run progress, without the result rows or CSV."""
         return {
             "running": self.state["running"],
             "run_id": self.state["run_id"],
@@ -700,6 +740,7 @@ class EvaluationRunner:
         scenario: str,
         partition_split: str | None = None,
     ) -> None:
+        """Update the progress fields in the run state for the current step."""
         self.state["current_step"] = current_step
         self.state["progress"] = completed_steps
         self.state["completed_steps"] = completed_steps
@@ -725,6 +766,15 @@ class EvaluationRunner:
         offered_rate: float | None = None,
         shared_workload: str | None = None,
     ):
+        """POST count events to each node and summarize the outcomes.
+
+        Events are spread round-robin over nodes with bounded concurrency and,
+        when offered_rate is set, paced to that many events per second. Tracking
+        IDs come from rng so runs are reproducible. shared_workload makes every
+        event target the same key of the given category. Returns counts of
+        accepted, rejected, duplicate and failed requests, tracking IDs, latencies
+        and rates.
+        """
         started_at = time.perf_counter()
         result = {
             "attempted": count * len(nodes),
@@ -750,6 +800,7 @@ class EvaluationRunner:
         semaphore = asyncio.Semaphore(max(1, int(concurrency or 1)))
 
         async def _send_one(i, target):
+            """Submit event i to target and return (outcome, tracking_id, submitted_at, latency_ms)."""
             if offered_rate is not None:
                 delay = (i / offered_rate) - (time.perf_counter() - started_at)
                 if delay > 0:
@@ -867,6 +918,7 @@ class EvaluationRunner:
         return result
 
     async def poll_all_gateways(self, session, gateways):
+        """Ask each gateway to poll its nodes now, trying each candidate URL; log failures."""
         for gw in gateways:
             polled = False
             for base_url in self.candidate_urls(gw.get("url"), gw.get("external_url")):
@@ -892,6 +944,14 @@ class EvaluationRunner:
         *,
         include_state: bool,
     ):
+        """Gather gateway and node metrics into one flat result dict.
+
+        Reads gateway runtime metrics, node gossip stats and Merkle roots. When
+        include_state is True it also fetches each node's full /state to compute
+        state sizes, semantic convergence and per-event arrival times from the
+        first_seen_tracking metadata (time_to_last_node_s, percentiles, missing
+        events). protocol_sync_bytes_total excludes evaluation tracking bytes.
+        """
         last_convergence = None
         known_statuses = []
         coverage_values = []
@@ -1280,12 +1340,20 @@ class EvaluationRunner:
         tracking_ids=None,
         attempted_tracking_ids=None,
     ):
+        """Poll metrics until all tracked events reach every node or the wait deadline passes.
+
+        Cheap polls skip /state; once Merkle roots agree, or at the deadline, a
+        full collection runs after forcing a gateway poll. Sets
+        converged_within_timeout and convergence_time_s, which is
+        time_to_last_node_s when tracking IDs are given.
+        """
         started = time.time()
         deadline = started + cfg.convergence_wait_seconds
         metrics = None
         gateways_polled = False
 
         async def _collect_final_metrics():
+            """Poll gateways once, then collect metrics including full node state."""
             nonlocal gateways_polled
             if not gateways_polled:
                 await self.poll_all_gateways(session, gateways)
@@ -1303,6 +1371,7 @@ class EvaluationRunner:
         def _mark_converged_within_timeout(
             collected_metrics: dict[str, Any], observed_at: float
         ) -> bool:
+            """Mark metrics as converged if roots agree, nothing is missing, and the time fits the deadline."""
             if (
                 not collected_metrics["is_converged"]
                 or collected_metrics["missing_at_cutoff_count"] != 0
@@ -1357,6 +1426,7 @@ class EvaluationRunner:
             await asyncio.sleep(cfg.poll_interval_seconds)
 
     async def wait_for_nodes_ready(self, session, nodes, timeout_seconds: float):
+        """Probe node /health endpoints until all respond; raise RuntimeError after timeout_seconds."""
         pending = {
             node["node_id"]: self.candidate_urls(
                 node.get("internal_url"),
@@ -1368,6 +1438,7 @@ class EvaluationRunner:
         deadline = time.time() + timeout_seconds
 
         async def _probe(node_id, urls):
+            """Return node_id if any of its URLs answers /health successfully, else None."""
             for base_url in urls:
                 try:
                     async with session.get(f"{base_url}/health") as response:
@@ -1390,6 +1461,7 @@ class EvaluationRunner:
             raise RuntimeError(f"nodes did not become ready: {missing}")
 
     async def _inspect_resource_limits(self) -> dict[str, dict[str, Any]]:
+        """Read the actual Docker resource limits and state of the assigned nodes."""
         if not hasattr(self.docker_mgr, "inspect_node_resource_limits"):
             return {}
         node_ids = [
@@ -1401,6 +1473,7 @@ class EvaluationRunner:
         )
 
     async def _container_health_summary(self) -> dict[str, int]:
+        """Count assigned containers that are not running or were OOM-killed."""
         inspected = await self._inspect_resource_limits()
         return {
             "container_failure_count": sum(
@@ -1414,6 +1487,7 @@ class EvaluationRunner:
     def _assign_node_resources(
         self, node_count: int, cfg: EvalScenarioConfig, repetition: int
     ) -> list[dict[str, Any]]:
+        """Compute and store CPU and memory assignments for the nodes of one repetition."""
         assignments = build_resource_assignments(
             node_count=node_count,
             resource_mode=cfg.resource_mode,
@@ -1430,6 +1504,7 @@ class EvaluationRunner:
         return assignments
 
     async def _verify_resource_limits(self) -> None:
+        """Check the Docker limits match the assignments; raise RuntimeError on mismatch."""
         inspected = await self._inspect_resource_limits()
         if not inspected:
             return
@@ -1461,6 +1536,7 @@ class EvaluationRunner:
     async def _apply_repetition_resources(
         self, node_count: int, cfg: EvalScenarioConfig, repetition: int
     ) -> None:
+        """Update running containers to this repetition's resource assignments and verify them."""
         assignments = self._assign_node_resources(node_count, cfg, repetition)
         receipt = await asyncio.to_thread(
             self.docker_mgr.update_node_resources, assignments
@@ -1514,6 +1590,12 @@ class EvaluationRunner:
         cfg: EvalScenarioConfig,
         repetition: int = 1,
     ):
+        """Replace all node containers with node_count fresh ones and wait until they are ready.
+
+        Heals partitions, clears netem, removes existing nodes, creates new ones
+        with the configured sync mode and resource limits, verifies limits, and
+        resyncs gateways. Returns (nodes, gateways).
+        """
         assignments = self._assign_node_resources(node_count, cfg, repetition)
 
         await self._heal_partition()
@@ -1555,7 +1637,10 @@ class EvaluationRunner:
         return nodes, await self.discover_gateways()
 
     async def reset_runtime(self, session, nodes, gateways):
+        """Resync gateways, then reset evaluation state on every node and gateway."""
+
         async def _post_first_available(urls, path):
+            """POST path to the first URL that succeeds; return whether any did."""
             for base_url in urls:
                 try:
                     async with session.post(f"{base_url}{path}") as resp:
@@ -1592,6 +1677,7 @@ class EvaluationRunner:
         """Reset scenario counters while preserving the synchronized node state."""
 
         async def _post_first_available(urls, path):
+            """POST path to the first URL that succeeds; return whether any did."""
             for base_url in urls:
                 try:
                     async with session.post(f"{base_url}{path}") as resp:
@@ -1637,6 +1723,7 @@ class EvaluationRunner:
         event_result,
         partition_split=None,
     ):
+        """Build the config, network, resource and submission columns of one result row."""
         attempted = event_result.get("attempted", 0)
         accepted = event_result.get("accepted", 0)
         return {
@@ -1735,6 +1822,7 @@ class EvaluationRunner:
         }
 
     def _append_result(self, row, metrics):
+        """Merge a row with metrics and resource summary, add per-event byte ratios, and store it."""
         combined = {**row, **metrics, **self._resource_summary()}
         accepted = int(combined.get("accepted_events", 0) or 0)
         sync_bytes = int(combined.get("sync_bytes_total", 0) or 0)
@@ -1752,6 +1840,7 @@ class EvaluationRunner:
         self.state["results"].append(combined)
 
     def reserve_run(self) -> str:
+        """Mark a run as started and return its new run ID."""
         run_id = f"eval-{uuid.uuid4().hex[:8]}"
         self.state["running"] = True
         self.state["run_id"] = run_id
@@ -1761,6 +1850,12 @@ class EvaluationRunner:
         return run_id
 
     async def run(self, cfg: EvalScenarioConfig, run_id: str | None = None):
+        """Execute every configured scenario and store the results and CSV in the run state.
+
+        For each node count and repetition it runs baseline, partition_heal per
+        split, high_load and the shared workloads. Errors are recorded in the
+        state instead of raised; sampling and netem are always cleaned up.
+        """
         run_id = run_id or self.reserve_run()
 
         self.state["running"] = True
@@ -1785,6 +1880,7 @@ class EvaluationRunner:
         )
 
         async def _prepare_scenario(session, nodes, gateways):
+            """Restore a clean network, reset node state, apply the netem profile, and start sampling."""
             network_changed = await self._heal_partition()
             if self._netem_profile != target_netem_profile:
                 network_changed = await self._clear_network_profile() or network_changed
@@ -1811,6 +1907,7 @@ class EvaluationRunner:
             return nodes, gateways
 
         async def _finish_scenario(session, nodes):
+            """Heal any partition, wait for nodes if one was healed, and stop sampling."""
             if await self._heal_partition():
                 await self.wait_for_nodes_ready(
                     session, nodes, cfg.node_readiness_timeout_seconds

@@ -1,0 +1,517 @@
+{
+  "run_id": "eval-46a62068",
+  "case_id": "optimized_full_state-n05-s80",
+  "condition_id": "n05-s80",
+  "sweep": "paper_setup_new_code",
+  "implementation_label": "optimized_full_state_retention_100_clean_lan",
+  "sync_mode": "optimized_full_state",
+  "event_id_retention_limit": 100,
+  "delta_log_limit": 1000,
+  "node_counts": [
+    5
+  ],
+  "events_per_node": 15,
+  "partition_splits": [
+    0.8
+  ],
+  "repetitions": 10,
+  "scenario_seed": 9101,
+  "scenarios": [
+    "partition_heal"
+  ],
+  "convergence_wait_seconds": 60.0,
+  "partition_wait_seconds": 8.0,
+  "poll_interval_seconds": 2.0,
+  "partition_events_per_node": 3,
+  "event_concurrency": 25,
+  "network_profile": "clean_lan",
+  "network_settings": {
+    "delay_ms": 1.0,
+    "jitter_ms": 0.2,
+    "loss_percent": 0.0,
+    "bandwidth_mbps": 1000.0
+  },
+  "offered_rate_per_second": null,
+  "docker_cpus": null,
+  "docker_memory": null,
+  "resource_mode": "uniform",
+  "resource_profile": null,
+  "warm_topology": false,
+  "node_readiness_timeout_seconds": 30.0,
+  "started_at": "2026-10-17T06:47:10.001597+00:00",
+  "finished_at": "2026-10-17T06:50:23.838718+00:00",
+  "csv_path": "/home/shubham/290_copy/masters_report/results/paper_setup_new_code/optimized_full_state-n05-s80/optimized_full_state_retention_100_clean_lan/eval-46a62068.csv",
+  "results_path": "/home/shubham/290_copy/masters_report/results/paper_setup_new_code/optimized_full_state-n05-s80/optimized_full_state_retention_100_clean_lan/eval-46a62068-results.json",
+  "resource_assignments": [
+    {
+      "repetition": 1,
+      "node_count": 5,
+      "assignments": [
+        {
+          "container": "edge-node-1",
+          "cpus": null,
+          "memory": null,
+          "memory_mib": null,
+          "node_id": "node-1",
+          "tier": "uniform"
+        },
+        {
+          "container": "edge-node-2",
+          "cpus": null,
+          "memory": null,
+          "memory_mib": null,
+          "node_id": "node-2",
+          "tier": "uniform"
+        },
+        {
+          "container": "edge-node-3",
+          "cpus": null,
+          "memory": null,
+          "memory_mib": null,
+          "node_id": "node-3",
+          "tier": "uniform"
+        },
+        {
+          "container": "edge-node-4",
+          "cpus": null,
+          "memory": null,
+          "memory_mib": null,
+          "node_id": "node-4",
+          "tier": "uniform"
+        },
+        {
+          "container": "edge-node-5",
+          "cpus": null,
+          "memory": null,
+          "memory_mib": null,
+          "node_id": "node-5",
+          "tier": "uniform"
+        }
+      ],
+      "resource_limit_verified": true
+    },
+    {
+      "repetition": 2,
+      "node_count": 5,
+      "assignments": [
+        {
+          "container": "edge-node-1",
+          "cpus": null,
+          "memory": null,
+          "memory_mib": null,
+          "node_id": "node-1",
+          "tier": "uniform"
+        },
+        {
+          "container": "edge-node-2",
+          "cpus": null,
+          "memory": null,
+          "memory_mib": null,
+          "node_id": "node-2",
+          "tier": "uniform"
+        },
+        {
+          "container": "edge-node-3",
+          "cpus": null,
+          "memory": null,
+          "memory_mib": null,
+          "node_id": "node-3",
+          "tier": "uniform"
+        },
+        {
+          "container": "edge-node-4",
+          "cpus": null,
+          "memory": null,
+          "memory_mib": null,
+          "node_id": "node-4",
+          "tier": "uniform"
+        },
+        {
+          "container": "edge-node-5",
+          "cpus": null,
+          "memory": null,
+          "memory_mib": null,
+          "node_id": "node-5",
+          "tier": "uniform"
+        }
+      ],
+      "resource_limit_verified": true
+    },
+    {
+      "repetition": 3,
+      "node_count": 5,
+      "assignments": [
+        {
+          "container": "edge-node-1",
+          "cpus": null,
+          "memory": null,
+          "memory_mib": null,
+          "node_id": "node-1",
+          "tier": "uniform"
+        },
+        {
+          "container": "edge-node-2",
+          "cpus": null,
+          "memory": null,
+          "memory_mib": null,
+          "node_id": "node-2",
+          "tier": "uniform"
+        },
+        {
+          "container": "edge-node-3",
+          "cpus": null,
+          "memory": null,
+          "memory_mib": null,
+          "node_id": "node-3",
+          "tier": "uniform"
+        },
+        {
+          "container": "edge-node-4",
+          "cpus": null,
+          "memory": null,
+          "memory_mib": null,
+          "node_id": "node-4",
+          "tier": "uniform"
+        },
+        {
+          "container": "edge-node-5",
+          "cpus": null,
+          "memory": null,
+          "memory_mib": null,
+          "node_id": "node-5",
+          "tier": "uniform"
+        }
+      ],
+      "resource_limit_verified": true
+    },
+    {
+      "repetition": 4,
+      "node_count": 5,
+      "assignments": [
+        {
+          "container": "edge-node-1",
+          "cpus": null,
+          "memory": null,
+          "memory_mib": null,
+          "node_id": "node-1",
+          "tier": "uniform"
+        },
+        {
+          "container": "edge-node-2",
+          "cpus": null,
+          "memory": null,
+          "memory_mib": null,
+          "node_id": "node-2",
+          "tier": "uniform"
+        },
+        {
+          "container": "edge-node-3",
+          "cpus": null,
+          "memory": null,
+          "memory_mib": null,
+          "node_id": "node-3",
+          "tier": "uniform"
+        },
+        {
+          "container": "edge-node-4",
+          "cpus": null,
+          "memory": null,
+          "memory_mib": null,
+          "node_id": "node-4",
+          "tier": "uniform"
+        },
+        {
+          "container": "edge-node-5",
+          "cpus": null,
+          "memory": null,
+          "memory_mib": null,
+          "node_id": "node-5",
+          "tier": "uniform"
+        }
+      ],
+      "resource_limit_verified": true
+    },
+    {
+      "repetition": 5,
+      "node_count": 5,
+      "assignments": [
+        {
+          "container": "edge-node-1",
+          "cpus": null,
+          "memory": null,
+          "memory_mib": null,
+          "node_id": "node-1",
+          "tier": "uniform"
+        },
+        {
+          "container": "edge-node-2",
+          "cpus": null,
+          "memory": null,
+          "memory_mib": null,
+          "node_id": "node-2",
+          "tier": "uniform"
+        },
+        {
+          "container": "edge-node-3",
+          "cpus": null,
+          "memory": null,
+          "memory_mib": null,
+          "node_id": "node-3",
+          "tier": "uniform"
+        },
+        {
+          "container": "edge-node-4",
+          "cpus": null,
+          "memory": null,
+          "memory_mib": null,
+          "node_id": "node-4",
+          "tier": "uniform"
+        },
+        {
+          "container": "edge-node-5",
+          "cpus": null,
+          "memory": null,
+          "memory_mib": null,
+          "node_id": "node-5",
+          "tier": "uniform"
+        }
+      ],
+      "resource_limit_verified": true
+    },
+    {
+      "repetition": 6,
+      "node_count": 5,
+      "assignments": [
+        {
+          "container": "edge-node-1",
+          "cpus": null,
+          "memory": null,
+          "memory_mib": null,
+          "node_id": "node-1",
+          "tier": "uniform"
+        },
+        {
+          "container": "edge-node-2",
+          "cpus": null,
+          "memory": null,
+          "memory_mib": null,
+          "node_id": "node-2",
+          "tier": "uniform"
+        },
+        {
+          "container": "edge-node-3",
+          "cpus": null,
+          "memory": null,
+          "memory_mib": null,
+          "node_id": "node-3",
+          "tier": "uniform"
+        },
+        {
+          "container": "edge-node-4",
+          "cpus": null,
+          "memory": null,
+          "memory_mib": null,
+          "node_id": "node-4",
+          "tier": "uniform"
+        },
+        {
+          "container": "edge-node-5",
+          "cpus": null,
+          "memory": null,
+          "memory_mib": null,
+          "node_id": "node-5",
+          "tier": "uniform"
+        }
+      ],
+      "resource_limit_verified": true
+    },
+    {
+      "repetition": 7,
+      "node_count": 5,
+      "assignments": [
+        {
+          "container": "edge-node-1",
+          "cpus": null,
+          "memory": null,
+          "memory_mib": null,
+          "node_id": "node-1",
+          "tier": "uniform"
+        },
+        {
+          "container": "edge-node-2",
+          "cpus": null,
+          "memory": null,
+          "memory_mib": null,
+          "node_id": "node-2",
+          "tier": "uniform"
+        },
+        {
+          "container": "edge-node-3",
+          "cpus": null,
+          "memory": null,
+          "memory_mib": null,
+          "node_id": "node-3",
+          "tier": "uniform"
+        },
+        {
+          "container": "edge-node-4",
+          "cpus": null,
+          "memory": null,
+          "memory_mib": null,
+          "node_id": "node-4",
+          "tier": "uniform"
+        },
+        {
+          "container": "edge-node-5",
+          "cpus": null,
+          "memory": null,
+          "memory_mib": null,
+          "node_id": "node-5",
+          "tier": "uniform"
+        }
+      ],
+      "resource_limit_verified": true
+    },
+    {
+      "repetition": 8,
+      "node_count": 5,
+      "assignments": [
+        {
+          "container": "edge-node-1",
+          "cpus": null,
+          "memory": null,
+          "memory_mib": null,
+          "node_id": "node-1",
+          "tier": "uniform"
+        },
+        {
+          "container": "edge-node-2",
+          "cpus": null,
+          "memory": null,
+          "memory_mib": null,
+          "node_id": "node-2",
+          "tier": "uniform"
+        },
+        {
+          "container": "edge-node-3",
+          "cpus": null,
+          "memory": null,
+          "memory_mib": null,
+          "node_id": "node-3",
+          "tier": "uniform"
+        },
+        {
+          "container": "edge-node-4",
+          "cpus": null,
+          "memory": null,
+          "memory_mib": null,
+          "node_id": "node-4",
+          "tier": "uniform"
+        },
+        {
+          "container": "edge-node-5",
+          "cpus": null,
+          "memory": null,
+          "memory_mib": null,
+          "node_id": "node-5",
+          "tier": "uniform"
+        }
+      ],
+      "resource_limit_verified": true
+    },
+    {
+      "repetition": 9,
+      "node_count": 5,
+      "assignments": [
+        {
+          "container": "edge-node-1",
+          "cpus": null,
+          "memory": null,
+          "memory_mib": null,
+          "node_id": "node-1",
+          "tier": "uniform"
+        },
+        {
+          "container": "edge-node-2",
+          "cpus": null,
+          "memory": null,
+          "memory_mib": null,
+          "node_id": "node-2",
+          "tier": "uniform"
+        },
+        {
+          "container": "edge-node-3",
+          "cpus": null,
+          "memory": null,
+          "memory_mib": null,
+          "node_id": "node-3",
+          "tier": "uniform"
+        },
+        {
+          "container": "edge-node-4",
+          "cpus": null,
+          "memory": null,
+          "memory_mib": null,
+          "node_id": "node-4",
+          "tier": "uniform"
+        },
+        {
+          "container": "edge-node-5",
+          "cpus": null,
+          "memory": null,
+          "memory_mib": null,
+          "node_id": "node-5",
+          "tier": "uniform"
+        }
+      ],
+      "resource_limit_verified": true
+    },
+    {
+      "repetition": 10,
+      "node_count": 5,
+      "assignments": [
+        {
+          "container": "edge-node-1",
+          "cpus": null,
+          "memory": null,
+          "memory_mib": null,
+          "node_id": "node-1",
+          "tier": "uniform"
+        },
+        {
+          "container": "edge-node-2",
+          "cpus": null,
+          "memory": null,
+          "memory_mib": null,
+          "node_id": "node-2",
+          "tier": "uniform"
+        },
+        {
+          "container": "edge-node-3",
+          "cpus": null,
+          "memory": null,
+          "memory_mib": null,
+          "node_id": "node-3",
+          "tier": "uniform"
+        },
+        {
+          "container": "edge-node-4",
+          "cpus": null,
+          "memory": null,
+          "memory_mib": null,
+          "node_id": "node-4",
+          "tier": "uniform"
+        },
+        {
+          "container": "edge-node-5",
+          "cpus": null,
+          "memory": null,
+          "memory_mib": null,
+          "node_id": "node-5",
+          "tier": "uniform"
+        }
+      ],
+      "resource_limit_verified": true
+    }
+  ]
+}

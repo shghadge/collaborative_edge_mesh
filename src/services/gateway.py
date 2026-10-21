@@ -1,3 +1,10 @@
+"""Gateway service that polls edge nodes, tracks divergence, and stores merged state.
+
+Each poll fetches Merkle roots, full state, and relay observations from the
+registered edge nodes over HTTP, merges the CRDT state, and writes snapshots,
+divergence entries, and metrics to SQLite.
+"""
+
 import asyncio
 import time
 from datetime import datetime
@@ -53,6 +60,7 @@ class GatewayService:
 
     @staticmethod
     def _new_runtime_metrics():
+        """Return a fresh runtime metrics dict with all fields at initial values."""
         return {
             "polls_started": 0,
             "polls_completed": 0,
@@ -140,6 +148,7 @@ class GatewayService:
             self._ensure_node_health(node_id)
 
     def _ensure_node_health(self, node_id):
+        """Create a default health record for the node if it does not have one."""
         if node_id not in self.node_health:
             self.node_health[node_id] = {
                 "consecutive_failures": 0,
@@ -150,6 +159,7 @@ class GatewayService:
             }
 
     def _mark_node_failure(self, node_id, error):
+        """Record a failed request: bump the node's failure count and keep the error."""
         self._ensure_node_health(node_id)
         health = self.node_health[node_id]
         health["consecutive_failures"] += 1
@@ -158,6 +168,7 @@ class GatewayService:
         health["backoff_until"] = 0.0
 
     def _mark_node_success(self, node_id, latency_ms):
+        """Record a successful request: reset the node's failures and store latency."""
         self._ensure_node_health(node_id)
         health = self.node_health[node_id]
         health["consecutive_failures"] = 0
@@ -167,6 +178,11 @@ class GatewayService:
         health["backoff_until"] = 0.0
 
     async def _get_json_with_retry(self, session, node_id, url):
+        """GET a URL and return the decoded JSON, or None on any error.
+
+        Makes a single attempt (no retry despite the name), updates the HTTP
+        counters and the node health record, and logs failures.
+        """
         self._ensure_node_health(node_id)
         self.runtime_metrics["total_http_requests"] += 1
         started = time.time()
@@ -184,6 +200,11 @@ class GatewayService:
             return None
 
     def _update_divergence_metrics(self):
+        """Update divergence counters after a poll.
+
+        While divergent, tracks how long the divergence has lasted. When the
+        nodes agree again, records the convergence time and resets the timer.
+        """
         now = time.time()
         started_at = self.runtime_metrics["divergence_started_at"]
 
@@ -206,6 +227,10 @@ class GatewayService:
                 self.runtime_metrics["divergence_duration_seconds"] = 0.0
 
     def _parse_observed_time(self, value):
+        """Convert an epoch number or ISO 8601 string to epoch seconds.
+
+        Falls back to the current time when the value is missing or invalid.
+        """
         if value is None:
             return time.time()
         if isinstance(value, (int, float)):
@@ -218,6 +243,11 @@ class GatewayService:
         return time.time()
 
     def _upsert_observation(self, source_node, observation, direct=False):
+        """Store an observation of a node unless an existing one is newer.
+
+        At equal `last_seen_at`, a relayed observation does not replace a
+        direct one. Returns True if stored, False if ignored.
+        """
         node_id = observation.get("node_id")
         if not node_id:
             return False
@@ -254,6 +284,11 @@ class GatewayService:
         return True
 
     def ingest_relay_observations(self, source_node: str, observations: list[dict]):
+        """Accept observations an edge node relays about other nodes.
+
+        Non-dict items are skipped. Returns how many were received and
+        accepted, plus the current visibility status and coverage.
+        """
         self.runtime_metrics["relay_reports_received"] += 1
         accepted = 0
         for observation in observations:
@@ -274,11 +309,19 @@ class GatewayService:
         }
 
     def _build_visibility_snapshot(self):
+        """Summarize how much of the mesh the gateway can currently see.
+
+        Coverage is the share of registered nodes with an observation inside
+        the freshness window. Status is `unknown_partial` below the confidence
+        threshold or when no roots are known, otherwise `known_diverged` or
+        `known_converged` depending on whether the fresh Merkle roots differ.
+        """
         now = time.monotonic()
         expected_nodes = len(self.edge_nodes)
         freshness = self.visibility_freshness_seconds
 
         def observation_age(obs):
+            """Return seconds since the observation was recorded (monotonic clock)."""
             return max(0.0, now - obs.get("observed_monotonic_at", now))
 
         fresh = [
@@ -337,6 +380,10 @@ class GatewayService:
             ) as session:
                 # Fetch merkle roots from all nodes CONCURRENTLY
                 async def _fetch_merkle(node_id, info):
+                    """Return (node_id, Merkle root), or "unreachable" on failure.
+
+                    Also caches the root in the node's `last_merkle` field.
+                    """
                     data = await self._get_json_with_retry(
                         session,
                         node_id,
@@ -401,6 +448,7 @@ class GatewayService:
                     nodes_to_fetch = [nodes_to_fetch[0]]
 
                 async def _fetch_state(node_id):
+                    """Return (node_id, full state JSON), with None on failure."""
                     node_info = self.edge_nodes.get(node_id)
                     if not node_info:
                         return node_id, None
@@ -416,6 +464,7 @@ class GatewayService:
                 )
 
                 async def _fetch_relay(node_id):
+                    """Return (node_id, relay observations JSON), None on failure."""
                     node_info = self.edge_nodes.get(node_id)
                     if not node_info:
                         return node_id, None
@@ -541,9 +590,11 @@ class GatewayService:
             await asyncio.sleep(interval)
 
     def stop(self):
+        """Make the polling loop exit at its next check."""
         self.running = False
 
     def get_runtime_metrics(self):
+        """Return runtime counters, per-node health, and the visibility snapshot."""
         visibility = self._build_visibility_snapshot()
         return {
             "runtime_metrics": dict(self.runtime_metrics),
@@ -558,6 +609,11 @@ class GatewayService:
         }
 
     def get_status(self):
+        """Return the gateway status for the HTTP API.
+
+        Includes registered nodes, node health, divergence, visibility,
+        runtime counters, and the merged Merkle root.
+        """
         visibility = self._build_visibility_snapshot()
         return {
             "node_id": self.config.node_id,

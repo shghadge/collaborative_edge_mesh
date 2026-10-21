@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+"""Run fast local checks: unit tests, compileall, and ruff check.
+
+Usage: python3 scripts/run_quick_checks.py [--skip-ruff] [--skip-compileall].
+Does not use Docker or run the evaluation matrix.
+"""
+
 import argparse
 import subprocess
 import sys
@@ -10,6 +16,7 @@ DEFAULT_PATHS = ("src", "tests", "scripts")
 
 
 def _run(label: str, command: Sequence[str]) -> None:
+    """Run command and print its label and elapsed time; raises on nonzero exit."""
     print(f"==> {label}: {' '.join(command)}", flush=True)
     started = time.monotonic()
     subprocess.run(command, check=True)
@@ -18,6 +25,10 @@ def _run(label: str, command: Sequence[str]) -> None:
 
 
 def main() -> int:
+    """Run the selected checks in order and stop at the first failure.
+
+    Returns 0 if all pass, otherwise the failing command's exit code (or 1).
+    """
     parser = argparse.ArgumentParser(
         description="Run fast local checks without Docker or the evaluation matrix."
     )

@@ -1,3 +1,5 @@
+"""Generation, validation, and CSV I/O for the experiment configuration matrix."""
+
 import csv
 import random
 from collections import Counter, defaultdict
@@ -78,6 +80,7 @@ MATRIX_COLUMNS = (
 
 
 def _slug_number(value: float) -> str:
+    """Format a number for an ID, replacing ``.`` with ``p`` (0.25 -> ``0p25``)."""
     return f"{value:g}".replace(".", "p")
 
 
@@ -99,6 +102,7 @@ def _base_case(
     docker_cpus: float,
     docker_memory: str,
 ) -> dict[str, Any]:
+    """Return the method-independent fields shared by all cases of one condition."""
     return {
         "condition_id": condition_id,
         "enabled": 1,
@@ -126,6 +130,11 @@ def _base_case(
 def generate_experiment_cases(
     *, repetitions: int = 30, base_seed: int = 7301
 ) -> list[dict[str, Any]]:
+    """Generate the main sweep matrix: every condition crossed with all four methods.
+
+    Each condition gets its own seed, shared by its methods, spaced
+    ``repetitions`` apart from ``base_seed``. The result is validated as complete.
+    """
     if repetitions < 1:
         raise ValueError("repetitions must be at least 1")
 
@@ -133,6 +142,7 @@ def generate_experiment_cases(
     condition_index = 0
 
     def add_condition(**settings: Any) -> None:
+        """Append one case per method for a condition and advance the seed."""
         nonlocal condition_index
         condition_seed = base_seed + condition_index * repetitions
         condition_index += 1
@@ -250,6 +260,7 @@ def generate_experiment_cases(
 def generate_resource_heterogeneity_cases(
     *, repetitions: int = 10, base_seed: int = 9201
 ) -> list[dict[str, Any]]:
+    """Generate uniform versus heterogeneous resource cases for 5, 10, and 15 nodes."""
     if repetitions < 1:
         raise ValueError("repetitions must be at least 1")
 
@@ -300,6 +311,11 @@ def generate_resource_heterogeneity_cases(
 def generate_combined_cases(
     *, repetitions: int = 10, seed: int = 11001
 ) -> list[dict[str, Any]]:
+    """Generate the combined scale, load, device, and partition matrix.
+
+    All cases share ``seed``; the list is shuffled with it and must contain
+    exactly ``COMBINED_EXPECTED_CONFIGURATION_COUNT`` cases.
+    """
     if repetitions < 1:
         raise ValueError("repetitions must be at least 1")
 
@@ -367,6 +383,11 @@ def generate_combined_cases(
 def validate_experiment_cases(
     cases: list[dict[str, Any]], *, require_complete: bool = False
 ) -> None:
+    """Check case IDs, condition IDs, and repetitions; raise ``ValueError`` on problems.
+
+    With ``require_complete`` it also checks that each condition has all
+    methods with one paired seed and that sweep and total counts match.
+    """
     if not cases:
         raise ValueError("experiment matrix contains no enabled configurations")
 
@@ -417,6 +438,7 @@ def validate_experiment_cases(
 
 
 def write_experiment_matrix(path: Path, cases: list[dict[str, Any]]) -> None:
+    """Write cases to a CSV file at ``path``, creating parent directories."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=MATRIX_COLUMNS)
@@ -425,6 +447,10 @@ def write_experiment_matrix(path: Path, cases: list[dict[str, Any]]) -> None:
 
 
 def load_experiment_matrix(path: Path) -> list[dict[str, str]]:
+    """Read enabled rows from a matrix CSV and validate them.
+
+    Raises ``ValueError`` if required columns are missing.
+    """
     with path.open(newline="", encoding="utf-8") as handle:
         reader = csv.DictReader(handle)
         missing = set(MATRIX_COLUMNS) - set(reader.fieldnames or [])

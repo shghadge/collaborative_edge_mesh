@@ -1,3 +1,5 @@
+"""Last-Writer-Wins register CRDT."""
+
 from datetime import datetime
 
 
@@ -20,9 +22,16 @@ class LWWRegister:
 
     @property
     def value(self):
+        """Return the currently stored value."""
         return self._value
 
     def set(self, value, timestamp=None, event_id=None):
+        """Write ``value`` if it orders after the current write.
+
+        Writes are ordered by (timestamp, writer node id, event id). The
+        timestamp defaults to now (UTC); the event id defaults to
+        ``value["event_id"]`` when ``value`` is a dict.
+        """
         ts = timestamp or datetime.utcnow()
         if event_id is None and isinstance(value, dict):
             event_id = value.get("event_id")
@@ -36,6 +45,7 @@ class LWWRegister:
             self._event_id = event_id
 
     def merge(self, other):
+        """Adopt the other register's value if its write orders later."""
         local_order = (self._timestamp, self._writer_id, self._event_id)
         remote_order = (other._timestamp, other._writer_id, other._event_id)
         if remote_order > local_order:
@@ -45,6 +55,7 @@ class LWWRegister:
             self._event_id = other._event_id
 
     def to_dict(self):
+        """Serialize the register to a JSON-compatible dict."""
         return {
             "type": "lww_register",
             "node_id": self.node_id,
@@ -65,6 +76,7 @@ class LWWRegister:
 
     @classmethod
     def from_dict(cls, data):
+        """Build a register from a dict produced by ``to_dict``."""
         r = cls(data["node_id"], description=data.get("description", ""))
         r._value = data["value"]
         r._timestamp = datetime.fromisoformat(data["timestamp"])

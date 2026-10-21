@@ -1,3 +1,5 @@
+"""UDP gossip of Merkle-root summaries with HTTP state and delta repair pulls."""
+
 import asyncio
 import json
 import socket
@@ -54,6 +56,7 @@ class GossipService:
 
     @staticmethod
     def _new_stats():
+        """Return a fresh zeroed gossip statistics dict."""
         return {
             "sent": 0,
             "received": 0,
@@ -91,6 +94,7 @@ class GossipService:
         }
 
     async def start(self):
+        """Bind the UDP gossip socket and run the broadcast and receive loops."""
         self.running = True
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -109,6 +113,7 @@ class GossipService:
         )
 
     async def stop(self):
+        """Stop the loops and close the UDP socket."""
         self.running = False
         if self.sock:
             self.sock.close()
@@ -170,6 +175,10 @@ class GossipService:
                     log.debug("receive_error", error=str(e))
 
     def _build_summary_message(self) -> bytes:
+        """Encode this node's state summary and peer observations as a UDP packet.
+
+        Peer observations are dropped if the packet would exceed ``MAX_PACKET``.
+        """
         observed_peers = self.get_peer_observations(limit=MAX_RELAY_OBSERVATIONS)
         payload = {
             "type": "state_summary",
@@ -197,6 +206,7 @@ class GossipService:
         state_version: int | None,
         hop_count: int = 1,
     ):
+        """Record a directly or indirectly observed peer's root and version."""
         if not sender or sender == self.config.node_id:
             return
         self.peer_observations[sender] = {
@@ -217,6 +227,12 @@ class GossipService:
             return None, None
 
     async def _handle(self, message, addr):
+        """Dispatch one gossip message by type.
+
+        Summaries and ``merkle_only`` messages record peer observations and
+        trigger a delta or full-state pull on Merkle root mismatch;
+        ``state_sync`` messages are merged directly.
+        """
         sender = message.get("sender", "unknown")
 
         if sender == self.config.node_id:
@@ -313,6 +329,12 @@ class GossipService:
                     await self._maybe_pull_state_from_sender(addr, message)
 
     async def _maybe_pull_delta_from_sender(self, addr, message):
+        """Pull missing deltas from the sender over HTTP and apply them.
+
+        Skipped when the advertised version vector has nothing unseen or a
+        pull from this sender is already in flight. POSTs to
+        ``/state/deltas`` on the sender's advertised HTTP port.
+        """
         host = addr[0] if addr else None
         if not host:
             self.stats["repair_pulls_failed"] += 1
@@ -388,6 +410,11 @@ class GossipService:
             self._delta_pulls_in_flight.discard(sender)
 
     async def _maybe_pull_state_from_sender(self, addr, message) -> bool:
+        """Fetch the sender's full state over HTTP and merge it.
+
+        Rate limited per host by ``REPAIR_PULL_COOLDOWN_SECONDS``. Returns
+        True if the pull and merge succeeded.
+        """
         host = addr[0] if addr else None
         if not host:
             self.stats["repair_pulls_failed"] += 1
@@ -442,6 +469,7 @@ class GossipService:
             return False
 
     def _parse_peer(self, peer):
+        """Split ``host:port`` into host and port, defaulting the port to 9000."""
         parts = peer.rsplit(":", 1)
         return parts[0], int(parts[1]) if len(parts) > 1 else 9000
 
@@ -453,6 +481,7 @@ class GossipService:
         self.stats = self._new_stats()
 
     def get_stats(self):
+        """Return a copy of gossip statistics with the average merge time added."""
         stats = dict(self.stats)
         merged = stats.get("merged", 0)
         total_merge_ms = stats.get("merge_time_ms_total", 0.0)
@@ -460,6 +489,7 @@ class GossipService:
         return stats
 
     def get_peer_observations(self, limit: int = 200):
+        """Return up to ``limit`` peer observations, most recently seen first."""
         observations = sorted(
             self.peer_observations.values(),
             key=lambda item: item.get("last_seen_at", 0),

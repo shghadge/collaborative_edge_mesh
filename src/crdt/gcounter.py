@@ -1,3 +1,6 @@
+"""Grow-only counter (G-Counter) CRDT."""
+
+
 class GCounter:
     """
     Grow-only counter CRDT. Each node tracks its own count.
@@ -14,16 +17,20 @@ class GCounter:
 
     @property
     def value(self):
+        """Return the sum of all per-node counts."""
         return sum(self.counts.values())
 
     def increment(self, amount=1):
+        """Add ``amount`` to this node's own slot."""
         self.counts[self.node_id] = self.counts.get(self.node_id, 0) + amount
 
     def merge(self, other):
+        """Join another G-Counter into this one by taking the max per node."""
         for node_id, count in other.counts.items():
             self.counts[node_id] = max(self.counts.get(node_id, 0), count)
 
     def to_dict(self):
+        """Serialize the counter to a JSON-compatible dict."""
         return {
             "type": "gcounter",
             "node_id": self.node_id,
@@ -50,6 +57,7 @@ class GCounter:
 
     @classmethod
     def from_dict(cls, data):
+        """Build a G-Counter from a dict produced by ``to_dict``."""
         c = cls(data["node_id"], description=data.get("description", ""))
         c.counts = dict(data["counts"])
         return c

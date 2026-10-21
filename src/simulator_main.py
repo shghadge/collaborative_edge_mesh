@@ -57,6 +57,8 @@ control_service = None
 
 
 class SendEventRequest(BaseModel):
+    """Request body for /event/send: the event fields forwarded to an edge node."""
+
     type: str
     value: Any
     location: Optional[str] = None
@@ -74,6 +76,7 @@ def _api_error(
     message: str,
     details=None,
 ) -> HTTPException:
+    """Build an HTTPException whose detail is a `{code, message, details?}` payload."""
     payload = {"code": code, "message": message}
     if details is not None:
         payload["details"] = details
@@ -82,6 +85,7 @@ def _api_error(
 
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
+    """Return HTTP errors as JSON, keeping structured `{code, message}` details or wrapping plain ones."""
     if (
         isinstance(exc.detail, dict)
         and "code" in exc.detail
@@ -98,6 +102,7 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception):
+    """Log an unexpected exception and return a generic 500 JSON error."""
     log.error(
         "simulator_unhandled_exception",
         error=str(exc),
@@ -118,6 +123,10 @@ if docker_mgr is not None:
 
 @app.get("/docs", include_in_schema=False)
 async def custom_swagger_ui_html():
+    """Serve a Swagger UI page with a dropdown of simulator, gateway, and node OpenAPI specs.
+
+    Gateways and nodes are discovered via Docker; discovery failures are logged and skipped.
+    """
     urls = [{"url": "/openapi.json", "name": "Simulator Engine"}]
 
     if docker_mgr is not None:
@@ -184,6 +193,7 @@ async def custom_swagger_ui_html():
 
 
 def _normalize_node_id(node_id: str) -> str:
+    """Normalize a node ID via the control service, or locally when Docker is unavailable."""
     if control_service is None:
         if node_id.startswith("edge-node-"):
             suffix = node_id.replace("edge-node-", "", 1)
@@ -193,6 +203,7 @@ def _normalize_node_id(node_id: str) -> str:
 
 
 def _candidate_urls(*urls: Optional[str]) -> list[str]:
+    """Return unique non-empty URLs in order, via the control service when available."""
     if control_service is None:
         ordered: list[str] = []
         for url in urls:
@@ -210,6 +221,7 @@ def _build_node_gateway_map(
     *,
     persist_auto_assignments: bool,
 ) -> dict[str, str]:
+    """Compute the node-to-gateway map via the control service; requires Docker."""
     _require_docker()
     return control_service.build_node_gateway_map(
         valid_nodes,
@@ -219,20 +231,24 @@ def _build_node_gateway_map(
 
 
 def _require_docker():
+    """Raise a 503 API error if Docker or the control service is unavailable."""
     if control_service is None:
         raise _api_error(503, "DOCKER_UNAVAILABLE", "Docker not available")
     control_service.require_docker()
 
 
 async def _discover_gateways():
+    """Return running gateway containers via the control service."""
     return await control_service.discover_gateways()
 
 
 async def _sync_gateways_with_nodes(force: bool = False):
+    """Push node assignments to gateways and nodes via the control service (debounced unless forced)."""
     await control_service.sync_gateways_with_nodes(force=force)
 
 
 async def _proxy_gateway_request(method: str, path: str, params: Optional[dict] = None):
+    """Forward a request to the primary gateway via the control service."""
     return await control_service.proxy_gateway_request(method, path, params=params)
 
 
@@ -241,6 +257,7 @@ async def _proxy_gateway_request(method: str, path: str, params: Optional[dict] 
 
 @app.get("/gateways")
 async def list_gateways():
+    """List gateways with the names of the nodes assigned to each."""
     _require_docker()
     try:
         gateways = await _discover_gateways()
@@ -270,6 +287,7 @@ async def list_gateways():
 
 @app.post("/gateways")
 async def create_gateway(gateway_id: Optional[str] = None):
+    """Create a gateway container, wait 2 s, then force a gateway-node sync."""
     _require_docker()
     try:
         result = await asyncio.to_thread(docker_mgr.create_gateway, gateway_id)
@@ -285,6 +303,7 @@ async def create_gateway(gateway_id: Optional[str] = None):
 
 @app.delete("/gateways/{gateway_id}")
 async def remove_gateway(gateway_id: str):
+    """Remove a gateway container (the primary `gateway` is protected) and resync assignments."""
     _require_docker()
     if gateway_id == "gateway":
         # Block deleting the primary gateway so the system always has at least one
@@ -299,6 +318,7 @@ async def remove_gateway(gateway_id: str):
 
 @app.get("/nodes")
 async def list_nodes():
+    """List node containers with their assigned gateway; nodes without an ID get None."""
     _require_docker()
     nodes = await asyncio.to_thread(docker_mgr.list_nodes)
     valid_nodes = [n for n in nodes if n.get("node_id")]
@@ -335,6 +355,7 @@ async def list_nodes():
 async def create_node(
     node_id: Optional[str] = None, assigned_gateway: Optional[str] = None
 ):
+    """Create a node container, record an explicit gateway assignment if given, and resync."""
     _require_docker()
     try:
         result = await asyncio.to_thread(
@@ -352,11 +373,13 @@ async def create_node(
 
 @app.post("/nodes/batch")
 async def create_nodes_batch(count: int = 1, assigned_gateway: Optional[str] = None):
+    """Create `count` node containers concurrently and report created and failed counts."""
     _require_docker()
     if count < 1:
         raise _api_error(400, "INVALID_COUNT", "count must be at least 1")
 
     async def _create_one():
+        """Create one node container, returning a success flag with the result or error."""
         try:
             result = await asyncio.to_thread(
                 docker_mgr.create_node, assigned_gateway=assigned_gateway or ""
@@ -389,11 +412,14 @@ async def create_nodes_batch(count: int = 1, assigned_gateway: Optional[str] = N
 
 
 class NodeGatewayUpdate(BaseModel):
+    """Request body for changing a node's assigned gateway; empty clears the assignment."""
+
     assigned_gateway: Optional[str]
 
 
 @app.put("/nodes/{node_id}/gateway")
 async def update_node_gateway(node_id: str, request: NodeGatewayUpdate):
+    """Set or clear a node's user gateway assignment and force a resync."""
     _require_docker()
     node_id = _normalize_node_id(node_id)
     if request.assigned_gateway:
@@ -410,6 +436,7 @@ async def update_node_gateway(node_id: str, request: NodeGatewayUpdate):
 
 @app.delete("/nodes/{node_id}")
 async def remove_node(node_id: str):
+    """Remove a node container, drop its gateway assignment, and resync."""
     _require_docker()
     node_id = _normalize_node_id(node_id)
     control_service.user_gateway_assignments.pop(node_id, None)
@@ -479,6 +506,7 @@ async def _push_merged_state_to_node(node_id: str):
 
 @app.post("/nodes/{node_id}/partition")
 async def isolate_node(node_id: str):
+    """Isolate a node container from the network and resync gateway assignments."""
     _require_docker()
     result = await asyncio.to_thread(docker_mgr.isolate_node, node_id)
     await _sync_gateways_with_nodes(force=True)
@@ -487,6 +515,7 @@ async def isolate_node(node_id: str):
 
 @app.delete("/nodes/{node_id}/partition")
 async def heal_node(node_id: str):
+    """Reconnect an isolated node and, if enabled, push the gateway's merged state to it in the background."""
     _require_docker()
     result = await asyncio.to_thread(docker_mgr.heal_node, node_id)
     await _sync_gateways_with_nodes(force=True)
@@ -497,6 +526,7 @@ async def heal_node(node_id: str):
 
 @app.post("/partition/split-brain")
 async def split_brain(majority_ratio: float = 0.5):
+    """Split the nodes into two partitions by `majority_ratio` and resync."""
     _require_docker()
     result = await asyncio.to_thread(docker_mgr.create_split_brain, majority_ratio)
     await _sync_gateways_with_nodes(force=True)
@@ -505,6 +535,7 @@ async def split_brain(majority_ratio: float = 0.5):
 
 @app.post("/partition/heal-all")
 async def heal_all():
+    """Heal all partitions and, if enabled, push merged state to every node in the background."""
     _require_docker()
     result = await asyncio.to_thread(docker_mgr.heal_all)
     await _sync_gateways_with_nodes(force=True)
@@ -599,16 +630,19 @@ async def send_event(req: SendEventRequest, target_node: Optional[str] = None):
 
 @app.get("/gateway/status")
 async def gateway_status():
+    """Proxy the primary gateway's /gateway/status."""
     return await _proxy_gateway_request("GET", "/gateway/status")
 
 
 @app.get("/gateway/divergence")
 async def gateway_divergence():
+    """Proxy the primary gateway's /gateway/divergence."""
     return await _proxy_gateway_request("GET", "/gateway/divergence")
 
 
 @app.get("/gateway/metrics")
 async def gateway_metrics(name: Optional[str] = None, limit: int = 100):
+    """Proxy the primary gateway's /gateway/metrics with optional name filter and limit."""
     return await _proxy_gateway_request(
         "GET",
         "/gateway/metrics",
@@ -618,11 +652,13 @@ async def gateway_metrics(name: Optional[str] = None, limit: int = 100):
 
 @app.get("/gateway/runtime-metrics")
 async def gateway_runtime_metrics():
+    """Proxy the primary gateway's /gateway/runtime-metrics."""
     return await _proxy_gateway_request("GET", "/gateway/runtime-metrics")
 
 
 @app.post("/gateway/poll")
 async def trigger_gateway_poll():
+    """Proxy a POST to the primary gateway's /gateway/poll (30 s timeout)."""
     return await _proxy_gateway_request("POST", "/gateway/poll")
 
 
@@ -731,6 +767,7 @@ app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")
 
 
 async def main():
+    """Run the simulator HTTP server until SIGTERM or SIGINT."""
     shutdown = asyncio.Event()
     loop = asyncio.get_event_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
@@ -743,6 +780,7 @@ async def main():
     log.info("simulator_starting", http=config.http_port)
 
     async def wait_shutdown():
+        """Wait for the shutdown event, then raise CancelledError to stop the gather."""
         await shutdown.wait()
         raise asyncio.CancelledError()
 

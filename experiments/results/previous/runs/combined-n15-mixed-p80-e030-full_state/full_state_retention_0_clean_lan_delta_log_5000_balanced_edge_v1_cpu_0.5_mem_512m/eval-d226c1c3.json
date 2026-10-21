@@ -1,0 +1,1317 @@
+{
+  "run_id": "eval-d226c1c3",
+  "case_id": "combined-n15-mixed-p80-e030-full_state",
+  "condition_id": "combined-n15-mixed-p80-e030",
+  "sweep": "combined",
+  "implementation_label": "full_state_retention_0_clean_lan_delta_log_5000_balanced_edge_v1_cpu_0.5_mem_512m",
+  "sync_mode": "full_state",
+  "event_id_retention_limit": 0,
+  "delta_log_limit": 5000,
+  "node_counts": [
+    15
+  ],
+  "events_per_node": 15,
+  "partition_splits": [
+    0.8
+  ],
+  "repetitions": 10,
+  "scenario_seed": 11001,
+  "scenarios": [
+    "partition_heal"
+  ],
+  "convergence_wait_seconds": 180.0,
+  "partition_wait_seconds": 30.0,
+  "poll_interval_seconds": 2.0,
+  "partition_events_per_node": 15,
+  "event_concurrency": 25,
+  "network_profile": "clean_lan",
+  "network_settings": {
+    "delay_ms": 1.0,
+    "jitter_ms": 0.2,
+    "loss_percent": 0.0,
+    "bandwidth_mbps": 1000.0
+  },
+  "offered_rate_per_second": 150.0,
+  "docker_cpus": 0.5,
+  "docker_memory": "512m",
+  "resource_mode": "heterogeneous",
+  "resource_profile": "balanced_edge_v1",
+  "warm_topology": true,
+  "node_readiness_timeout_seconds": 30.0,
+  "started_at": "2026-10-17T22:44:42.284014+00:00",
+  "finished_at": "2026-10-17T22:52:37.041686+00:00",
+  "csv_path": "/home/shubham/290_copy/masters_report/results/combined/combined-n15-mixed-p80-e030-full_state/full_state_retention_0_clean_lan_delta_log_5000_balanced_edge_v1_cpu_0.5_mem_512m/eval-d226c1c3.csv",
+  "results_path": "/home/shubham/290_copy/masters_report/results/combined/combined-n15-mixed-p80-e030-full_state/full_state_retention_0_clean_lan_delta_log_5000_balanced_edge_v1_cpu_0.5_mem_512m/eval-d226c1c3-results.json",
+  "resource_assignments": [
+    {
+      "repetition": 1,
+      "node_count": 15,
+      "assignments": [
+        {
+          "container": "edge-node-1",
+          "cpus": 0.25,
+          "memory": "256m",
+          "memory_mib": 256,
+          "node_id": "node-1",
+          "tier": "low"
+        },
+        {
+          "container": "edge-node-2",
+          "cpus": 0.5,
+          "memory": "512m",
+          "memory_mib": 512,
+          "node_id": "node-2",
+          "tier": "medium"
+        },
+        {
+          "container": "edge-node-3",
+          "cpus": 0.5,
+          "memory": "512m",
+          "memory_mib": 512,
+          "node_id": "node-3",
+          "tier": "medium"
+        },
+        {
+          "container": "edge-node-4",
+          "cpus": 0.5,
+          "memory": "512m",
+          "memory_mib": 512,
+          "node_id": "node-4",
+          "tier": "medium"
+        },
+        {
+          "container": "edge-node-5",
+          "cpus": 0.25,
+          "memory": "256m",
+          "memory_mib": 256,
+          "node_id": "node-5",
+          "tier": "low"
+        },
+        {
+          "container": "edge-node-6",
+          "cpus": 1.0,
+          "memory": "1g",
+          "memory_mib": 1024,
+          "node_id": "node-6",
+          "tier": "high"
+        },
+        {
+          "container": "edge-node-7",
+          "cpus": 0.25,
+          "memory": "256m",
+          "memory_mib": 256,
+          "node_id": "node-7",
+          "tier": "low"
+        },
+        {
+          "container": "edge-node-8",
+          "cpus": 1.0,
+          "memory": "1g",
+          "memory_mib": 1024,
+          "node_id": "node-8",
+          "tier": "high"
+        },
+        {
+          "container": "edge-node-9",
+          "cpus": 0.25,
+          "memory": "256m",
+          "memory_mib": 256,
+          "node_id": "node-9",
+          "tier": "low"
+        },
+        {
+          "container": "edge-node-10",
+          "cpus": 0.25,
+          "memory": "256m",
+          "memory_mib": 256,
+          "node_id": "node-10",
+          "tier": "low"
+        },
+        {
+          "container": "edge-node-11",
+          "cpus": 0.5,
+          "memory": "512m",
+          "memory_mib": 512,
+          "node_id": "node-11",
+          "tier": "medium"
+        },
+        {
+          "container": "edge-node-12",
+          "cpus": 0.5,
+          "memory": "512m",
+          "memory_mib": 512,
+          "node_id": "node-12",
+          "tier": "medium"
+        },
+        {
+          "container": "edge-node-13",
+          "cpus": 1.0,
+          "memory": "1g",
+          "memory_mib": 1024,
+          "node_id": "node-13",
+          "tier": "high"
+        },
+        {
+          "container": "edge-node-14",
+          "cpus": 0.25,
+          "memory": "256m",
+          "memory_mib": 256,
+          "node_id": "node-14",
+          "tier": "low"
+        },
+        {
+          "container": "edge-node-15",
+          "cpus": 0.5,
+          "memory": "512m",
+          "memory_mib": 512,
+          "node_id": "node-15",
+          "tier": "medium"
+        }
+      ],
+      "resource_limit_verified": true
+    },
+    {
+      "repetition": 2,
+      "node_count": 15,
+      "assignments": [
+        {
+          "container": "edge-node-1",
+          "cpus": 0.25,
+          "memory": "256m",
+          "memory_mib": 256,
+          "node_id": "node-1",
+          "tier": "low"
+        },
+        {
+          "container": "edge-node-2",
+          "cpus": 0.25,
+          "memory": "256m",
+          "memory_mib": 256,
+          "node_id": "node-2",
+          "tier": "low"
+        },
+        {
+          "container": "edge-node-3",
+          "cpus": 0.25,
+          "memory": "256m",
+          "memory_mib": 256,
+          "node_id": "node-3",
+          "tier": "low"
+        },
+        {
+          "container": "edge-node-4",
+          "cpus": 0.5,
+          "memory": "512m",
+          "memory_mib": 512,
+          "node_id": "node-4",
+          "tier": "medium"
+        },
+        {
+          "container": "edge-node-5",
+          "cpus": 0.5,
+          "memory": "512m",
+          "memory_mib": 512,
+          "node_id": "node-5",
+          "tier": "medium"
+        },
+        {
+          "container": "edge-node-6",
+          "cpus": 0.25,
+          "memory": "256m",
+          "memory_mib": 256,
+          "node_id": "node-6",
+          "tier": "low"
+        },
+        {
+          "container": "edge-node-7",
+          "cpus": 1.0,
+          "memory": "1g",
+          "memory_mib": 1024,
+          "node_id": "node-7",
+          "tier": "high"
+        },
+        {
+          "container": "edge-node-8",
+          "cpus": 0.5,
+          "memory": "512m",
+          "memory_mib": 512,
+          "node_id": "node-8",
+          "tier": "medium"
+        },
+        {
+          "container": "edge-node-9",
+          "cpus": 1.0,
+          "memory": "1g",
+          "memory_mib": 1024,
+          "node_id": "node-9",
+          "tier": "high"
+        },
+        {
+          "container": "edge-node-10",
+          "cpus": 1.0,
+          "memory": "1g",
+          "memory_mib": 1024,
+          "node_id": "node-10",
+          "tier": "high"
+        },
+        {
+          "container": "edge-node-11",
+          "cpus": 0.5,
+          "memory": "512m",
+          "memory_mib": 512,
+          "node_id": "node-11",
+          "tier": "medium"
+        },
+        {
+          "container": "edge-node-12",
+          "cpus": 0.5,
+          "memory": "512m",
+          "memory_mib": 512,
+          "node_id": "node-12",
+          "tier": "medium"
+        },
+        {
+          "container": "edge-node-13",
+          "cpus": 0.25,
+          "memory": "256m",
+          "memory_mib": 256,
+          "node_id": "node-13",
+          "tier": "low"
+        },
+        {
+          "container": "edge-node-14",
+          "cpus": 0.25,
+          "memory": "256m",
+          "memory_mib": 256,
+          "node_id": "node-14",
+          "tier": "low"
+        },
+        {
+          "container": "edge-node-15",
+          "cpus": 0.5,
+          "memory": "512m",
+          "memory_mib": 512,
+          "node_id": "node-15",
+          "tier": "medium"
+        }
+      ],
+      "resource_limit_verified": true
+    },
+    {
+      "repetition": 3,
+      "node_count": 15,
+      "assignments": [
+        {
+          "container": "edge-node-1",
+          "cpus": 0.5,
+          "memory": "512m",
+          "memory_mib": 512,
+          "node_id": "node-1",
+          "tier": "medium"
+        },
+        {
+          "container": "edge-node-2",
+          "cpus": 0.25,
+          "memory": "256m",
+          "memory_mib": 256,
+          "node_id": "node-2",
+          "tier": "low"
+        },
+        {
+          "container": "edge-node-3",
+          "cpus": 0.5,
+          "memory": "512m",
+          "memory_mib": 512,
+          "node_id": "node-3",
+          "tier": "medium"
+        },
+        {
+          "container": "edge-node-4",
+          "cpus": 1.0,
+          "memory": "1g",
+          "memory_mib": 1024,
+          "node_id": "node-4",
+          "tier": "high"
+        },
+        {
+          "container": "edge-node-5",
+          "cpus": 0.25,
+          "memory": "256m",
+          "memory_mib": 256,
+          "node_id": "node-5",
+          "tier": "low"
+        },
+        {
+          "container": "edge-node-6",
+          "cpus": 0.25,
+          "memory": "256m",
+          "memory_mib": 256,
+          "node_id": "node-6",
+          "tier": "low"
+        },
+        {
+          "container": "edge-node-7",
+          "cpus": 0.5,
+          "memory": "512m",
+          "memory_mib": 512,
+          "node_id": "node-7",
+          "tier": "medium"
+        },
+        {
+          "container": "edge-node-8",
+          "cpus": 1.0,
+          "memory": "1g",
+          "memory_mib": 1024,
+          "node_id": "node-8",
+          "tier": "high"
+        },
+        {
+          "container": "edge-node-9",
+          "cpus": 0.5,
+          "memory": "512m",
+          "memory_mib": 512,
+          "node_id": "node-9",
+          "tier": "medium"
+        },
+        {
+          "container": "edge-node-10",
+          "cpus": 0.5,
+          "memory": "512m",
+          "memory_mib": 512,
+          "node_id": "node-10",
+          "tier": "medium"
+        },
+        {
+          "container": "edge-node-11",
+          "cpus": 0.5,
+          "memory": "512m",
+          "memory_mib": 512,
+          "node_id": "node-11",
+          "tier": "medium"
+        },
+        {
+          "container": "edge-node-12",
+          "cpus": 0.25,
+          "memory": "256m",
+          "memory_mib": 256,
+          "node_id": "node-12",
+          "tier": "low"
+        },
+        {
+          "container": "edge-node-13",
+          "cpus": 0.25,
+          "memory": "256m",
+          "memory_mib": 256,
+          "node_id": "node-13",
+          "tier": "low"
+        },
+        {
+          "container": "edge-node-14",
+          "cpus": 1.0,
+          "memory": "1g",
+          "memory_mib": 1024,
+          "node_id": "node-14",
+          "tier": "high"
+        },
+        {
+          "container": "edge-node-15",
+          "cpus": 0.25,
+          "memory": "256m",
+          "memory_mib": 256,
+          "node_id": "node-15",
+          "tier": "low"
+        }
+      ],
+      "resource_limit_verified": true
+    },
+    {
+      "repetition": 4,
+      "node_count": 15,
+      "assignments": [
+        {
+          "container": "edge-node-1",
+          "cpus": 0.25,
+          "memory": "256m",
+          "memory_mib": 256,
+          "node_id": "node-1",
+          "tier": "low"
+        },
+        {
+          "container": "edge-node-2",
+          "cpus": 0.25,
+          "memory": "256m",
+          "memory_mib": 256,
+          "node_id": "node-2",
+          "tier": "low"
+        },
+        {
+          "container": "edge-node-3",
+          "cpus": 0.25,
+          "memory": "256m",
+          "memory_mib": 256,
+          "node_id": "node-3",
+          "tier": "low"
+        },
+        {
+          "container": "edge-node-4",
+          "cpus": 0.5,
+          "memory": "512m",
+          "memory_mib": 512,
+          "node_id": "node-4",
+          "tier": "medium"
+        },
+        {
+          "container": "edge-node-5",
+          "cpus": 1.0,
+          "memory": "1g",
+          "memory_mib": 1024,
+          "node_id": "node-5",
+          "tier": "high"
+        },
+        {
+          "container": "edge-node-6",
+          "cpus": 1.0,
+          "memory": "1g",
+          "memory_mib": 1024,
+          "node_id": "node-6",
+          "tier": "high"
+        },
+        {
+          "container": "edge-node-7",
+          "cpus": 0.5,
+          "memory": "512m",
+          "memory_mib": 512,
+          "node_id": "node-7",
+          "tier": "medium"
+        },
+        {
+          "container": "edge-node-8",
+          "cpus": 1.0,
+          "memory": "1g",
+          "memory_mib": 1024,
+          "node_id": "node-8",
+          "tier": "high"
+        },
+        {
+          "container": "edge-node-9",
+          "cpus": 0.5,
+          "memory": "512m",
+          "memory_mib": 512,
+          "node_id": "node-9",
+          "tier": "medium"
+        },
+        {
+          "container": "edge-node-10",
+          "cpus": 0.5,
+          "memory": "512m",
+          "memory_mib": 512,
+          "node_id": "node-10",
+          "tier": "medium"
+        },
+        {
+          "container": "edge-node-11",
+          "cpus": 0.5,
+          "memory": "512m",
+          "memory_mib": 512,
+          "node_id": "node-11",
+          "tier": "medium"
+        },
+        {
+          "container": "edge-node-12",
+          "cpus": 0.25,
+          "memory": "256m",
+          "memory_mib": 256,
+          "node_id": "node-12",
+          "tier": "low"
+        },
+        {
+          "container": "edge-node-13",
+          "cpus": 0.5,
+          "memory": "512m",
+          "memory_mib": 512,
+          "node_id": "node-13",
+          "tier": "medium"
+        },
+        {
+          "container": "edge-node-14",
+          "cpus": 0.25,
+          "memory": "256m",
+          "memory_mib": 256,
+          "node_id": "node-14",
+          "tier": "low"
+        },
+        {
+          "container": "edge-node-15",
+          "cpus": 0.25,
+          "memory": "256m",
+          "memory_mib": 256,
+          "node_id": "node-15",
+          "tier": "low"
+        }
+      ],
+      "resource_limit_verified": true
+    },
+    {
+      "repetition": 5,
+      "node_count": 15,
+      "assignments": [
+        {
+          "container": "edge-node-1",
+          "cpus": 0.25,
+          "memory": "256m",
+          "memory_mib": 256,
+          "node_id": "node-1",
+          "tier": "low"
+        },
+        {
+          "container": "edge-node-2",
+          "cpus": 0.25,
+          "memory": "256m",
+          "memory_mib": 256,
+          "node_id": "node-2",
+          "tier": "low"
+        },
+        {
+          "container": "edge-node-3",
+          "cpus": 0.25,
+          "memory": "256m",
+          "memory_mib": 256,
+          "node_id": "node-3",
+          "tier": "low"
+        },
+        {
+          "container": "edge-node-4",
+          "cpus": 0.5,
+          "memory": "512m",
+          "memory_mib": 512,
+          "node_id": "node-4",
+          "tier": "medium"
+        },
+        {
+          "container": "edge-node-5",
+          "cpus": 0.5,
+          "memory": "512m",
+          "memory_mib": 512,
+          "node_id": "node-5",
+          "tier": "medium"
+        },
+        {
+          "container": "edge-node-6",
+          "cpus": 1.0,
+          "memory": "1g",
+          "memory_mib": 1024,
+          "node_id": "node-6",
+          "tier": "high"
+        },
+        {
+          "container": "edge-node-7",
+          "cpus": 1.0,
+          "memory": "1g",
+          "memory_mib": 1024,
+          "node_id": "node-7",
+          "tier": "high"
+        },
+        {
+          "container": "edge-node-8",
+          "cpus": 0.5,
+          "memory": "512m",
+          "memory_mib": 512,
+          "node_id": "node-8",
+          "tier": "medium"
+        },
+        {
+          "container": "edge-node-9",
+          "cpus": 1.0,
+          "memory": "1g",
+          "memory_mib": 1024,
+          "node_id": "node-9",
+          "tier": "high"
+        },
+        {
+          "container": "edge-node-10",
+          "cpus": 0.25,
+          "memory": "256m",
+          "memory_mib": 256,
+          "node_id": "node-10",
+          "tier": "low"
+        },
+        {
+          "container": "edge-node-11",
+          "cpus": 0.5,
+          "memory": "512m",
+          "memory_mib": 512,
+          "node_id": "node-11",
+          "tier": "medium"
+        },
+        {
+          "container": "edge-node-12",
+          "cpus": 0.25,
+          "memory": "256m",
+          "memory_mib": 256,
+          "node_id": "node-12",
+          "tier": "low"
+        },
+        {
+          "container": "edge-node-13",
+          "cpus": 0.25,
+          "memory": "256m",
+          "memory_mib": 256,
+          "node_id": "node-13",
+          "tier": "low"
+        },
+        {
+          "container": "edge-node-14",
+          "cpus": 0.5,
+          "memory": "512m",
+          "memory_mib": 512,
+          "node_id": "node-14",
+          "tier": "medium"
+        },
+        {
+          "container": "edge-node-15",
+          "cpus": 0.5,
+          "memory": "512m",
+          "memory_mib": 512,
+          "node_id": "node-15",
+          "tier": "medium"
+        }
+      ],
+      "resource_limit_verified": true
+    },
+    {
+      "repetition": 6,
+      "node_count": 15,
+      "assignments": [
+        {
+          "container": "edge-node-1",
+          "cpus": 0.5,
+          "memory": "512m",
+          "memory_mib": 512,
+          "node_id": "node-1",
+          "tier": "medium"
+        },
+        {
+          "container": "edge-node-2",
+          "cpus": 1.0,
+          "memory": "1g",
+          "memory_mib": 1024,
+          "node_id": "node-2",
+          "tier": "high"
+        },
+        {
+          "container": "edge-node-3",
+          "cpus": 0.25,
+          "memory": "256m",
+          "memory_mib": 256,
+          "node_id": "node-3",
+          "tier": "low"
+        },
+        {
+          "container": "edge-node-4",
+          "cpus": 0.5,
+          "memory": "512m",
+          "memory_mib": 512,
+          "node_id": "node-4",
+          "tier": "medium"
+        },
+        {
+          "container": "edge-node-5",
+          "cpus": 0.25,
+          "memory": "256m",
+          "memory_mib": 256,
+          "node_id": "node-5",
+          "tier": "low"
+        },
+        {
+          "container": "edge-node-6",
+          "cpus": 0.5,
+          "memory": "512m",
+          "memory_mib": 512,
+          "node_id": "node-6",
+          "tier": "medium"
+        },
+        {
+          "container": "edge-node-7",
+          "cpus": 0.25,
+          "memory": "256m",
+          "memory_mib": 256,
+          "node_id": "node-7",
+          "tier": "low"
+        },
+        {
+          "container": "edge-node-8",
+          "cpus": 0.5,
+          "memory": "512m",
+          "memory_mib": 512,
+          "node_id": "node-8",
+          "tier": "medium"
+        },
+        {
+          "container": "edge-node-9",
+          "cpus": 1.0,
+          "memory": "1g",
+          "memory_mib": 1024,
+          "node_id": "node-9",
+          "tier": "high"
+        },
+        {
+          "container": "edge-node-10",
+          "cpus": 0.5,
+          "memory": "512m",
+          "memory_mib": 512,
+          "node_id": "node-10",
+          "tier": "medium"
+        },
+        {
+          "container": "edge-node-11",
+          "cpus": 0.25,
+          "memory": "256m",
+          "memory_mib": 256,
+          "node_id": "node-11",
+          "tier": "low"
+        },
+        {
+          "container": "edge-node-12",
+          "cpus": 0.25,
+          "memory": "256m",
+          "memory_mib": 256,
+          "node_id": "node-12",
+          "tier": "low"
+        },
+        {
+          "container": "edge-node-13",
+          "cpus": 0.25,
+          "memory": "256m",
+          "memory_mib": 256,
+          "node_id": "node-13",
+          "tier": "low"
+        },
+        {
+          "container": "edge-node-14",
+          "cpus": 1.0,
+          "memory": "1g",
+          "memory_mib": 1024,
+          "node_id": "node-14",
+          "tier": "high"
+        },
+        {
+          "container": "edge-node-15",
+          "cpus": 0.5,
+          "memory": "512m",
+          "memory_mib": 512,
+          "node_id": "node-15",
+          "tier": "medium"
+        }
+      ],
+      "resource_limit_verified": true
+    },
+    {
+      "repetition": 7,
+      "node_count": 15,
+      "assignments": [
+        {
+          "container": "edge-node-1",
+          "cpus": 0.25,
+          "memory": "256m",
+          "memory_mib": 256,
+          "node_id": "node-1",
+          "tier": "low"
+        },
+        {
+          "container": "edge-node-2",
+          "cpus": 1.0,
+          "memory": "1g",
+          "memory_mib": 1024,
+          "node_id": "node-2",
+          "tier": "high"
+        },
+        {
+          "container": "edge-node-3",
+          "cpus": 0.25,
+          "memory": "256m",
+          "memory_mib": 256,
+          "node_id": "node-3",
+          "tier": "low"
+        },
+        {
+          "container": "edge-node-4",
+          "cpus": 0.5,
+          "memory": "512m",
+          "memory_mib": 512,
+          "node_id": "node-4",
+          "tier": "medium"
+        },
+        {
+          "container": "edge-node-5",
+          "cpus": 0.5,
+          "memory": "512m",
+          "memory_mib": 512,
+          "node_id": "node-5",
+          "tier": "medium"
+        },
+        {
+          "container": "edge-node-6",
+          "cpus": 0.5,
+          "memory": "512m",
+          "memory_mib": 512,
+          "node_id": "node-6",
+          "tier": "medium"
+        },
+        {
+          "container": "edge-node-7",
+          "cpus": 1.0,
+          "memory": "1g",
+          "memory_mib": 1024,
+          "node_id": "node-7",
+          "tier": "high"
+        },
+        {
+          "container": "edge-node-8",
+          "cpus": 1.0,
+          "memory": "1g",
+          "memory_mib": 1024,
+          "node_id": "node-8",
+          "tier": "high"
+        },
+        {
+          "container": "edge-node-9",
+          "cpus": 0.5,
+          "memory": "512m",
+          "memory_mib": 512,
+          "node_id": "node-9",
+          "tier": "medium"
+        },
+        {
+          "container": "edge-node-10",
+          "cpus": 0.5,
+          "memory": "512m",
+          "memory_mib": 512,
+          "node_id": "node-10",
+          "tier": "medium"
+        },
+        {
+          "container": "edge-node-11",
+          "cpus": 0.25,
+          "memory": "256m",
+          "memory_mib": 256,
+          "node_id": "node-11",
+          "tier": "low"
+        },
+        {
+          "container": "edge-node-12",
+          "cpus": 0.25,
+          "memory": "256m",
+          "memory_mib": 256,
+          "node_id": "node-12",
+          "tier": "low"
+        },
+        {
+          "container": "edge-node-13",
+          "cpus": 0.5,
+          "memory": "512m",
+          "memory_mib": 512,
+          "node_id": "node-13",
+          "tier": "medium"
+        },
+        {
+          "container": "edge-node-14",
+          "cpus": 0.25,
+          "memory": "256m",
+          "memory_mib": 256,
+          "node_id": "node-14",
+          "tier": "low"
+        },
+        {
+          "container": "edge-node-15",
+          "cpus": 0.25,
+          "memory": "256m",
+          "memory_mib": 256,
+          "node_id": "node-15",
+          "tier": "low"
+        }
+      ],
+      "resource_limit_verified": true
+    },
+    {
+      "repetition": 8,
+      "node_count": 15,
+      "assignments": [
+        {
+          "container": "edge-node-1",
+          "cpus": 1.0,
+          "memory": "1g",
+          "memory_mib": 1024,
+          "node_id": "node-1",
+          "tier": "high"
+        },
+        {
+          "container": "edge-node-2",
+          "cpus": 0.5,
+          "memory": "512m",
+          "memory_mib": 512,
+          "node_id": "node-2",
+          "tier": "medium"
+        },
+        {
+          "container": "edge-node-3",
+          "cpus": 1.0,
+          "memory": "1g",
+          "memory_mib": 1024,
+          "node_id": "node-3",
+          "tier": "high"
+        },
+        {
+          "container": "edge-node-4",
+          "cpus": 0.25,
+          "memory": "256m",
+          "memory_mib": 256,
+          "node_id": "node-4",
+          "tier": "low"
+        },
+        {
+          "container": "edge-node-5",
+          "cpus": 1.0,
+          "memory": "1g",
+          "memory_mib": 1024,
+          "node_id": "node-5",
+          "tier": "high"
+        },
+        {
+          "container": "edge-node-6",
+          "cpus": 0.5,
+          "memory": "512m",
+          "memory_mib": 512,
+          "node_id": "node-6",
+          "tier": "medium"
+        },
+        {
+          "container": "edge-node-7",
+          "cpus": 0.25,
+          "memory": "256m",
+          "memory_mib": 256,
+          "node_id": "node-7",
+          "tier": "low"
+        },
+        {
+          "container": "edge-node-8",
+          "cpus": 0.5,
+          "memory": "512m",
+          "memory_mib": 512,
+          "node_id": "node-8",
+          "tier": "medium"
+        },
+        {
+          "container": "edge-node-9",
+          "cpus": 0.25,
+          "memory": "256m",
+          "memory_mib": 256,
+          "node_id": "node-9",
+          "tier": "low"
+        },
+        {
+          "container": "edge-node-10",
+          "cpus": 0.5,
+          "memory": "512m",
+          "memory_mib": 512,
+          "node_id": "node-10",
+          "tier": "medium"
+        },
+        {
+          "container": "edge-node-11",
+          "cpus": 0.25,
+          "memory": "256m",
+          "memory_mib": 256,
+          "node_id": "node-11",
+          "tier": "low"
+        },
+        {
+          "container": "edge-node-12",
+          "cpus": 0.5,
+          "memory": "512m",
+          "memory_mib": 512,
+          "node_id": "node-12",
+          "tier": "medium"
+        },
+        {
+          "container": "edge-node-13",
+          "cpus": 0.5,
+          "memory": "512m",
+          "memory_mib": 512,
+          "node_id": "node-13",
+          "tier": "medium"
+        },
+        {
+          "container": "edge-node-14",
+          "cpus": 0.25,
+          "memory": "256m",
+          "memory_mib": 256,
+          "node_id": "node-14",
+          "tier": "low"
+        },
+        {
+          "container": "edge-node-15",
+          "cpus": 0.25,
+          "memory": "256m",
+          "memory_mib": 256,
+          "node_id": "node-15",
+          "tier": "low"
+        }
+      ],
+      "resource_limit_verified": true
+    },
+    {
+      "repetition": 9,
+      "node_count": 15,
+      "assignments": [
+        {
+          "container": "edge-node-1",
+          "cpus": 0.25,
+          "memory": "256m",
+          "memory_mib": 256,
+          "node_id": "node-1",
+          "tier": "low"
+        },
+        {
+          "container": "edge-node-2",
+          "cpus": 0.5,
+          "memory": "512m",
+          "memory_mib": 512,
+          "node_id": "node-2",
+          "tier": "medium"
+        },
+        {
+          "container": "edge-node-3",
+          "cpus": 0.5,
+          "memory": "512m",
+          "memory_mib": 512,
+          "node_id": "node-3",
+          "tier": "medium"
+        },
+        {
+          "container": "edge-node-4",
+          "cpus": 0.5,
+          "memory": "512m",
+          "memory_mib": 512,
+          "node_id": "node-4",
+          "tier": "medium"
+        },
+        {
+          "container": "edge-node-5",
+          "cpus": 0.25,
+          "memory": "256m",
+          "memory_mib": 256,
+          "node_id": "node-5",
+          "tier": "low"
+        },
+        {
+          "container": "edge-node-6",
+          "cpus": 1.0,
+          "memory": "1g",
+          "memory_mib": 1024,
+          "node_id": "node-6",
+          "tier": "high"
+        },
+        {
+          "container": "edge-node-7",
+          "cpus": 0.25,
+          "memory": "256m",
+          "memory_mib": 256,
+          "node_id": "node-7",
+          "tier": "low"
+        },
+        {
+          "container": "edge-node-8",
+          "cpus": 0.5,
+          "memory": "512m",
+          "memory_mib": 512,
+          "node_id": "node-8",
+          "tier": "medium"
+        },
+        {
+          "container": "edge-node-9",
+          "cpus": 0.5,
+          "memory": "512m",
+          "memory_mib": 512,
+          "node_id": "node-9",
+          "tier": "medium"
+        },
+        {
+          "container": "edge-node-10",
+          "cpus": 0.25,
+          "memory": "256m",
+          "memory_mib": 256,
+          "node_id": "node-10",
+          "tier": "low"
+        },
+        {
+          "container": "edge-node-11",
+          "cpus": 1.0,
+          "memory": "1g",
+          "memory_mib": 1024,
+          "node_id": "node-11",
+          "tier": "high"
+        },
+        {
+          "container": "edge-node-12",
+          "cpus": 1.0,
+          "memory": "1g",
+          "memory_mib": 1024,
+          "node_id": "node-12",
+          "tier": "high"
+        },
+        {
+          "container": "edge-node-13",
+          "cpus": 0.25,
+          "memory": "256m",
+          "memory_mib": 256,
+          "node_id": "node-13",
+          "tier": "low"
+        },
+        {
+          "container": "edge-node-14",
+          "cpus": 0.5,
+          "memory": "512m",
+          "memory_mib": 512,
+          "node_id": "node-14",
+          "tier": "medium"
+        },
+        {
+          "container": "edge-node-15",
+          "cpus": 0.25,
+          "memory": "256m",
+          "memory_mib": 256,
+          "node_id": "node-15",
+          "tier": "low"
+        }
+      ],
+      "resource_limit_verified": true
+    },
+    {
+      "repetition": 10,
+      "node_count": 15,
+      "assignments": [
+        {
+          "container": "edge-node-1",
+          "cpus": 0.5,
+          "memory": "512m",
+          "memory_mib": 512,
+          "node_id": "node-1",
+          "tier": "medium"
+        },
+        {
+          "container": "edge-node-2",
+          "cpus": 0.5,
+          "memory": "512m",
+          "memory_mib": 512,
+          "node_id": "node-2",
+          "tier": "medium"
+        },
+        {
+          "container": "edge-node-3",
+          "cpus": 0.25,
+          "memory": "256m",
+          "memory_mib": 256,
+          "node_id": "node-3",
+          "tier": "low"
+        },
+        {
+          "container": "edge-node-4",
+          "cpus": 0.25,
+          "memory": "256m",
+          "memory_mib": 256,
+          "node_id": "node-4",
+          "tier": "low"
+        },
+        {
+          "container": "edge-node-5",
+          "cpus": 0.25,
+          "memory": "256m",
+          "memory_mib": 256,
+          "node_id": "node-5",
+          "tier": "low"
+        },
+        {
+          "container": "edge-node-6",
+          "cpus": 0.25,
+          "memory": "256m",
+          "memory_mib": 256,
+          "node_id": "node-6",
+          "tier": "low"
+        },
+        {
+          "container": "edge-node-7",
+          "cpus": 0.5,
+          "memory": "512m",
+          "memory_mib": 512,
+          "node_id": "node-7",
+          "tier": "medium"
+        },
+        {
+          "container": "edge-node-8",
+          "cpus": 0.25,
+          "memory": "256m",
+          "memory_mib": 256,
+          "node_id": "node-8",
+          "tier": "low"
+        },
+        {
+          "container": "edge-node-9",
+          "cpus": 0.5,
+          "memory": "512m",
+          "memory_mib": 512,
+          "node_id": "node-9",
+          "tier": "medium"
+        },
+        {
+          "container": "edge-node-10",
+          "cpus": 1.0,
+          "memory": "1g",
+          "memory_mib": 1024,
+          "node_id": "node-10",
+          "tier": "high"
+        },
+        {
+          "container": "edge-node-11",
+          "cpus": 0.5,
+          "memory": "512m",
+          "memory_mib": 512,
+          "node_id": "node-11",
+          "tier": "medium"
+        },
+        {
+          "container": "edge-node-12",
+          "cpus": 1.0,
+          "memory": "1g",
+          "memory_mib": 1024,
+          "node_id": "node-12",
+          "tier": "high"
+        },
+        {
+          "container": "edge-node-13",
+          "cpus": 1.0,
+          "memory": "1g",
+          "memory_mib": 1024,
+          "node_id": "node-13",
+          "tier": "high"
+        },
+        {
+          "container": "edge-node-14",
+          "cpus": 0.5,
+          "memory": "512m",
+          "memory_mib": 512,
+          "node_id": "node-14",
+          "tier": "medium"
+        },
+        {
+          "container": "edge-node-15",
+          "cpus": 0.25,
+          "memory": "256m",
+          "memory_mib": 256,
+          "node_id": "node-15",
+          "tier": "low"
+        }
+      ],
+      "resource_limit_verified": true
+    }
+  ]
+}

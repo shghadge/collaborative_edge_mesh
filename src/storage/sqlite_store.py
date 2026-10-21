@@ -1,3 +1,5 @@
+"""SQLite storage for gateway snapshots, divergence log entries, and metrics."""
+
 import json
 import sqlite3
 import os
@@ -14,6 +16,7 @@ class SQLiteStore:
         self._init_tables()
 
     def _init_tables(self):
+        """Create the snapshots, divergence_log, and metrics tables if missing."""
         self.conn.executescript("""
             CREATE TABLE IF NOT EXISTS snapshots (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -41,6 +44,11 @@ class SQLiteStore:
     def save_snapshot(
         self, merkle_root, node_count, source_nodes, state_dict, retention_limit=None
     ):
+        """Insert a merged-state snapshot and commit.
+
+        If `retention_limit` is set, deletes all but the newest
+        `retention_limit` snapshots.
+        """
         self.conn.execute(
             "INSERT INTO snapshots (timestamp, merkle_root, node_count, source_nodes, state_json) VALUES (?, ?, ?, ?, ?)",
             (
@@ -62,6 +70,7 @@ class SQLiteStore:
         self.conn.commit()
 
     def get_latest_snapshot(self):
+        """Return the newest snapshot with its decoded state, or None if empty."""
         row = self.conn.execute(
             "SELECT * FROM snapshots ORDER BY id DESC LIMIT 1"
         ).fetchone()
@@ -77,6 +86,7 @@ class SQLiteStore:
         }
 
     def get_snapshot_history(self, limit=20):
+        """Return the newest snapshots without their state, newest first."""
         rows = self.conn.execute(
             "SELECT id, timestamp, merkle_root, node_count, source_nodes FROM snapshots ORDER BY id DESC LIMIT ?",
             (limit,),
@@ -84,6 +94,7 @@ class SQLiteStore:
         return [dict(r) for r in rows]
 
     def log_divergence(self, is_divergent, merkle_roots):
+        """Insert a divergence log entry with the per-node Merkle roots and commit."""
         self.conn.execute(
             "INSERT INTO divergence_log (timestamp, is_divergent, merkle_roots_json) VALUES (?, ?, ?)",
             (
@@ -95,6 +106,7 @@ class SQLiteStore:
         self.conn.commit()
 
     def get_divergence_log(self, limit=50):
+        """Return the newest divergence log entries with decoded roots."""
         rows = self.conn.execute(
             "SELECT * FROM divergence_log ORDER BY id DESC LIMIT ?", (limit,)
         ).fetchall()
@@ -109,6 +121,7 @@ class SQLiteStore:
         ]
 
     def save_metric(self, name, value, metadata=None):
+        """Insert a named metric value with optional JSON metadata and commit."""
         self.conn.execute(
             "INSERT INTO metrics (timestamp, name, value, metadata_json) VALUES (?, ?, ?, ?)",
             (datetime.utcnow().isoformat(), name, value, json.dumps(metadata or {})),
@@ -116,6 +129,7 @@ class SQLiteStore:
         self.conn.commit()
 
     def get_metrics(self, name=None, limit=100):
+        """Return the newest metrics, filtered by name when one is given."""
         if name:
             rows = self.conn.execute(
                 "SELECT * FROM metrics WHERE name = ? ORDER BY id DESC LIMIT ?",

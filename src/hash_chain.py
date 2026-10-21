@@ -1,3 +1,5 @@
+"""Tamper-evident, hash-linked append-only event log."""
+
 import hashlib
 import json
 import os
@@ -21,6 +23,11 @@ class HashChainLog:
         self.entries.clear()
 
     def append(self, event_id, event_type, event_data):
+        """Append an entry for an event and return it.
+
+        The entry stores a SHA-256 of ``event_data`` and the previous
+        entry's hash, then is itself hashed to extend the chain.
+        """
         prev_hash = self.entries[-1]["hash"] if self.entries else "genesis"
 
         entry = {
@@ -59,7 +66,9 @@ class HashChainLog:
         return True
 
     def get_entries(self, since=0):
+        """Return entries from index ``since`` onward."""
         return self.entries[since:]
 
     def latest_hash(self):
+        """Return the hash of the last entry, or ``"genesis"`` if empty."""
         return self.entries[-1]["hash"] if self.entries else "genesis"

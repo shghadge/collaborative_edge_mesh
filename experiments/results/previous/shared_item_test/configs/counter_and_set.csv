@@ -1,0 +1,13 @@
+case_id,condition_id,enabled,sweep,sync_mode,event_id_retention_limit,delta_log_limit,node_count,scenario,partition_split,network_profile,events_per_node,partition_events_per_node,event_concurrency,offered_rate_per_second,partition_wait_seconds,convergence_wait_seconds,poll_interval_seconds,repetitions,seed,docker_cpus,docker_memory,resource_mode,resource_profile,observability
+delta-benefit-n05-shared_counter-naive_key_delta,delta-benefit-n05-shared_counter,1,delta_benefit_comparison,naive_key_delta,100,5000,5,shared_counter,,clean_lan,15,0,25,,0,90,2,10,9701,1.0,512m,uniform,,off
+delta-benefit-n05-shared_counter-true_delta,delta-benefit-n05-shared_counter,1,delta_benefit_comparison,true_delta,100,5000,5,shared_counter,,clean_lan,15,0,25,,0,90,2,10,9701,1.0,512m,uniform,,off
+delta-benefit-n05-shared_set-naive_key_delta,delta-benefit-n05-shared_set,1,delta_benefit_comparison,naive_key_delta,100,5000,5,shared_set,,clean_lan,15,0,25,,0,90,2,10,9701,1.0,512m,uniform,,off
+delta-benefit-n05-shared_set-true_delta,delta-benefit-n05-shared_set,1,delta_benefit_comparison,true_delta,100,5000,5,shared_set,,clean_lan,15,0,25,,0,90,2,10,9701,1.0,512m,uniform,,off
+delta-benefit-n10-shared_counter-naive_key_delta,delta-benefit-n10-shared_counter,1,delta_benefit_comparison,naive_key_delta,100,5000,10,shared_counter,,clean_lan,15,0,25,,0,90,2,10,9711,1.0,512m,uniform,,off
+delta-benefit-n10-shared_counter-true_delta,delta-benefit-n10-shared_counter,1,delta_benefit_comparison,true_delta,100,5000,10,shared_counter,,clean_lan,15,0,25,,0,90,2,10,9711,1.0,512m,uniform,,off
+delta-benefit-n10-shared_set-naive_key_delta,delta-benefit-n10-shared_set,1,delta_benefit_comparison,naive_key_delta,100,5000,10,shared_set,,clean_lan,15,0,25,,0,90,2,10,9711,1.0,512m,uniform,,off
+delta-benefit-n10-shared_set-true_delta,delta-benefit-n10-shared_set,1,delta_benefit_comparison,true_delta,100,5000,10,shared_set,,clean_lan,15,0,25,,0,90,2,10,9711,1.0,512m,uniform,,off
+delta-benefit-n15-shared_counter-naive_key_delta,delta-benefit-n15-shared_counter,1,delta_benefit_comparison,naive_key_delta,100,5000,15,shared_counter,,clean_lan,15,0,25,,0,90,2,10,9721,1.0,512m,uniform,,off
+delta-benefit-n15-shared_counter-true_delta,delta-benefit-n15-shared_counter,1,delta_benefit_comparison,true_delta,100,5000,15,shared_counter,,clean_lan,15,0,25,,0,90,2,10,9721,1.0,512m,uniform,,off
+delta-benefit-n15-shared_set-naive_key_delta,delta-benefit-n15-shared_set,1,delta_benefit_comparison,naive_key_delta,100,5000,15,shared_set,,clean_lan,15,0,25,,0,90,2,10,9721,1.0,512m,uniform,,off
+delta-benefit-n15-shared_set-true_delta,delta-benefit-n15-shared_set,1,delta_benefit_comparison,true_delta,100,5000,15,shared_set,,clean_lan,15,0,25,,0,90,2,10,9721,1.0,512m,uniform,,off

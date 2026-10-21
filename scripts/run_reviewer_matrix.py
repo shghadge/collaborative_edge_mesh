@@ -1,4 +1,12 @@
 #!/usr/bin/env python3
+"""Execute the enabled rows of a reviewer experiment CSV matrix.
+
+Usage: python3 scripts/run_reviewer_matrix.py MATRIX.csv [--base-url URL]
+[--out DIR] [--no-resume] [--dry-run] [--require-complete]. Each row is run
+through run_evaluation_matrix.py as a subprocess; --dry-run only validates
+the matrix and prints configuration counts.
+"""
+
 import argparse
 import subprocess
 import sys
@@ -11,12 +19,18 @@ from src.evaluation.matrix import load_experiment_matrix, validate_experiment_ca
 
 
 def _load_cases(path: Path) -> list[dict[str, str]]:
+    """Load the enabled cases from the experiment matrix CSV at path."""
     return load_experiment_matrix(path)
 
 
 def _case_command(
     case: dict[str, str], *, base_url: str, out_dir: Path, resume: bool
 ) -> list[str]:
+    """Build the run_evaluation_matrix.py command line for one matrix case.
+
+    Optional columns (Docker limits, resource profile, offered rate) are only
+    passed when non-empty; resume adds --resume.
+    """
     script = Path(__file__).with_name("run_evaluation_matrix.py")
     split = case["partition_split"].strip() or "0.5"
     command = [
@@ -84,6 +98,11 @@ def _case_command(
 
 
 def main() -> int:
+    """Load and validate the matrix, then run each case or print a dry-run summary.
+
+    Returns 2 for an invalid or empty matrix, the failing case's exit code if a
+    case fails, else 0.
+    """
     parser = argparse.ArgumentParser(
         description="Execute enabled rows from a reviewer experiment CSV matrix."
     )

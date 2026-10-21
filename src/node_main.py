@@ -35,6 +35,7 @@ log = structlog.get_logger()
 
 
 async def main():
+    """Build the node's state and services, register extra routes, and run until SIGTERM or SIGINT."""
     state = NodeState(
         config.node_id,
         config.event_id_retention_limit,
@@ -55,6 +56,7 @@ async def main():
 
     @intake.app.post("/config/gateway")
     async def config_gateway(request: Request):
+        """Set the node's assigned gateway and re-announce it via mDNS discovery."""
         data = await request.json()
         gw = data.get("assigned_gateway", "")
         config.assigned_gateway = gw
@@ -63,6 +65,7 @@ async def main():
 
     @intake.app.get("/gossip/stats")
     async def gossip_stats():
+        """Return this node's gossip statistics."""
         return {
             "node_id": config.node_id,
             "stats": gossip.get_stats(),
@@ -70,6 +73,7 @@ async def main():
 
     @intake.app.post("/state/deltas")
     async def state_deltas(request: Request):
+        """Return the deltas a peer is missing, given its version vector in the request body."""
         data = await request.json()
         return state.get_deltas_for(
             data.get("vv") or {}, mode=data.get("mode", "true_delta")
@@ -77,6 +81,7 @@ async def main():
 
     @intake.app.post("/evaluation/reset")
     async def evaluation_reset():
+        """Clear CRDT state, the hash chain log, and gossip counters for a fresh evaluation run."""
         state.reset()
         chain.reset()
         gossip.reset_runtime()
@@ -90,6 +95,7 @@ async def main():
 
     @intake.app.post("/evaluation/reset-metrics")
     async def evaluation_reset_metrics():
+        """Reset gossip runtime counters without touching CRDT state."""
         gossip.reset_runtime()
         return {
             "status": "metrics_reset",
@@ -100,6 +106,7 @@ async def main():
 
     @intake.app.get("/peers")
     async def discovered_peers():
+        """Return the peers currently known from mDNS discovery."""
         return {
             "node_id": config.node_id,
             "discovery": "mdns",
@@ -110,6 +117,7 @@ async def main():
 
     @intake.app.get("/relay/observations")
     async def relay_observations(limit: int = 200):
+        """Return this node's own observation followed by up to `limit - 1` peer observations from gossip."""
         own = {
             "node_id": config.node_id,
             "merkle_root": state.merkle_root(),
@@ -146,6 +154,7 @@ async def main():
     )
 
     async def wait_shutdown():
+        """Wait for the shutdown event, then raise CancelledError to stop the gather."""
         await shutdown.wait()
         raise asyncio.CancelledError()
 

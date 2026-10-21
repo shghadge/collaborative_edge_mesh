@@ -1,3 +1,5 @@
+"""FastAPI app through which an edge node accepts events and exposes its state."""
+
 import uuid
 import structlog
 from datetime import datetime, timezone
@@ -25,6 +27,7 @@ class IntakeService:
         self.app = self._build_app()
 
     def _build_app(self):
+        """Create the FastAPI app and register the node's HTTP endpoints."""
         app = FastAPI(title=f"Edge Node {self.config.node_id}")
         app.add_middleware(
             CORSMiddleware,
@@ -36,10 +39,12 @@ class IntakeService:
 
         @app.get("/")
         async def root():
+            """Identify this node and service."""
             return {"node_id": self.config.node_id, "service": "edge-mesh"}
 
         @app.get("/health")
         async def health():
+            """Report liveness."""
             return {"status": "ok"}
 
         @app.post("/event")
@@ -101,10 +106,12 @@ class IntakeService:
 
         @app.get("/state")
         async def get_state():
+            """Return the full serialized node state."""
             return self.state.to_dict()
 
         @app.get("/state/merkle")
         async def get_merkle():
+            """Return the node's current Merkle root and state version."""
             return {
                 "node_id": self.config.node_id,
                 "merkle_root": self.state.merkle_root(),
@@ -113,6 +120,7 @@ class IntakeService:
 
         @app.get("/status")
         async def get_status():
+            """Return node status: version, Merkle root, event count, and uptime."""
             uptime = (datetime.utcnow() - self.start_time).total_seconds()
             return NodeStatus(
                 node_id=self.config.node_id,
@@ -125,6 +133,7 @@ class IntakeService:
 
         @app.get("/log")
         async def get_log(since: int = 0, limit: int = 100):
+            """Return hash-chain entries from ``since`` and the chain's validity."""
             entries = self.chain.get_entries(since)[:limit]
             return {
                 "entries": entries,

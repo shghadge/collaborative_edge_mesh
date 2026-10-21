@@ -1,4 +1,12 @@
 #!/usr/bin/env python3
+"""Run a tiny Docker-backed evaluation and check that it fully converged.
+
+Usage: python3 scripts/run_evaluation_smoke.py [--base-url URL]
+[--sync-mode full_state|true_delta] [--node-counts 2] [--events-per-node N]
+[--out DIR]. Calls run_evaluation_matrix.py with the degraded network profile,
+then validates the resulting CSV.
+"""
+
 import argparse
 import csv
 import subprocess
@@ -7,6 +15,10 @@ from pathlib import Path
 
 
 def _csv_path_from_output(output: str) -> Path:
+    """Return the first line of output ending in .csv as a Path.
+
+    Raises ValueError if no such line exists.
+    """
     for line in output.splitlines():
         stripped = line.strip()
         if stripped.endswith(".csv"):
@@ -15,6 +27,10 @@ def _csv_path_from_output(output: str) -> Path:
 
 
 def _validate_smoke_csv(path: Path) -> None:
+    """Check that every CSV row converged, missed no events, and wrote all events.
+
+    Raises ValueError listing each failing row, or if the CSV has no rows.
+    """
     with path.open(newline="", encoding="utf-8") as handle:
         rows = list(csv.DictReader(handle))
 
@@ -41,6 +57,10 @@ def _validate_smoke_csv(path: Path) -> None:
 
 
 def main() -> int:
+    """Run the smoke evaluation subprocess and validate its CSV output.
+
+    Returns the subprocess exit code if it failed, 1 if validation fails, else 0.
+    """
     parser = argparse.ArgumentParser(
         description="Run a tiny Docker-backed evaluation to validate runtime wiring."
     )

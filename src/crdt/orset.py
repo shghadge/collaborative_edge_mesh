@@ -78,6 +78,7 @@ class ORSet:
             self._removed.setdefault(elem, set()).update(tags)
 
     def to_dict(self):
+        """Serialize the set, including add tags and removal tombstones."""
         return {
             "type": "or_set",
             "node_id": self.node_id,
@@ -119,6 +120,7 @@ class ORSet:
 
     @classmethod
     def from_dict(cls, data):
+        """Build an OR-Set from a dict produced by ``to_dict``."""
         s = cls(data["node_id"], description=data.get("description", ""))
         s._elements = {
             elem: set(tags) for elem, tags in data.get("elements", {}).items()

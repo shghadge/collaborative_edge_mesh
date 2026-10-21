@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+"""Generate the focused or combined experiment matrix as a CSV file.
+
+Usage: python3 scripts/generate_experiment_matrix.py [--design focused|combined]
+[--repetitions N] [--base-seed SEED] [--out PATH]. Prints the output path and
+per-sweep configuration counts.
+"""
+
 import argparse
 import sys
 from collections import Counter
@@ -23,6 +30,10 @@ DEFAULT_SEEDS = {"focused": 7301, "combined": 11001}
 
 
 def main() -> int:
+    """Parse arguments, build the matrix cases, write the CSV, and print a summary.
+
+    Returns 0 on success and 2 if case generation raises ValueError.
+    """
     parser = argparse.ArgumentParser(
         description="Generate the focused or combined experiment matrix."
     )

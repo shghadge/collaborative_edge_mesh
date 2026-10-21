@@ -56,15 +56,21 @@ discovery = PeerDiscovery(
 
 
 class GatewayNode(BaseModel):
+    """An edge node the gateway should poll, identified by id and base URL."""
+
     node_id: str
     url: str
 
 
 class GatewayNodeSyncRequest(BaseModel):
+    """Request body for replacing the gateway's full set of edge nodes."""
+
     nodes: List[GatewayNode]
 
 
 class RelayObservationItem(BaseModel):
+    """One node observation relayed by an edge node to the gateway."""
+
     node_id: str
     merkle_root: Optional[str] = None
     state_version: Optional[int] = None
@@ -74,6 +80,8 @@ class RelayObservationItem(BaseModel):
 
 
 class RelayObservationRequest(BaseModel):
+    """Request body for a batch of relayed observations from one edge node."""
+
     source_node: str
     observations: List[RelayObservationItem]
 
@@ -81,6 +89,7 @@ class RelayObservationRequest(BaseModel):
 def _api_error(
     status_code: int, code: str, message: str, details=None
 ) -> HTTPException:
+    """Build an HTTPException whose detail is a `{code, message, details}` payload."""
     payload = {"code": code, "message": message}
     if details is not None:
         payload["details"] = details
@@ -89,6 +98,7 @@ def _api_error(
 
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
+    """Return HTTP errors as JSON with `code` and `message` fields."""
     if (
         isinstance(exc.detail, dict)
         and "code" in exc.detail
@@ -105,6 +115,7 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception):
+    """Log an unexpected error and return a generic JSON 500 response."""
     log.error("gateway_unhandled_exception", error=str(exc), path=str(request.url.path))
     return JSONResponse(
         status_code=500,
@@ -120,16 +131,19 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 
 @app.get("/gateway/status")
 async def gateway_status():
+    """Return the gateway status, including registered nodes and visibility."""
     return gateway.get_status()
 
 
 @app.get("/gateway/runtime-metrics")
 async def gateway_runtime_metrics():
+    """Return gateway runtime counters, node health, and visibility."""
     return gateway.get_runtime_metrics()
 
 
 @app.post("/gateway/evaluation/reset")
 async def gateway_evaluation_reset():
+    """Clear scenario state and metrics while keeping registered nodes."""
     gateway.reset_runtime()
     return {
         "status": "reset",
@@ -139,18 +153,21 @@ async def gateway_evaluation_reset():
 
 @app.post("/gateway/nodes/register")
 async def register_gateway_node(node: GatewayNode):
+    """Register a single edge node for polling."""
     gateway.register_node(node.node_id, node.url)
     return {"status": "registered", "node_id": node.node_id, "url": node.url}
 
 
 @app.delete("/gateway/nodes/{node_id}")
 async def unregister_gateway_node(node_id: str):
+    """Stop polling the given edge node."""
     gateway.unregister_node(node_id)
     return {"status": "unregistered", "node_id": node_id}
 
 
 @app.post("/gateway/nodes/sync")
 async def sync_gateway_nodes(payload: GatewayNodeSyncRequest):
+    """Replace the registered edge nodes with the given list."""
     gateway.sync_nodes([node.model_dump() for node in payload.nodes])
     return {
         "status": "synced",
@@ -163,6 +180,7 @@ async def sync_gateway_nodes(payload: GatewayNodeSyncRequest):
 
 @app.post("/gateway/relay-observations")
 async def relay_observations(payload: RelayObservationRequest):
+    """Ingest observations an edge node relays about other nodes."""
     return gateway.ingest_relay_observations(
         source_node=payload.source_node,
         observations=[item.model_dump() for item in payload.observations],
@@ -178,6 +196,7 @@ async def trigger_poll():
 
 @app.get("/gateway/merged-state")
 async def merged_state():
+    """Return the latest stored merged-state snapshot, if any."""
     snapshot = store.get_latest_snapshot()
     if not snapshot:
         return {"status": "no data yet, trigger a poll first"}
@@ -186,6 +205,7 @@ async def merged_state():
 
 @app.get("/gateway/peers")
 async def discovered_peers():
+    """Return peers found by mDNS discovery, with discovery stats."""
     return {
         "node_id": config.node_id,
         "discovery": "mdns",
@@ -197,11 +217,13 @@ async def discovered_peers():
 
 @app.get("/gateway/history")
 async def snapshot_history(limit: int = 20):
+    """Return the most recent snapshot summaries, newest first."""
     return store.get_snapshot_history(limit)
 
 
 @app.get("/gateway/divergence")
 async def divergence():
+    """Return the divergence flag, visibility status, and recent divergence log."""
     visibility = gateway.get_runtime_metrics().get("visibility", {})
     return {
         "is_divergent": gateway.is_divergent,
@@ -213,10 +235,16 @@ async def divergence():
 
 @app.get("/gateway/metrics")
 async def metrics(name: Optional[str] = None, limit: int = 100):
+    """Return stored metrics, optionally filtered by name, newest first."""
     return store.get_metrics(name, limit)
 
 
 async def main():
+    """Run mDNS discovery, the HTTP server, and the polling loop until shutdown.
+
+    SIGTERM and SIGINT stop polling and end the run; discovery is always
+    stopped on exit.
+    """
     shutdown = asyncio.Event()
     loop = asyncio.get_event_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
@@ -236,6 +264,7 @@ async def main():
     )
 
     async def wait_shutdown():
+        """Wait for a shutdown signal, stop polling, and cancel the gather."""
         await shutdown.wait()
         gateway.stop()
         raise asyncio.CancelledError()

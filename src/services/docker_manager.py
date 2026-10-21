@@ -1,3 +1,5 @@
+"""Docker control of edge node and gateway containers, faults, and resource limits."""
+
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 import ipaddress
@@ -82,6 +84,7 @@ def build_network_profile_commands(profile: str, bypass_ip: str) -> list[str]:
 
 
 def _time_to_ms(value: str, unit: str) -> float:
+    """Convert a tc time value with unit (ns, us, ms, s) to milliseconds."""
     return (
         float(value)
         * {
@@ -94,6 +97,7 @@ def _time_to_ms(value: str, unit: str) -> float:
 
 
 def _rate_to_mbps(value: str, unit: str) -> float:
+    """Convert a tc rate value with unit (bit, kbit, mbit, gbit) to Mbit/s."""
     return (
         float(value)
         * {
@@ -106,6 +110,7 @@ def _rate_to_mbps(value: str, unit: str) -> float:
 
 
 def _htb_class_line(class_text: str, class_id: str) -> str | None:
+    """Return the ``tc class show`` line for an HTB ``class_id``, or ``None``."""
     match = re.search(
         rf"^class htb {re.escape(class_id)}(?![0-9a-f]).*$", class_text, re.MULTILINE
     )
@@ -113,6 +118,7 @@ def _htb_class_line(class_text: str, class_id: str) -> str | None:
 
 
 def _has_bypass_filter(filter_text: str, bypass_ip: str) -> bool:
+    """Return whether a u32 filter sends traffic for ``bypass_ip`` to class 1:1."""
     try:
         hex_ip = ipaddress.IPv4Address(bypass_ip).packed.hex()
     except ValueError:
@@ -133,6 +139,11 @@ def verify_network_profile_state(
     filter_output: str,
     bypass_ip: str,
 ) -> bool:
+    """Check that tc output matches the profile ``settings`` and the bypass setup.
+
+    Requires a netem qdisc, HTB classes 1:1 and 1:10, the bypass filter, and
+    delay, jitter, loss, rate, and ceil values matching within 0.001.
+    """
     qdisc_text = qdisc_output.lower()
     class_text = class_output.lower()
     filter_text = filter_output.lower()
@@ -182,6 +193,7 @@ def verify_network_profile_state(
 
 
 def _decode(output) -> str:
+    """Decode exec output bytes to text, replacing invalid bytes."""
     return output.decode(errors="replace") if isinstance(output, bytes) else str(output)
 
 
@@ -208,11 +220,13 @@ class DockerManager:
         self._reserved_ports = set()
 
     def _next_ip(self):
+        """Return the next dynamic mesh IP and advance the suffix counter."""
         ip = f"{SUBNET}.{self._next_ip_suffix}"
         self._next_ip_suffix += 1
         return ip
 
     def _list_all_containers(self):
+        """List all containers, including stopped ones when the client supports it."""
         try:
             return self.client.containers.list(all=True)
         except TypeError:
@@ -220,6 +234,7 @@ class DockerManager:
             return self.client.containers.list()
 
     def _action_response(self, action, target, status, message, **extra):
+        """Build a fault or control action result with an ID and UTC timestamp."""
         payload = {
             "action_id": str(uuid.uuid4()),
             "timestamp": datetime.utcnow().isoformat(),
@@ -232,27 +247,32 @@ class DockerManager:
         return payload
 
     def _node_number_from_name(self, name):
+        """Return N from ``edge-node-N``, or ``None`` if not numeric."""
         try:
             return int(name.replace("edge-node-", ""))
         except ValueError:
             return None
 
     def _host_port_for_node_name(self, name):
+        """Return the default host port ``8000 + N`` for ``edge-node-N``, or ``None``."""
         number = self._node_number_from_name(name)
         if number is None:
             return None
         return 8000 + number
 
     def _node_id_from_container_name(self, name):
+        """Map ``edge-node-N`` to ``node-N``; return other names unchanged."""
         number = self._node_number_from_name(name)
         if number is None:
             return name
         return f"node-{number}"
 
     def _internal_url_for_container_name(self, name):
+        """Return the node's HTTP URL on the mesh network."""
         return f"http://{name}:8000"
 
     def _existing_node_numbers(self):
+        """Return node numbers in use by containers, managed nodes, or reservations."""
         numbers = set()
 
         # include stopped containers too, so we avoid name collisions
@@ -270,6 +290,7 @@ class DockerManager:
         return numbers
 
     def _existing_published_ports(self):
+        """Return host ports published by any container or currently reserved."""
         ports = set()
         for container in self._list_all_containers():
             host_config = container.attrs.get("HostConfig") or {}
@@ -288,6 +309,7 @@ class DockerManager:
         return ports
 
     def _select_host_port(self, node_id):
+        """Pick a free host port, preferring ``8000 + N`` for ``node-N``."""
         preferred = None
         node_num = node_id.replace("node-", "")
         try:
@@ -306,6 +328,7 @@ class DockerManager:
         return candidate
 
     def _next_available_node_id(self):
+        """Return the lowest unused ``node-N`` ID."""
         used = self._existing_node_numbers()
         candidate = 1
         while candidate in used:
@@ -445,6 +468,7 @@ class DockerManager:
         return gateways
 
     def _existing_gateway_numbers(self):
+        """Return gateway numbers in use; a bare ``gateway`` counts as 1."""
         numbers = set()
         for container in self._list_all_containers():
             if "gateway" in container.name and "simulator" not in container.name:
@@ -456,6 +480,7 @@ class DockerManager:
         return numbers
 
     def _next_available_gateway_id(self):
+        """Return the lowest unused ``gateway-N`` ID."""
         used = self._existing_gateway_numbers()
         candidate = 1
         while candidate in used:
@@ -463,6 +488,7 @@ class DockerManager:
         return f"gateway-{candidate}"
 
     def _select_gateway_host_port(self, gateway_id):
+        """Pick a free host port, preferring 7000 for gateway 1, 7001 for gateway 2."""
         gw_num = gateway_id.replace("gateway-", "").replace("gateway", "")
         if gw_num == "":
             gw_num = "1"
@@ -823,6 +849,7 @@ class DockerManager:
             )
 
     def _edge_containers(self):
+        """Return running containers whose name contains ``edge-node``."""
         return [c for c in self.client.containers.list() if "edge-node" in c.name]
 
     def _run_node_scripts(self, jobs):
@@ -834,6 +861,7 @@ class DockerManager:
             return []
 
         def run(job):
+            """Execute one script in its container and return the decoded result."""
             container, script = job
             exit_code, output = container.exec_run(["sh", "-c", script])
             return container, exit_code, _decode(output)
@@ -907,6 +935,7 @@ class DockerManager:
 
         # get IPs for each group
         def get_ip(container):
+            """Return the container's mesh network IP, or ``None``."""
             networks = container.attrs["NetworkSettings"]["Networks"]
             for net_name, net_info in networks.items():
                 if "mesh" in net_name:
@@ -1148,6 +1177,7 @@ class DockerManager:
         api = self.client.api
 
         def update(assignment):
+            """POST a CPU/memory update for one container and report success."""
             name = assignment["container"]
             body = {}
             if assignment.get("cpus") is not None:

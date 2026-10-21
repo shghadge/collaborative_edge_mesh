@@ -52,6 +52,7 @@ class PeerDiscovery:
         self._update_service_type()
 
     def _update_service_type(self):
+        """Set the mDNS service type, scoped by a hash of the assigned gateway."""
         if not self.assigned_gateway:
             self.service_type = "_em._udp.local."
             return
