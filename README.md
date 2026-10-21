@@ -20,6 +20,20 @@ make docker-rebuild   # clean and start the simulator and gateway
 make docker-clean     # stop everything, including edge nodes
 ```
 
+## Run the experiments
+
+The three experiments from the master's report (baseline, constrained resources, increased load) can be rerun
+with one command each:
+
+```bash
+make docker-rebuild                  # start the system
+experiments/run_experiments.sh 1     # 1, 2, 3 or all
+```
+
+Each call writes its runs, summary and figures to a new folder in `experiments/results/new/`. The report's own
+results are in `experiments/results/previous/`. See [experiments/README.md](experiments/README.md) for what each
+experiment tests and how to summarize and plot results.
+
 ## How a run works
 
 ```mermaid
@@ -43,8 +57,7 @@ uv run python scripts/run_evaluation_matrix.py --sync-mode true_delta --node-cou
 The script sends the configuration to `POST /evaluation/run`, polls `/evaluation/status` until the run ends, then
 writes `<out>/<label>/<run_id>.csv` (one row per repetition and scenario), `<run_id>-results.json` and
 `<run_id>.json` (configuration and resource limits). `--resume` skips a configuration that already has matching
-results. The dashboard uses the same endpoints. `scripts/run_reviewer_matrix.py` runs a CSV of configurations;
-the report's experiments are in `experiments/`.
+results. The dashboard uses the same endpoints. `scripts/run_reviewer_matrix.py` runs a CSV of configurations.
 
 ### 2. Parameters
 
